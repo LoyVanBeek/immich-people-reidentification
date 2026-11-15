@@ -36,8 +36,8 @@ class ImmichClient:
         base_url: str,
         api_key: str,
         *,
-        page_size: int = 1000,
-        timeout: float = 60.0,
+        page_size: int,
+        timeout: float,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._page_size = page_size

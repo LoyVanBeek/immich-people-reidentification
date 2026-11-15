@@ -4,6 +4,14 @@ Person re-identification for Immich: a Pi 5 container that detects persons in ne
 
 ## Language
 
+**Checkpoint**:
+The timestamp marking how far the new-asset feed has been consumed: the newest asset createdAt from the last fully completed batch run. Persists in the local store; advances only after the whole feed is read, so a crashed run resumes instead of reprocessing.
+_Avoid_: cursor (that's Immich's search pagination token), bookmark
+
+**New-asset feed**:
+The stream of photos not yet processed: Immich's metadata search filtered to `createdAfter` = the checkpoint. Photos only (videos are out of scope in v1).
+_Avoid_: sync stream (that's Immich's session-token-only sync API), asset list
+
 **Person appearance**:
 One detected person instance in one photo. The unit that receives an embedding; clustering operates on person-appearances, not photos. A photo with three detected persons contributes three appearances.
 _Avoid_: detection, person (ambiguous between the human and the instance)

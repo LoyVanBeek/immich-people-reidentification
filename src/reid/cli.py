@@ -44,7 +44,7 @@ def batch(config_path: Path) -> None:
     for asset in summary.assets:
         click.echo(f"asset {asset.id} {asset.original_file_name} created_at={asset.created_at}")
     click.echo(
-        f"batch run complete: assets fetched={summary.fetched} "
+        f"batch run complete: assets fetched={len(summary.assets)} "
         f"checkpoint={summary.checkpoint_before} -> {summary.checkpoint_after}"
     )
 

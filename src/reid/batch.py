@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 from .config import Config
 from .immich import Asset, ImmichClient
@@ -21,7 +22,6 @@ _log = logging.getLogger("reid.batch")
 
 @dataclass(frozen=True)
 class RunSummary:
-    fetched: int
     assets: tuple[Asset, ...]
     checkpoint_before: str | None
     checkpoint_after: str | None
@@ -56,7 +56,6 @@ def run_batch(cfg: Config) -> RunSummary:
         checkpoint_after,
     )
     return RunSummary(
-        fetched=len(assets),
         assets=tuple(assets),
         checkpoint_before=checkpoint_before,
         checkpoint_after=checkpoint_after,
@@ -66,11 +65,23 @@ def run_batch(cfg: Config) -> RunSummary:
 def _advance_checkpoint(
     store: Store, checkpoint_before: str | None, assets: list[Asset]
 ) -> str | None:
-    """Advance the checkpoint to the newest asset seen, or leave it if none."""
+    """Advance the checkpoint to the newest asset seen, or leave it if none.
+
+    Ordering compares parsed timestamps (the checkpoint is a wall-clock
+    instant), while the persisted value stays the raw ISO string Immich
+    returned, sent back verbatim as the next run's createdAfter filter.
+    """
     checkpoint_after = checkpoint_before
     if assets:
-        newest = max(asset.created_at for asset in assets)
-        if checkpoint_before is None or newest > checkpoint_before:
+        newest_asset = max(assets, key=lambda asset: _parse_timestamp(asset.created_at))
+        newest = newest_asset.created_at
+        if checkpoint_before is None or _parse_timestamp(newest) > _parse_timestamp(
+            checkpoint_before
+        ):
             store.set_checkpoint(NEW_ASSET_FEED, newest)
             checkpoint_after = newest
     return checkpoint_after
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value)

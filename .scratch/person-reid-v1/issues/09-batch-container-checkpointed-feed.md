@@ -6,7 +6,7 @@ Part of: [Person Re-ID v1 — Map](../map.md)
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Building produces an ARM64 Docker image (Python 3.13, uv-packaged) that runs on the Pi 5 and needs no network beyond the Immich API
 - [x] A batch run connects to Immich with a read-scoped API key and fetches new assets via the checkpointed feed
@@ -48,3 +48,10 @@ re-served.
 images of known people (standing with back to camera, blurred face, group of
 two, plus two scenes), 1440px JPEG — license-clean and YOLO-detectable;
 ticket 10 may extend the library if detection needs stricter poses.
+
+**Known boundary.** The checkpoint filters strictly newer assets, so an
+asset whose createdAt equals the final checkpoint of a completed run but
+that Immich ingested after the run would never be fetched. On Immich's
+monotonic single-node server clock, ingested-after implies createdAt
+strictly greater than the checkpoint, so this is a theoretical boundary;
+noted for completeness.

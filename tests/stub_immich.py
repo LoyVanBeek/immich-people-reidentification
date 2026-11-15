@@ -32,11 +32,6 @@ class RecordedRequest:
     body: Any  # parsed JSON for POSTs with a body, else None
     headers: dict[str, str]
 
-    @property
-    def query(self) -> str:
-        _, _, query = self.path.partition("?")
-        return query
-
 
 class StubImmich:
     def __init__(self, assets: list[dict[str, Any]]) -> None:

@@ -51,13 +51,13 @@ PHOTO_FILE_NAMES = {
     PHOTO_1_STANDING_ID: "reid-fixture-standing.jpg",
     PHOTO_2_BLURRED_ID: "reid-fixture-blurred-face.jpg",
     PHOTO_3_GROUP_ID: "reid-fixture-group.jpg",
-    PHOTO_4_INDOOR_ID: "reid-fixture-indoor-a.jpg",
-    PHOTO_5_INDOOR_ID: "reid-fixture-indoor-b.jpg",
-    PHOTO_6_INDOOR_ID: "reid-fixture-indoor-c.jpg",
-    PHOTO_7_INDOOR_ID: "reid-fixture-indoor-d.jpg",
-    PHOTO_8_PARK_ID: "reid-fixture-park-a.jpg",
-    PHOTO_9_PARK_ID: "reid-fixture-park-b.jpg",
-    PHOTO_10_PARK_ID: "reid-fixture-park-c.jpg",
+    PHOTO_4_INDOOR_ID: "reid-fixture-indoor.jpg",
+    PHOTO_5_INDOOR_ID: "reid-fixture-indoor.jpg",
+    PHOTO_6_INDOOR_ID: "reid-fixture-indoor.jpg",
+    PHOTO_7_INDOOR_ID: "reid-fixture-indoor.jpg",
+    PHOTO_8_PARK_ID: "reid-fixture-park.jpg",
+    PHOTO_9_PARK_ID: "reid-fixture-park.jpg",
+    PHOTO_10_PARK_ID: "reid-fixture-park.jpg",
 }
 
 
@@ -101,16 +101,13 @@ def asset_registry() -> list[dict[str, Any]]:
 
 def extended_asset_registry() -> list[dict[str, Any]]:
     """Seven photos, enough for multi-page runs with a small page size."""
-    return [
-        _asset(PHOTO_1_STANDING_ID, created_at=PHOTO_1_CREATED_AT, asset_type="IMAGE"),
-        _asset(PHOTO_2_BLURRED_ID, created_at=PHOTO_2_CREATED_AT, asset_type="IMAGE"),
-        _asset(VIDEO_1_ID, created_at=VIDEO_1_CREATED_AT, asset_type="VIDEO"),
-        _asset(PHOTO_3_GROUP_ID, created_at=PHOTO_3_CREATED_AT, asset_type="IMAGE"),
+    extras = [
         _asset(PHOTO_4_INDOOR_ID, created_at=PHOTO_4_CREATED_AT, asset_type="IMAGE"),
         _asset(PHOTO_5_INDOOR_ID, created_at=PHOTO_5_CREATED_AT, asset_type="IMAGE"),
         _asset(PHOTO_6_INDOOR_ID, created_at=PHOTO_6_CREATED_AT, asset_type="IMAGE"),
         _asset(PHOTO_7_INDOOR_ID, created_at=PHOTO_7_CREATED_AT, asset_type="IMAGE"),
     ]
+    return asset_registry() + extras
 
 
 def late_photos() -> list[dict[str, Any]]:
