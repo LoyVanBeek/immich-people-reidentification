@@ -334,7 +334,11 @@ class TestHeadDetectorFallback:
     def test_immich_face_preferred_over_scrfd(
         self, tmp_path: Path, ui_stub: StubImmich
     ) -> None:
-        """When Immich has an unassigned face in the person box, it wins over SCRFD."""
+        """When Immich has an unassigned face in the person box, it wins over SCRFD.
+
+        Verifies fallback ordering: Immich's unassigned face is used directly
+        without invoking the SCRFD detector on the person crop.
+        """
         from reid.config import load_config
         from reid.server import UIServer
         from reid.store import Store, Proposal, Appearance, NEW_ASSET_FEED
@@ -414,6 +418,16 @@ log_level = "info"
         cfg = load_config(config_path)
         server = UIServer(cfg)
 
+        # Spy on the head detector to verify it's NOT called when Immich face is available
+        detect_calls = {"count": 0}
+        original_detect = server.immich._head_detector.detect
+
+        def spy_detect(crop):
+            detect_calls["count"] += 1
+            return original_detect(crop)
+
+        server.immich._head_detector.detect = spy_detect
+
         # Dry-run confirm for cluster 0
         result = server.confirm_cluster({
             "cluster": 0,
@@ -422,6 +436,9 @@ log_level = "info"
             "included": [{"asset_id": asset_id, "appearance": 0}],
             "dry_run": True,
         })
+
+        # Verify SCRFD detect() was never called (Immich face took precedence)
+        assert detect_calls["count"] == 0, "SCRFD detect() should not be called when Immich face is available"
 
         assert result["dry_run"] is True
         assert len(result["results"]) == 1

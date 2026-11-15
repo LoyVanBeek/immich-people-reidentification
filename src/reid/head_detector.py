@@ -153,9 +153,11 @@ class HeadDetector:
                 dx, dy, dw, dh = bbox_map[j]
                 cx, cy = anchor_centers[j]
 
-                # SCRFD box decoding: center + exp(scale) * anchor_size
-                # Actually SCRFD uses: x1 = cx - exp(dx) * stride/2, etc. (varies by export)
-                # Standard SCRFD (insightface) decoding:
+                # SCRFD box decoding: assumes insightface's raw SCRFD ONNX export format.
+                # The export from insightface/tools/scrfd2onnx.py outputs [dx, dy, dw, dh]
+                # where dw/dh are log-space width/height deltas relative to stride.
+                # Other exporters may output pre-decoded boxes (x1,y1,x2,y2) directly.
+                # If coordinates look wildly wrong, verify the ONNX output format matches.
                 w = float(np.exp(dw) * stride)
                 h = float(np.exp(dh) * stride)
                 x1 = cx - w * 0.5

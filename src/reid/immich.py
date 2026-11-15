@@ -6,6 +6,7 @@ Auth goes through `x-api-key` headers with a fine-grained, read-scoped key.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +14,8 @@ import httpx
 import numpy as np
 
 from .head_detector import HeadDetector, HeadDetectorConfig, HeadDetectorError, map_crop_box_to_full_image
+
+_log = logging.getLogger("reid.immich")
 
 
 class ImmichError(Exception):
@@ -303,11 +306,13 @@ class ImmichClient:
             image = self._decode_pixels(payload)
             crop = self._crop_person(image, person_box)
             if crop.size == 0:
+                _log.debug("asset %s: person crop is empty", asset_id)
                 return None
 
             # Detect face on the crop
             face_det = self._head_detector.detect(crop)
             if face_det is None:
+                _log.debug("asset %s: SCRFD found no face in person crop", asset_id)
                 return None
 
             # Expand face box to head box in crop coordinates
@@ -316,10 +321,20 @@ class ImmichClient:
             # Map back to full-image coordinates
             full_shape = image.shape[:2]
             head_box_full = map_crop_box_to_full_image(head_box_crop, person_box, crop.shape[:2], full_shape)
+            _log.debug("asset %s: SCRFD fallback head box = %s", asset_id, head_box_full)
             return head_box_full
 
-        except (HeadDetectorError, Exception):
-            # Any error in the fallback path: no head found
+        except HeadDetectorError as exc:
+            # Expected SCRFD errors (model load, decode, etc.)
+            _log.warning("asset %s: SCRFD head detection failed: %s", asset_id, exc)
+            return None
+        except ImmichError as exc:
+            # Unexpected Immich API error during fallback
+            _log.error("asset %s: Immich error during SCRFD fallback: %s", asset_id, exc)
+            return None
+        except Exception as exc:
+            # Catch-all for truly unexpected errors (OOM, etc.) — log and continue
+            _log.exception("asset %s: unexpected error in SCRFD fallback", asset_id)
             return None
 
     @staticmethod
