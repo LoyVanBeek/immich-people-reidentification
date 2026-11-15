@@ -1,0 +1,130 @@
+"""Store tests: proposals and capture times persist and wipe correctly.
+
+The store is a public seam of its own (the run's product is read back
+through it in the acceptance tests); these tests pin the persistence
+behavior the clustering slice depends on.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from reid.store import (
+    ASK_NAME,
+    Appearance,
+    Proposal,
+    Store,
+)
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> Store:
+    return Store(tmp_path / "store.sqlite3")
+
+
+def appearance_row(asset_id: str, index: int = 0, captured_at: str = "2026-11-10T08:00:00.000Z") -> Appearance:
+    return Appearance(
+        asset_id=asset_id,
+        appearance=index,
+        embedding=b"\x00" * 8,
+        confidence=0.9,
+        box_left=1.0,
+        box_top=2.0,
+        box_right=3.0,
+        box_bottom=4.0,
+        pixel_source="preview",
+        captured_at=captured_at,
+    )
+
+
+def test_appearances_keep_their_capture_time(store: Store) -> None:
+    store.add_appearances("asset-1", [appearance_row("asset-1")])
+    rows = store.appearances_by_asset()["asset-1"]
+    assert len(rows) == 1
+    assert rows[0].captured_at == "2026-11-10T08:00:00.000Z"
+
+
+def test_proposals_round_trip_through_the_store(store: Store) -> None:
+    rows = [
+        Proposal("asset-1", 0, "2026-11-10", 0, "proposed", "Albert"),
+        Proposal("asset-1", 1, "2026-11-10", 0, "labeled", None),
+        Proposal("asset-2", 0, "2026-11-10", 1, "ask_name", None),
+    ]
+    store.replace_proposals(rows)
+
+    read_back = store.proposals()
+    assert len(read_back) == 3
+    by_asset = {(proposal.asset_id, proposal.appearance): proposal for proposal in read_back}
+    assert by_asset[("asset-1", 0)].proposed_name == "Albert"
+    assert by_asset[("asset-1", 0)].status == "proposed"
+    assert by_asset[("asset-1", 0)].window == "2026-11-10"
+    assert by_asset[("asset-1", 0)].cluster == 0
+    assert by_asset[("asset-1", 1)].status == "labeled"
+    assert by_asset[("asset-2", 0)].status == ASK_NAME
+
+
+def test_each_run_replaces_the_previous_proposals_wholesale(store: Store) -> None:
+    store.replace_proposals([Proposal("asset-1", 0, "2026-11-10", 0, "proposed", "Albert")])
+
+    store.replace_proposals([Proposal("asset-2", 0, "2026-11-10", 0, "ask_name", None)])
+
+    read_back = store.proposals()
+    assert len(read_back) == 1
+    assert read_back[0].asset_id == "asset-2"
+    assert read_back[0].status == "ask_name"
+
+
+def test_a_wipe_erases_proposals_together_with_the_appearances(store: Store) -> None:
+    store.add_appearances("asset-1", [appearance_row("asset-1")])
+    store.replace_proposals([Proposal("asset-1", 0, "2026-11-10", 0, "proposed", "Albert")])
+
+    removed = store.wipe()
+
+    assert removed == 1
+    assert store.appearances_by_asset() == {}
+    assert store.proposals() == []
+    # The store stays usable afterwards.
+    store.add_appearances("asset-2", [appearance_row("asset-2")])
+    store.replace_proposals([Proposal("asset-2", 0, "2026-11-10", 0, "proposed", "Bea")])
+    assert len(store.proposals()) == 1
+
+
+def test_a_store_written_before_capture_times_migrates(tmp_path: Path) -> None:
+    # A store created before the captured_at column existed must keep its
+    # rows (with an empty capture time) and stay writable.
+    legacy = tmp_path / "legacy.sqlite3"
+    import sqlite3
+
+    conn = sqlite3.connect(legacy)
+    conn.execute(
+        """
+        CREATE TABLE appearance (
+            asset_id TEXT NOT NULL,
+            appearance INTEGER NOT NULL,
+            embedding BLOB NOT NULL,
+            confidence REAL NOT NULL,
+            box_left REAL NOT NULL,
+            box_top REAL NOT NULL,
+            box_right REAL NOT NULL,
+            box_bottom REAL NOT NULL,
+            pixel_source TEXT NOT NULL,
+            PRIMARY KEY (asset_id, appearance)
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO appearance VALUES ('asset-old', 0, X'00', 0.9, 1, 2, 3, 4, 'preview')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(legacy)
+    rows = store.appearances_by_asset()["asset-old"]
+    assert len(rows) == 1
+    assert rows[0].captured_at == ""
+
+    store.add_appearances("asset-new", [appearance_row("asset-new")])
+    by_asset = store.appearances_by_asset()
+    assert by_asset["asset-new"][0].captured_at == "2026-11-10T08:00:00.000Z"

@@ -22,10 +22,25 @@ def stub() -> Iterator[StubImmich]:
 
 
 @pytest.fixture
+def detection_stub() -> Iterator[StubImmich]:
+    """The full fixture registry: every photo the detection tests need."""
+    server = StubImmich(library.detection_registry())
+    server.start()
+    yield server
+    server.stop()
+
+
+@pytest.fixture
 def make_config(tmp_path: Path) -> Callable[[StubImmich, int], Path]:
     """Write a reid.toml pointing a run at a stub Immich with a fresh store path."""
 
-    def _make(server: StubImmich, page_size: int = 1000, detection: dict | None = None, name: str = "reid") -> Path:
+    def _make(
+        server: StubImmich,
+        page_size: int = 1000,
+        detection: dict | None = None,
+        clustering: dict | None = None,
+        name: str = "reid",
+    ) -> Path:
         config_path = tmp_path / f"{name}.toml"
         lines = [
             "[immich]",
@@ -40,6 +55,10 @@ def make_config(tmp_path: Path) -> Callable[[StubImmich, int], Path]:
         if detection is not None:
             lines += ["[detection]"]
             lines += [f"{key} = {value!r}" for key, value in detection.items()]
+            lines += [""]
+        if clustering is not None:
+            lines += ["[clustering]"]
+            lines += [f"{key} = {value!r}" for key, value in clustering.items()]
             lines += [""]
         config_path.write_text("\n".join(lines))
         return config_path

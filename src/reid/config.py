@@ -44,6 +44,16 @@ PIXEL_SOURCES = ("preview", "original")
 
 
 @dataclass(frozen=True)
+class ClusteringConfig:
+    """Clustering and anchoring thresholds: spec tuning knobs."""
+
+    window_days: int = 1  # 1 = same calendar day
+    distance_threshold: float = 0.5  # cosine distance; to calibrate
+    min_cluster_size: int = 2  # ask-for-name queue minimum
+    face_overlap: float = 0.5  # intersection / face-box-area minimum
+
+
+@dataclass(frozen=True)
 class RunConfig:
     log_level: str = "info"
 
@@ -53,6 +63,7 @@ class Config:
     immich: ImmichConfig
     store_path: Path
     detection: DetectionConfig
+    clustering: ClusteringConfig
     run: RunConfig
 
 
@@ -93,8 +104,17 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
         raise ConfigError(
             f"[detection] pixel_source must be one of {', '.join(PIXEL_SOURCES)}"
         )
-    confidence_floor = _confidence_floor(detection_raw)
+    confidence_floor = _unit_float(detection_raw, "confidence_floor", "[detection]", 0.35)
     min_box_height = _min_box_height(detection_raw)
+
+    clustering_raw = _table(raw, "clustering")
+    window_days = _minimum_int(clustering_raw, "window_days", 1, "[clustering]", 1)
+    distance_threshold = _float_in_range(
+        clustering_raw, "distance_threshold", 0.0, None, "[clustering]", 0.5,
+        "must be a non-negative number",
+    )
+    min_cluster_size = _minimum_int(clustering_raw, "min_cluster_size", 1, "[clustering]", 2)
+    face_overlap = _unit_float(clustering_raw, "face_overlap", "[clustering]", 0.5)
 
     return Config(
         immich=ImmichConfig(
@@ -108,6 +128,12 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
             pixel_source=pixel_source,
             confidence_floor=confidence_floor,
             min_box_height=min_box_height,
+        ),
+        clustering=ClusteringConfig(
+            window_days=window_days,
+            distance_threshold=distance_threshold,
+            min_cluster_size=min_cluster_size,
+            face_overlap=face_overlap,
         ),
         run=RunConfig(log_level=log_level),
     )
@@ -148,17 +174,39 @@ def _positive_float(table: dict[str, Any], key: str, section: str, default: floa
     return float(value)
 
 
+def _float_in_range(
+    table: dict[str, Any],
+    key: str,
+    low: float,
+    high: float | None,
+    section: str,
+    default: float,
+    message: str,
+) -> float:
+    value = table.get(key, default)
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = float(value)
+    in_range = isinstance(value, (int, float)) and value >= low and (high is None or value <= high)
+    if not in_range:
+        raise ConfigError(f"{section} {key} {message}")
+    return float(value)
+
+
+def _unit_float(table: dict[str, Any], key: str, section: str, default: float) -> float:
+    return _float_in_range(table, key, 0.0, 1.0, section, default, "must be a number in [0, 1]")
+
+
+def _minimum_int(table: dict[str, Any], key: str, low: int, section: str, default: int) -> int:
+    value = table.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or value < low:
+        raise ConfigError(f"{section} {key} must be an integer of at least {low}")
+    return value
+
+
 def _log_level(value: Any) -> str:
     if not isinstance(value, str) or value.lower() not in LOG_LEVELS:
         raise ConfigError(f"[run] log_level must be one of {', '.join(LOG_LEVELS)}")
     return value.lower()
-
-
-def _confidence_floor(detection_raw: dict[str, Any]) -> float:
-    value = detection_raw.get("confidence_floor", 0.35)
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
-        raise ConfigError("[detection] confidence_floor must be a number in [0, 1]")
-    return float(value)
 
 
 def _min_box_height(detection_raw: dict[str, Any]) -> float:

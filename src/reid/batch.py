@@ -1,4 +1,4 @@
-"""The batch run: fetch new assets, embed every person appearance.
+"""The batch run: fetch new assets, embed every person appearance, cluster, anchor.
 
 The checkpoint stores the newest asset createdAt seen in a fully completed
 run; the next run fetches strictly newer assets. The checkpoint only advances
@@ -6,21 +6,35 @@ after the whole feed has been processed, so a crashed run resumes from the
 last checkpoint instead of reprocessing the library. Appearances are stored
 keyed by asset and appearance, so reprocessed assets replace their rows
 idempotently.
+
+After the embedding phase the run turns all stored embeddings into
+proposals: clusters are rebuilt from scratch within the timespan window,
+anchored with Immich's named face labels, and persisted in the local
+store. Nothing is written to Immich — proposals exist only locally.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
+
+from .anchoring import AnchorConfig, WindowSummary, build_window
+from .clustering import (
+    average_linkage_clusters,
+    capture_day,
+    cosine_distance_matrix,
+    partition_windows,
+)
 from .config import Config
 from .detector import PersonDetector
 from .embedder import PersonEmbedder
 from .immich import Asset, ImmichClient
 from .pipeline import GateConfig, GateCounts, process_asset
-from .store import NEW_ASSET_FEED, Appearance, Store
+from .store import NEW_ASSET_FEED, Appearance, Proposal, Store
 
 _log = logging.getLogger("reid.batch")
 
@@ -39,6 +53,7 @@ class RunSummary:
     gate_counts: GateCounts
     edge_clipped_kept: int
     assets_without_persons: int
+    windows: tuple[WindowSummary, ...] = ()
 
 
 def run_batch(cfg: Config) -> RunSummary:
@@ -61,6 +76,7 @@ def run_batch(cfg: Config) -> RunSummary:
     embedded, gate_counts, edge_clipped_kept, assets_without_persons = _process_assets(
         assets, client, cfg, store, gate_config
     )
+    windows = _cluster_and_anchor(store, client, cfg)
     checkpoint_after = _advance_checkpoint(store, checkpoint_before, assets)
     _log.info(
         "batch run complete: fetched=%d appearances=%d checkpoint=%s -> %s",
@@ -77,6 +93,7 @@ def run_batch(cfg: Config) -> RunSummary:
         gate_counts=gate_counts,
         edge_clipped_kept=edge_clipped_kept,
         assets_without_persons=assets_without_persons,
+        windows=windows,
     )
 
 
@@ -133,6 +150,7 @@ def _process_assets(
                     box_right=appearance.detection.right,
                     box_bottom=appearance.detection.bottom,
                     pixel_source=cfg.detection.pixel_source,
+                    captured_at=asset.captured_at,
                 )
                 for appearance in kept
             ],
@@ -143,6 +161,86 @@ def _process_assets(
         counts.below_min_height,
     )
     return embedded, counts, edge_clipped_kept, assets_without_persons
+
+
+def _cluster_and_anchor(store: Store, client: ImmichClient, cfg: Config) -> tuple[WindowSummary, ...]:
+    """Rebuild clusters from scratch and anchor them with Immich face labels.
+
+    Runs over every stored appearance (not just this run's new ones), so a
+    changed threshold or freshly named anchor re-proposes the whole window.
+    Faces are fetched once per appearance-bearing asset. The proposals
+    replace the previous run's wholesale; the checkpoint is advanced only
+    after this succeeds, so a crashed run redoes the whole window.
+
+    Appearances whose capture time is unusable cannot be windowed, so they
+    are excluded from clustering entirely — stored, never surfaced — until
+    the store is wiped and rebuilt.
+    """
+    appearances_by_asset = store.appearances_by_asset()
+    if not appearances_by_asset:
+        return ()
+    asset_ids = sorted(appearances_by_asset)
+    faces_by_asset = {asset_id: client.fetch_faces(asset_id) for asset_id in asset_ids}
+    _log.info("anchoring: fetched face detections for %d asset(s)", len(asset_ids))
+
+    day_by_asset: dict[str, date | None] = {
+        asset_id: capture_day(appearances_by_asset[asset_id][0].captured_at)
+        for asset_id in asset_ids
+    }
+    unwindowed = [asset_id for asset_id, day in day_by_asset.items() if day is None]
+    if unwindowed:
+        _log.warning(
+            "%d asset(s) have no usable capture time; their appearances stay "
+            "unproposed until reid-wipe rebuilds the store",
+            len(unwindowed),
+        )
+    window_by_day = partition_windows(
+        (day for day in day_by_asset.values() if day is not None),
+        cfg.clustering.window_days,
+    )
+
+    windows: dict[str, list[Appearance]] = {}
+    for asset_id in asset_ids:
+        day = day_by_asset[asset_id]
+        if day is None:
+            continue
+        windows.setdefault(window_by_day[day], []).extend(appearances_by_asset[asset_id])
+
+    anchor_config = AnchorConfig(
+        face_overlap=cfg.clustering.face_overlap,
+        min_cluster_size=cfg.clustering.min_cluster_size,
+    )
+    proposals: list[Proposal] = []
+    summaries: list[WindowSummary] = []
+    for window in sorted(windows):
+        members = sorted(
+            windows[window], key=lambda appearance: (appearance.asset_id, appearance.appearance)
+        )
+        embeddings = np.stack(
+            [np.frombuffer(appearance.embedding, dtype=np.float32) for appearance in members]
+        )
+        clusters = sorted(
+            average_linkage_clusters(
+                cosine_distance_matrix(embeddings), cfg.clustering.distance_threshold
+            )
+        )
+        outcome = build_window(window, members, faces_by_asset, clusters, anchor_config)
+        proposals.extend(outcome.proposals)
+        summaries.append(outcome.summary)
+        _log.info(
+            "window %s: clusters=%d anchored=%d conflicted=%d anchor_less=%d "
+            "singletons=%d proposals=%d ask_for_name=%d",
+            window,
+            outcome.summary.clusters,
+            outcome.summary.anchored,
+            outcome.summary.conflicted,
+            outcome.summary.anchor_less,
+            outcome.summary.singletons,
+            outcome.summary.proposals,
+            outcome.summary.ask_for_name,
+        )
+    store.replace_proposals(proposals)
+    return tuple(summaries)
 
 
 def _advance_checkpoint(

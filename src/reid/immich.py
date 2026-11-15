@@ -27,7 +27,27 @@ class Asset:
 
     id: str
     created_at: str
+    captured_at: str  # capture time: EXIF when present, else upload time
     original_file_name: str
+
+
+@dataclass(frozen=True)
+class Face:
+    """One Immich face detection on an asset, with its person label if any.
+
+    `person_id` is set only when Immich assigned a person (the appearance
+    is then already labeled); `person_name` is the person's name and is
+    the anchor material when non-empty. Unassigned detections have both
+    as None.
+    """
+
+    asset_id: str
+    left: float
+    top: float
+    right: float
+    bottom: float
+    person_id: str | None
+    person_name: str | None
 
 
 class ImmichClient:
@@ -60,6 +80,7 @@ class ImmichClient:
                     Asset(
                         id=item["id"],
                         created_at=item["createdAt"],
+                        captured_at=_capture_time(item),
                         original_file_name=item.get("originalFileName") or "",
                     )
                 )
@@ -87,6 +108,46 @@ class ImmichClient:
             raise ImmichError(response.status_code, _error_message(response))
         return response.content
 
+    def fetch_faces(self, asset_id: str) -> list[Face]:
+        """Fetch every face detection on one asset, assigned or not.
+
+        `GET /faces?id=<assetId>` returns all detections including
+        unassigned ones (person null) — the anchoring material.
+        """
+        response = httpx.get(
+            f"{self._base_url}/api/faces",
+            params={"id": asset_id},
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if response.status_code >= 400:
+            raise ImmichError(response.status_code, _error_message(response))
+        body: Any = response.json()
+        faces: list[Face] = []
+        for item in body:
+            person = item.get("person")
+            person_id: str | None = None
+            person_name: str | None = None
+            if isinstance(person, dict):
+                raw_id = person.get("id")
+                if isinstance(raw_id, str) and raw_id:
+                    person_id = raw_id
+                raw_name = person.get("name")
+                if isinstance(raw_name, str) and raw_name.strip():
+                    person_name = raw_name.strip()
+            faces.append(
+                Face(
+                    asset_id=asset_id,
+                    left=float(item["boundingBoxX1"]),
+                    top=float(item["boundingBoxY1"]),
+                    right=float(item["boundingBoxX2"]),
+                    bottom=float(item["boundingBoxY2"]),
+                    person_id=person_id,
+                    person_name=person_name,
+                )
+            )
+        return faces
+
     def _search_page(self, created_after: str | None, page: int) -> dict[str, Any]:
         request_body: dict[str, Any] = {
             "type": "IMAGE",
@@ -106,6 +167,16 @@ class ImmichClient:
             raise ImmichError(response.status_code, _error_message(response))
         body: dict[str, Any] = response.json()
         return body
+
+
+def _capture_time(item: dict[str, Any]) -> str:
+    """The asset's capture time: EXIF when present, upload time otherwise."""
+    exif = item.get("exifInfo")
+    if isinstance(exif, dict):
+        date_time_original = exif.get("dateTimeOriginal")
+        if isinstance(date_time_original, str) and date_time_original:
+            return date_time_original
+    return str(item["createdAt"])
 
 
 def _error_message(response: httpx.Response) -> str:

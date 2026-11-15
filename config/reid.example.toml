@@ -43,6 +43,27 @@ confidence_floor = 0.35
 # Dropped counts are reported per run as "below_min_height=N".
 min_box_height = 100.0
 
+[clustering]
+# The timespan window: clusters are rebuilt from scratch within it every
+# run, one window per block of consecutive calendar days. 1 = the same
+# calendar day (default); 2 merges each pair of consecutive days, and so on.
+window_days = 1
+
+# Cosine distance threshold over the L2-normalized embeddings: appearances
+# cluster together while their mean pairwise distance stays at or below
+# this (agglomerative, average linkage). Initial default 0.5 - to
+# calibrate against real data.
+distance_threshold = 0.5
+
+# Minimum number of appearances for an anchor-less cluster to enter the
+# ask-for-name queue. Lone appearances (singletons) are never surfaced.
+min_cluster_size = 2
+
+# Face-to-appearance containment minimum: an Immich face detection claims
+# an appearance when intersection / face-box-area reaches this ratio
+# (best match wins if several faces qualify).
+face_overlap = 0.5
+
 [run]
 # debug | info | warning | error
 log_level = "info"

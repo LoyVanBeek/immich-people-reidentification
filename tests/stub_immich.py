@@ -17,12 +17,14 @@ import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from . import library
 
 API_KEY = "reid-read-scoped-test-key"
 
 SEARCH_PATH = "/api/search/metadata"
+FACES_PATH = "/api/faces"
 
 
 @dataclass
@@ -37,6 +39,8 @@ class StubImmich:
     def __init__(self, assets: list[dict[str, Any]]) -> None:
         self.assets = assets
         self.fail_search_pages: set[int] = set()
+        # asset id -> face detection dicts (assigned or not, the GET /faces shape)
+        self.faces: dict[str, list[dict[str, Any]]] = {}
         self.requests: list[RecordedRequest] = []
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
@@ -64,6 +68,10 @@ class StubImmich:
     def other_requests(self) -> list[RecordedRequest]:
         with self._lock:
             return [r for r in self.requests if r.path.split("?")[0] != SEARCH_PATH]
+
+    def faces_requests(self) -> list[RecordedRequest]:
+        with self._lock:
+            return [r for r in self.requests if r.path.split("?")[0] == FACES_PATH]
 
     # -- request handling ---------------------------------------------------
 
@@ -94,6 +102,10 @@ class StubImmich:
                 if not self._authorized():
                     self._json(401, {"message": "Invalid or missing API key"})
                     return
+                parsed = urlsplit(self.path)
+                if parsed.path == FACES_PATH:
+                    self._faces(parsed)
+                    return
                 asset = stub._asset_for_path(self.path)
                 if asset is None:
                     self._json(404, {"message": "not found"})
@@ -104,6 +116,15 @@ class StubImmich:
                 self.send_header("content-length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
+
+            def _faces(self, parsed: Any) -> None:
+                asset_id = parse_qs(parsed.query).get("id", [None])[0]
+                known = any(a["id"] == asset_id and a["type"] == "IMAGE" for a in stub.assets)
+                if asset_id is None or not known:
+                    self._json(404, {"message": "not found"})
+                    return
+                faces: list[dict[str, Any]] = stub.faces.get(asset_id, [])
+                self._json(200, faces)
 
             def _search(self, body: dict[str, Any]) -> None:
                 page = int(body.get("page", 1))
@@ -135,7 +156,7 @@ class StubImmich:
                 length = int(self.headers.get("content-length", "0"))
                 return self.rfile.read(length)
 
-            def _json(self, status: int, payload: dict[str, Any]) -> None:
+            def _json(self, status: int, payload: Any) -> None:
                 payload_bytes = library.json_bytes(payload)
                 self.send_response(status)
                 self.send_header("content-type", "application/json")

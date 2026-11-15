@@ -54,6 +54,18 @@ def batch(config_path: Path) -> None:
     )
     counts = summary.gate_counts
     click.echo(f"gate drops: low_confidence={counts.low_confidence} below_min_height={counts.below_min_height}")
+    for window in summary.windows:
+        clusters = window.clusters
+
+        def pct(count: int) -> str:
+            return f"{100.0 * count / clusters:.1f}%" if clusters else "0.0%"
+
+        click.echo(
+            f"window {window.window}: appearances={window.appearances} clusters={clusters} "
+            f"anchored={pct(window.anchored)} conflicted={pct(window.conflicted)} "
+            f"anchor_less={pct(window.anchor_less)} singletons={window.singletons} "
+            f"proposals={window.proposals} ask_for_name={window.ask_for_name}"
+        )
 
 
 if __name__ == "__main__":

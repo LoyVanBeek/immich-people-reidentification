@@ -31,6 +31,32 @@ class Appearance:
     box_right: float
     box_bottom: float
     pixel_source: str  # "preview" or "original" — where the crop came from
+    captured_at: str = ""  # asset capture time; upload fallback resolved by the client
+
+    @property
+    def box(self) -> tuple[float, float, float, float]:
+        return (self.box_left, self.box_top, self.box_right, self.box_bottom)
+
+
+# Proposal statuses: what a run concluded about one appearance. Singletons
+# get no proposal row at all; anchor-less clusters below the minimum do not
+# either.
+PROPOSED = "proposed"
+ASK_NAME = "ask_name"
+CONFLICTED = "conflicted"
+LABELED = "labeled"
+
+
+@dataclass(frozen=True)
+class Proposal:
+    """One run's conclusion for one appearance: a proposal or its blocking."""
+
+    asset_id: str
+    appearance: int
+    window: str  # timespan window key the cluster was built in
+    cluster: int  # zero-based cluster index within the window
+    status: str  # one of PROPOSAL_STATUSES
+    proposed_name: str | None  # the unanimous anchor name, when proposed
 
 
 class Store:
@@ -56,13 +82,39 @@ class Store:
                     box_right REAL NOT NULL,
                     box_bottom REAL NOT NULL,
                     pixel_source TEXT NOT NULL,
+                    captured_at TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (asset_id, appearance)
                 )
-                """,
+                """
+            )
+            self._migrate()
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS proposal (
+                    asset_id TEXT NOT NULL,
+                    appearance INTEGER NOT NULL,
+                    window TEXT NOT NULL,
+                    cluster INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    proposed_name TEXT,
+                    PRIMARY KEY (asset_id, appearance)
+                )
+                """
             )
             self._conn.commit()
         except sqlite3.Error as exc:
             raise StoreError(f"cannot initialize the local store at {path}: {exc}") from exc
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a store was first created.
+
+        Stores written before capture times were persisted get an empty
+        captured_at; those appearances are excluded from clustering until
+        the store is wiped and rebuilt.
+        """
+        columns = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(appearance)")}
+        if "captured_at" not in columns:
+            self._conn.execute("ALTER TABLE appearance ADD COLUMN captured_at TEXT NOT NULL DEFAULT ''")
 
     def get_checkpoint(self, feed: str) -> str | None:
         row = self._conn.execute("SELECT value FROM checkpoint WHERE feed = ?", (feed,)).fetchone()
@@ -92,8 +144,8 @@ class Store:
                 """
                 INSERT INTO appearance (
                     asset_id, appearance, embedding, confidence,
-                    box_left, box_top, box_right, box_bottom, pixel_source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    box_left, box_top, box_right, box_bottom, pixel_source, captured_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -106,6 +158,7 @@ class Store:
                         row.box_right,
                         row.box_bottom,
                         row.pixel_source,
+                        row.captured_at,
                     )
                     for row in rows
                 ],
@@ -128,9 +181,55 @@ class Store:
                 box_right=float(row[6]),
                 box_bottom=float(row[7]),
                 pixel_source=str(row[8]),
+                captured_at=str(row[9]),
             )
             by_asset.setdefault(appearance.asset_id, []).append(appearance)
         return by_asset
+
+    # -- proposals ------------------------------------------------------------
+
+    def replace_proposals(self, rows: list[Proposal]) -> None:
+        """Persist one run's proposals, replacing any previous run's.
+
+        Clusters are rebuilt from scratch every run, so the proposal table
+        always mirrors the most recent run's conclusions.
+        """
+        with self._conn:
+            self._conn.execute("DELETE FROM proposal")
+            self._conn.executemany(
+                """
+                INSERT INTO proposal (asset_id, appearance, window, cluster, status, proposed_name)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row.asset_id,
+                        row.appearance,
+                        row.window,
+                        row.cluster,
+                        row.status,
+                        row.proposed_name,
+                    )
+                    for row in rows
+                ],
+            )
+
+    def proposals(self) -> list[Proposal]:
+        """All proposal rows of the most recent run."""
+        rows = self._conn.execute(
+            "SELECT asset_id, appearance, window, cluster, status, proposed_name FROM proposal"
+        ).fetchall()
+        return [
+            Proposal(
+                asset_id=str(row[0]),
+                appearance=int(row[1]),
+                window=str(row[2]),
+                cluster=int(row[3]),
+                status=str(row[4]),
+                proposed_name=None if row[5] is None else str(row[5]),
+            )
+            for row in rows
+        ]
 
     # -- wipe ----------------------------------------------------------------
 
@@ -144,5 +243,6 @@ class Store:
         with self._conn:
             removed = self._conn.execute("SELECT count(*) FROM appearance").fetchone()[0]
             self._conn.execute("DELETE FROM appearance")
+            self._conn.execute("DELETE FROM proposal")
             self._conn.execute("DELETE FROM checkpoint")
         return int(removed)

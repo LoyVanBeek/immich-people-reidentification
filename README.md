@@ -14,16 +14,23 @@ tickets.
 fetches every photo created after the last checkpoint, detects persons in each
 photo with a vendored YOLO11n model, filters detections through ordered
 quality gates, embeds each kept person with OSNet-AIN (512-dim, L2-normalized),
-and persists one appearance per detected person in the local store. The run
-summary reports how many appearances were embedded, how many detections each
-gate dropped, and how many assets contained no person. A second consecutive
-run processes zero assets; a crashed run resumes from the checkpoint rather
-than reprocessing the library.
+and persists one appearance per detected person in the local store. After
+embedding, the run rebuilds clusters from scratch within the timespan window,
+anchors them with Immich's named face labels, and stores the resulting
+proposals locally — nothing is written back to Immich yet. The run summary
+reports how many appearances were embedded, how many detections each gate
+dropped, and, per window: cluster count, anchored %, conflicted %,
+anchor-less %, singleton count, proposals, and ask-for-name entries. A second
+consecutive run processes zero assets but re-anchors everything from scratch;
+a crashed run resumes from the checkpoint rather than reprocessing the
+library.
 
 Detection knobs (pixel source, confidence floor, minimum box height) live in
-the `[detection]` config section. After changing them — or whenever you want
-to rebuild the store from scratch — run `reid-wipe` with the same config: it
-erases all stored embeddings and resets the checkpoint so the next batch
+the `[detection]` config section; clustering and anchoring knobs (timespan
+window, distance threshold, ask-for-name minimum, face containment) live in
+`[clustering]`. After changing them — or whenever you want to rebuild the
+store from scratch — run `reid-wipe` with the same config: it erases all
+stored embeddings and proposals and resets the checkpoint so the next batch
 reprocesses every asset.
 
 ## Operator setup

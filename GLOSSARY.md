@@ -28,9 +28,17 @@ _Avoid_: threshold (there are two gates, and only one is a threshold), filter st
 One person's appearance-group within one timespan window, formed by clustering embeddings. Not a persistent identity: the same human may legitimately form multiple clusters in a window, and clusters are never merged across windows.
 _Avoid_: identity, person
 
+**Timespan window**:
+The calendar-day span (configurable, default: the same calendar day) whose appearances cluster together. Window membership follows the asset capture time (EXIF) in the local timezone, falling back to the upload time; appearances with no usable capture time stay unproposed until the store is rebuilt. Rebuilt from scratch every run.
+_Avoid_: day (ambiguous about the boundary rule), session
+
 **Singleton**:
 A person-appearance that joined no cluster. Stored, but never surfaces in proposals or the ask-for-name queue.
 _Avoid_: noise (that's a judgment, not a state)
+
+**Proposal**:
+The name assignment a run suggests for one appearance, derived from its cluster's unanimous named anchors, persisted locally with a per-appearance status (proposed, ask-for-name, conflicted, already labeled). Nothing reaches Immich without human confirmation.
+_Avoid_: suggestion, write (that's the confirmed Immich side effect)
 
 **Anchor**:
 A *named* Immich face label attached to an appearance in a cluster, used as ground truth to propose a name. Anchors within a cluster must be unanimous; disagreement blocks the cluster. Every cluster is predicted to contain at least one anchor; anchor-less clusters fall back to asking the user for a name.

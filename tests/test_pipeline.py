@@ -33,13 +33,6 @@ EXPECTED_APPEARANCES = {
 }
 
 
-@pytest.fixture
-def detection_stub() -> Iterator[StubImmich]:
-    server = StubImmich(library.detection_registry())
-    server.start()
-    yield server
-    server.stop()
-
 def appearances(config_path) -> dict:
     """The run's product: stored appearances grouped by asset."""
     store_path = config_path.parent / "reid.sqlite3"
