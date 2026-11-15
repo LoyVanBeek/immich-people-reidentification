@@ -25,6 +25,17 @@ def stub() -> Iterator[StubImmich]:
 def detection_stub() -> Iterator[StubImmich]:
     """The full fixture registry: every photo the detection tests need."""
     server = StubImmich(library.detection_registry())
+    server.people = library.people_registry()
+    server.start()
+    yield server
+    server.stop()
+
+
+@pytest.fixture
+def ui_stub() -> Iterator[StubImmich]:
+    """Stub with people for UI tests."""
+    server = StubImmich(library.detection_registry())
+    server.people = library.people_registry()
     server.start()
     yield server
     server.stop()

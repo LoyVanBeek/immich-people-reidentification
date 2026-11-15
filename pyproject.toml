@@ -21,6 +21,7 @@ dependencies = [
 [project.scripts]
 reid-batch = "reid.cli:batch"
 reid-wipe = "reid.wipe:main"
+reid-ui = "reid.server:main"
 
 [dependency-groups]
 dev = [

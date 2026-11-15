@@ -190,6 +190,17 @@ def photo_ids() -> list[str]:
     return [PHOTO_1_STANDING_ID, PHOTO_2_BLURRED_ID, PHOTO_3_GROUP_ID]
 
 
+def people_registry() -> list[dict[str, Any]]:
+    """Known Immich people for the name autocomplete."""
+    return [
+        {"id": "019a5c1e-7c3d-7f0e-9a1b-000000001001", "name": "Alice"},
+        {"id": "019a5c1e-7c3d-7f0e-9a1b-000000001002", "name": "Bob"},
+        {"id": "019a5c1e-7c3d-7f0e-9a1b-000000001003", "name": "Carol"},
+        {"id": "019a5c1e-7c3d-7f0e-9a1b-000000001004", "name": "Dave"},
+        {"id": "019a5c1e-7c3d-7f0e-9a1b-000000001005", "name": "Erin"},
+    ]
+
+
 def asset_bytes(asset_id: str) -> bytes:
     """The fixture image bytes for one asset, read from the photo library."""
     file_name = PHOTO_FILE_NAMES[asset_id]

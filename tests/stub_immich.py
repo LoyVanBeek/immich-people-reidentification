@@ -25,6 +25,7 @@ API_KEY = "reid-read-scoped-test-key"
 
 SEARCH_PATH = "/api/search/metadata"
 FACES_PATH = "/api/faces"
+PEOPLE_PATH = "/api/people"
 
 
 @dataclass
@@ -41,6 +42,8 @@ class StubImmich:
         self.fail_search_pages: set[int] = set()
         # asset id -> face detection dicts (assigned or not, the GET /faces shape)
         self.faces: dict[str, list[dict[str, Any]]] = {}
+        # people for /api/people endpoint
+        self.people: list[dict[str, Any]] = []
         self.requests: list[RecordedRequest] = []
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
@@ -72,6 +75,10 @@ class StubImmich:
     def faces_requests(self) -> list[RecordedRequest]:
         with self._lock:
             return [r for r in self.requests if r.path.split("?")[0] == FACES_PATH]
+
+    def people_requests(self) -> list[RecordedRequest]:
+        with self._lock:
+            return [r for r in self.requests if r.path.split("?")[0] == PEOPLE_PATH]
 
     # -- request handling ---------------------------------------------------
 
@@ -106,6 +113,9 @@ class StubImmich:
                 if parsed.path == FACES_PATH:
                     self._faces(parsed)
                     return
+                if parsed.path == PEOPLE_PATH:
+                    self._people(parsed)
+                    return
                 asset = stub._asset_for_path(self.path)
                 if asset is None:
                     self._json(404, {"message": "not found"})
@@ -125,6 +135,22 @@ class StubImmich:
                     return
                 faces: list[dict[str, Any]] = stub.faces.get(asset_id, [])
                 self._json(200, faces)
+
+            def _people(self, parsed: Any) -> None:
+                # Pagination: page and size params (default page=1, size=500)
+                query = parse_qs(parsed.query)
+                page = int(query.get("page", ["1"])[0])
+                size = int(query.get("size", ["500"])[0])
+                start = (page - 1) * size
+                end = start + size
+                window = stub.people[start:end]
+                has_next = end < len(stub.people)
+                self._json(200, {
+                    "people": window,
+                    "total": len(stub.people),
+                    "hidden": 0,
+                    "hasNextPage": has_next,
+                })
 
             def _search(self, body: dict[str, Any]) -> None:
                 page = int(body.get("page", 1))

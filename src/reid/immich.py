@@ -50,6 +50,14 @@ class Face:
     person_name: str | None
 
 
+@dataclass(frozen=True)
+class Person:
+    """One Immich person (for autocomplete in the confirmation UI)."""
+
+    id: str
+    name: str
+
+
 class ImmichClient:
     def __init__(
         self,
@@ -147,6 +155,33 @@ class ImmichClient:
                 )
             )
         return faces
+
+    def fetch_people(self) -> list[Person]:
+        """Fetch all people from Immich for the name autocomplete.
+
+        Uses `GET /api/people` with pagination (size=1000) to retrieve all people.
+        """
+        people: list[Person] = []
+        page = 1
+        while True:
+            response = httpx.get(
+                f"{self._base_url}/api/people",
+                params={"page": page, "size": 1000},
+                headers=self._headers,
+                timeout=self._timeout,
+            )
+            if response.status_code >= 400:
+                raise ImmichError(response.status_code, _error_message(response))
+            body: dict[str, Any] = response.json()
+            for item in body.get("people", []):
+                person_id = item.get("id")
+                person_name = item.get("name")
+                if isinstance(person_id, str) and person_id and isinstance(person_name, str) and person_name.strip():
+                    people.append(Person(id=person_id, name=person_name.strip()))
+            if not body.get("hasNextPage", False):
+                break
+            page += 1
+        return people
 
     def _search_page(self, created_after: str | None, page: int) -> dict[str, Any]:
         request_body: dict[str, Any] = {
