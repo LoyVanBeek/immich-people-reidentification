@@ -20,7 +20,7 @@ from urllib.parse import urlparse, parse_qs
 
 from .config import Config, load_config, ConfigError
 from .immich import ImmichClient, ImmichError
-from .store import Store, Proposal, Appearance, NEW_ASSET_FEED
+from .store import Store, Proposal, Appearance, NEW_ASSET_FEED, WriteLedgerEntry, Tombstone
 from .anchoring import WindowSummary
 from .batch import run_batch
 
@@ -148,8 +148,21 @@ class UIAPIHandler(BaseHTTPRequestHandler):
             self._serve_static(path.lstrip("/"))
 
     def do_POST(self) -> None:
-        # Read-only API — no POST endpoints in this ticket
-        self.send_error(405, "Method not allowed")
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/confirm":
+            content_length = int(self.headers.get("content-length", "0"))
+            body_bytes = self.rfile.read(content_length)
+            try:
+                body = json.loads(body_bytes)
+            except json.JSONDecodeError:
+                self.send_error(400, "Invalid JSON")
+                return
+            result = self.ui_server.confirm_cluster(body)
+            self._send_json(result)
+        else:
+            self.send_error(405, "Method not allowed")
 
     def log_message(self, fmt: str, *args: Any) -> None:
         _log.debug(fmt % args)
@@ -444,6 +457,269 @@ class UIServer:
                 ask_for_name=ask_for_name,
             ))
         return stats
+
+    def confirm_cluster(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Confirm a cluster: write head boxes to Immich for included appearances.
+
+        The body should contain:
+        - cluster: int (cluster index)
+        - window: str (window key)
+        - name: str (person name, existing or new)
+        - included: list[dict] with asset_id, appearance for included appearances
+        - dry_run: bool (whether this is a dry-run)
+
+        Returns a dict with the results of the confirmation.
+        """
+        from datetime import datetime, timezone
+
+        cluster = int(body.get("cluster", -1))
+        window = str(body.get("window", ""))
+        name = str(body.get("name", "")).strip()
+        included = body.get("included", [])
+        dry_run = bool(body.get("dry_run", True))
+
+        if cluster < 0 or not window or not name:
+            return {"error": "missing required fields"}
+
+        if not included:
+            return {"error": "no appearances included"}
+
+        # Get the proposals for this cluster
+        proposals = self.store.proposals()
+        target_props = [
+            p for p in proposals
+            if p.cluster == cluster and p.window == window and p.status == "proposed"
+        ]
+
+        if not target_props:
+            return {"error": "no writable proposals found for this cluster"}
+
+        # Build a set of included (asset_id, appearance) for quick lookup
+        included_set = {
+            (item["asset_id"], item["appearance"])
+            for item in included
+            if "asset_id" in item and "appearance" in item
+        }
+
+        # Filter to only included proposals
+        write_props = [p for p in target_props if (p.asset_id, p.appearance) in included_set]
+
+        if not write_props:
+            return {"error": "none of the included appearances are writable"}
+
+        # Resolve the target person
+        if dry_run:
+            # In dry-run, we don't actually create the person or write faces
+            # Just return what would happen
+            person_id = "dry-run-person-id"
+            results = []
+            for prop in write_props:
+                appearances_by_asset = self.store.appearances_by_asset()
+                app_list = appearances_by_asset.get(prop.asset_id, [])
+                appearance = next((a for a in app_list if a.appearance == prop.appearance), None)
+                if appearance is None:
+                    results.append({
+                        "asset_id": prop.asset_id,
+                        "appearance": prop.appearance,
+                        "status": "error",
+                        "message": "appearance not found",
+                    })
+                    continue
+
+                # Check if already written (via write ledger)
+                if self.store.has_write_ledger_entry(prop.asset_id, person_id):
+                    results.append({
+                        "asset_id": prop.asset_id,
+                        "appearance": prop.appearance,
+                        "status": "skipped",
+                        "message": "already written (ledger)",
+                    })
+                    continue
+
+                # Check tombstone
+                if self.store.has_tombstone(prop.asset_id, person_id):
+                    results.append({
+                        "asset_id": prop.asset_id,
+                        "appearance": prop.appearance,
+                        "status": "skipped",
+                        "message": "tombstone (manually removed in Immich)",
+                    })
+                    continue
+
+                # Resolve head box
+                person_box = appearance.box
+                head_box = self.immich.resolve_head_box(prop.asset_id, person_box, self.cfg.clustering.face_overlap)
+                if head_box is None:
+                    results.append({
+                        "asset_id": prop.asset_id,
+                        "appearance": prop.appearance,
+                        "status": "skipped",
+                        "message": "no head found",
+                    })
+                    continue
+
+                results.append({
+                    "asset_id": prop.asset_id,
+                    "appearance": prop.appearance,
+                    "status": "would_write",
+                    "head_box": head_box,
+                })
+
+            return {
+                "cluster": cluster,
+                "window": window,
+                "name": name,
+                "dry_run": True,
+                "results": results,
+            }
+
+        # Real write path: need write-scoped API key
+        write_api_key = self.cfg.immich.write_api_key
+        if not write_api_key:
+            return {"error": "write-scoped API key not configured"}
+
+        # Create a write-scoped client
+        write_client = ImmichClient(
+            self.cfg.immich.base_url,
+            write_api_key,
+            page_size=self.cfg.immich.page_size,
+            timeout=self.cfg.immich.timeout_seconds,
+        )
+
+        # Find or create the person
+        existing_person = write_client.find_person_by_name(name)
+        if existing_person is not None:
+            person_id = existing_person.id
+        else:
+            try:
+                created = write_client.create_person(name)
+                person_id = created.id
+            except ImmichError as exc:
+                return {"error": f"failed to create person: {exc.message}"}
+
+        results = []
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        for prop in write_props:
+            appearances_by_asset = self.store.appearances_by_asset()
+            app_list = appearances_by_asset.get(prop.asset_id, [])
+            appearance = next((a for a in app_list if a.appearance == prop.appearance), None)
+            if appearance is None:
+                results.append({
+                    "asset_id": prop.asset_id,
+                    "appearance": prop.appearance,
+                    "status": "error",
+                    "message": "appearance not found",
+                })
+                continue
+
+            # Check if already written (via write ledger) - idempotency
+            if self.store.has_write_ledger_entry(prop.asset_id, person_id):
+                results.append({
+                    "asset_id": prop.asset_id,
+                    "appearance": prop.appearance,
+                    "status": "skipped",
+                    "message": "already written (ledger)",
+                })
+                continue
+
+            # Check tombstone
+            if self.store.has_tombstone(prop.asset_id, person_id):
+                results.append({
+                    "asset_id": prop.asset_id,
+                    "appearance": prop.appearance,
+                    "status": "skipped",
+                    "message": "tombstone (manually removed in Immich)",
+                })
+                continue
+
+            # Check existing faces for conflicts and already-labeled
+            person_box = appearance.box
+            has_conflict, already_labeled = write_client.check_existing_faces(
+                prop.asset_id, person_box, person_id, self.cfg.clustering.face_overlap
+            )
+
+            if already_labeled:
+                # Already has this person's face - skip and journal
+                self.store.add_write_ledger_entry(WriteLedgerEntry(
+                    asset_id=prop.asset_id,
+                    person_id=person_id,
+                    cluster=cluster,
+                    window=window,
+                    timestamp=timestamp,
+                ))
+                results.append({
+                    "asset_id": prop.asset_id,
+                    "appearance": prop.appearance,
+                    "status": "skipped",
+                    "message": "already labeled in Immich",
+                })
+                continue
+
+            if has_conflict:
+                # Different person's overlapping face - conflict
+                results.append({
+                    "asset_id": prop.asset_id,
+                    "appearance": prop.appearance,
+                    "status": "skipped",
+                    "message": "conflict: different person's overlapping face",
+                })
+                continue
+
+            # Resolve head box
+            head_box = write_client.resolve_head_box(prop.asset_id, person_box, self.cfg.clustering.face_overlap)
+            if head_box is None:
+                results.append({
+                    "asset_id": prop.asset_id,
+                    "appearance": prop.appearance,
+                    "status": "skipped",
+                    "message": "no head found",
+                })
+                continue
+
+            # Write the face
+            try:
+                write_client.create_face(
+                    prop.asset_id,
+                    person_id,
+                    head_box[0],
+                    head_box[1],
+                    head_box[2],
+                    head_box[3],
+                )
+            except ImmichError as exc:
+                results.append({
+                    "asset_id": prop.asset_id,
+                    "appearance": prop.appearance,
+                    "status": "error",
+                    "message": f"face creation failed: {exc.message}",
+                })
+                continue
+
+            # Journal the write
+            self.store.add_write_ledger_entry(WriteLedgerEntry(
+                asset_id=prop.asset_id,
+                person_id=person_id,
+                cluster=cluster,
+                window=window,
+                timestamp=timestamp,
+            ))
+
+            results.append({
+                "asset_id": prop.asset_id,
+                "appearance": prop.appearance,
+                "status": "written",
+                "head_box": head_box,
+            })
+
+        return {
+            "cluster": cluster,
+            "window": window,
+            "name": name,
+            "person_id": person_id,
+            "dry_run": False,
+            "results": results,
+        }
 
 
 def serve(config_path: Path, host: str = "0.0.0.0", port: int = 8080) -> None:

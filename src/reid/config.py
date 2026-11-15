@@ -27,6 +27,7 @@ class ConfigError(Exception):
 class ImmichConfig:
     base_url: str
     api_key: str
+    write_api_key: str | None = None  # write-scoped key for confirm/promote
     page_size: int = MAX_PAGE_SIZE
     timeout_seconds: float = 60.0
 
@@ -91,6 +92,9 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
     timeout_seconds = _positive_float(immich_raw, "timeout_seconds", "[immich]", 60.0)
 
     api_key = env.get(API_KEY_ENV, "").strip() or _required_str(immich_raw, "api_key", "[immich]")
+    write_api_key = immich_raw.get("write_api_key")
+    if write_api_key is not None and not isinstance(write_api_key, str):
+        raise ConfigError("[immich] write_api_key must be a string")
 
     store_raw = _table(raw, "store")
     store_path = Path(_required_str(store_raw, "path", "[store]"))
@@ -120,6 +124,7 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
         immich=ImmichConfig(
             base_url=base_url.rstrip("/"),
             api_key=api_key,
+            write_api_key=write_api_key,
             page_size=page_size,
             timeout_seconds=timeout_seconds,
         ),

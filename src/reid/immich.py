@@ -58,6 +58,23 @@ class Person:
     name: str
 
 
+@dataclass(frozen=True)
+class CreatedPerson:
+    """A person created via POST /people."""
+
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class CreatedFace:
+    """A face created via POST /faces."""
+
+    id: str
+    asset_id: str
+    person_id: str
+
+
 class ImmichClient:
     def __init__(
         self,
@@ -182,6 +199,132 @@ class ImmichClient:
                 break
             page += 1
         return people
+
+    def find_person_by_name(self, name: str) -> Person | None:
+        """Find an existing Immich person by exact name match (case-insensitive)."""
+        people = self.fetch_people()
+        name_lower = name.strip().lower()
+        for person in people:
+            if person.name.lower() == name_lower:
+                return person
+        return None
+
+    def create_person(self, name: str) -> CreatedPerson:
+        """Create a new person in Immich via POST /people."""
+        response = httpx.post(
+            f"{self._base_url}/api/people",
+            json={"name": name.strip()},
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if response.status_code >= 400:
+            raise ImmichError(response.status_code, _error_message(response))
+        body: dict[str, Any] = response.json()
+        person_id = body.get("id")
+        person_name = body.get("name")
+        if not isinstance(person_id, str) or not person_id or not isinstance(person_name, str) or not person_name.strip():
+            raise ImmichError(response.status_code, "invalid person creation response")
+        return CreatedPerson(id=person_id, name=person_name.strip())
+
+    def create_face(
+        self,
+        asset_id: str,
+        person_id: str,
+        left: float,
+        top: float,
+        right: float,
+        bottom: float,
+    ) -> CreatedFace:
+        """Create a face entry via POST /faces with a head box bound to a person."""
+        response = httpx.post(
+            f"{self._base_url}/api/faces",
+            json={
+                "assetId": asset_id,
+                "personId": person_id,
+                "boundingBoxX1": left,
+                "boundingBoxY1": top,
+                "boundingBoxX2": right,
+                "boundingBoxY2": bottom,
+            },
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if response.status_code >= 400:
+            raise ImmichError(response.status_code, _error_message(response))
+        body: dict[str, Any] = response.json()
+        face_id = body.get("id")
+        if not isinstance(face_id, str) or not face_id:
+            raise ImmichError(response.status_code, "invalid face creation response")
+        return CreatedFace(id=face_id, asset_id=asset_id, person_id=person_id)
+
+    def resolve_head_box(
+        self,
+        asset_id: str,
+        person_box: tuple[float, float, float, float],
+        min_containment: float = 0.5,
+    ) -> tuple[float, float, float, float] | None:
+        """Resolve a head box for the given person box on the asset.
+
+        Prefers Immich's own unassigned face detections that are contained
+        in the person box (intersection / face-area >= min_containment).
+        Returns the best match's box, or None if no suitable face exists.
+        """
+        faces = self.fetch_faces(asset_id)
+        best_face: Face | None = None
+        best_ratio = -1.0
+        for face in faces:
+            # Only consider unassigned (person_id is None) face detections
+            if face.person_id is not None:
+                continue
+            ratio = self._face_person_overlap(person_box, face)
+            if ratio >= min_containment and ratio > best_ratio:
+                best_face, best_ratio = face, ratio
+        if best_face is not None:
+            return (best_face.left, best_face.top, best_face.right, best_face.bottom)
+        return None
+
+    @staticmethod
+    def _face_person_overlap(
+        person_box: tuple[float, float, float, float],
+        face: Face,
+    ) -> float:
+        """How much of the face box sits inside the person box: intersection / face area."""
+        left = max(person_box[0], face.left)
+        top = max(person_box[1], face.top)
+        right = min(person_box[2], face.right)
+        bottom = min(person_box[3], face.bottom)
+        intersection = max(0.0, right - left) * max(0.0, bottom - top)
+        face_area = max(0.0, face.right - face.left) * max(0.0, face.bottom - face.top)
+        return intersection / face_area if face_area > 0.0 else 0.0
+
+    def check_existing_faces(
+        self,
+        asset_id: str,
+        person_box: tuple[float, float, float, float],
+        target_person_id: str,
+        conflict_containment: float = 0.5,
+    ) -> tuple[bool, bool]:
+        """Check an asset's existing faces for conflicts and already-labeled status.
+
+        Returns (has_conflict, already_labeled):
+        - has_conflict: True if there's a face assigned to a DIFFERENT person
+          whose box overlaps the person box (intersection / face-area >= conflict_containment)
+        - already_labeled: True if there's a face assigned to the target person
+          (regardless of box overlap)
+        """
+        faces = self.fetch_faces(asset_id)
+        has_conflict = False
+        already_labeled = False
+        for face in faces:
+            if face.person_id is None:
+                continue
+            if face.person_id == target_person_id:
+                already_labeled = True
+            else:
+                ratio = self._face_person_overlap(person_box, face)
+                if ratio >= conflict_containment:
+                    has_conflict = True
+        return has_conflict, already_labeled
 
     def _search_page(self, created_after: str | None, page: int) -> dict[str, Any]:
         request_body: dict[str, Any] = {

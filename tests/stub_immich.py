@@ -96,14 +96,29 @@ class StubImmich:
             def do_POST(self) -> None:  # noqa: N802
                 body_bytes = self._read_body()
                 stub._record(self, body_bytes)
-                if self.path.split("?")[0] != SEARCH_PATH:
-                    self._json(404, {"message": "not found"})
+                path = self.path.split("?")[0]
+                if path == SEARCH_PATH:
+                    if not self._authorized():
+                        self._json(401, {"message": "Invalid or missing API key"})
+                        return
+                    body = json.loads(body_bytes)
+                    self._search(body)
                     return
-                if not self._authorized():
-                    self._json(401, {"message": "Invalid or missing API key"})
+                if path == FACES_PATH:
+                    if not self._authorized():
+                        self._json(401, {"message": "Invalid or missing API key"})
+                        return
+                    body = json.loads(body_bytes)
+                    self._create_face(body)
                     return
-                body = json.loads(body_bytes)
-                self._search(body)
+                if path == PEOPLE_PATH:
+                    if not self._authorized():
+                        self._json(401, {"message": "Invalid or missing API key"})
+                        return
+                    body = json.loads(body_bytes)
+                    self._create_person(body)
+                    return
+                self._json(404, {"message": "not found"})
 
             def _serve_get(self) -> None:
                 if not self._authorized():
@@ -174,6 +189,65 @@ class StubImmich:
                         },
                     },
                 )
+
+            def _create_face(self, body: dict[str, Any]) -> None:
+                asset_id = body.get("assetId")
+                person_id = body.get("personId")
+                if not asset_id or not person_id:
+                    self._json(400, {"message": "assetId and personId required"})
+                    return
+                # Check if asset exists
+                known = any(a["id"] == asset_id and a["type"] == "IMAGE" for a in stub.assets)
+                if not known:
+                    self._json(404, {"message": "asset not found"})
+                    return
+                # Check if person exists
+                person_known = any(p["id"] == person_id for p in stub.people)
+                if not person_known:
+                    self._json(404, {"message": "person not found"})
+                    return
+                # Create face
+                face_id = f"face-{asset_id}-{person_id}"
+                face = {
+                    "id": face_id,
+                    "assetId": asset_id,
+                    "personId": person_id,
+                    "boundingBoxX1": body.get("boundingBoxX1"),
+                    "boundingBoxY1": body.get("boundingBoxY1"),
+                    "boundingBoxX2": body.get("boundingBoxX2"),
+                    "boundingBoxY2": body.get("boundingBoxY2"),
+                }
+                # Store the created face for potential future GET /faces queries
+                if asset_id not in stub.faces:
+                    stub.faces[asset_id] = []
+                stub.faces[asset_id].append({
+                    "id": face_id,
+                    "assetId": asset_id,
+                    "person": {"id": person_id, "name": next((p["name"] for p in stub.people if p["id"] == person_id), "")},
+                    "boundingBoxX1": body.get("boundingBoxX1"),
+                    "boundingBoxY1": body.get("boundingBoxY1"),
+                    "boundingBoxX2": body.get("boundingBoxX2"),
+                    "boundingBoxY2": body.get("boundingBoxY2"),
+                    "imageWidth": 1440,
+                    "imageHeight": 1440,
+                    "sourceType": "manual",
+                })
+                self._json(200, face)
+
+            def _create_person(self, body: dict[str, Any]) -> None:
+                name = body.get("name")
+                if not name:
+                    self._json(400, {"message": "name required"})
+                    return
+                # Check if person already exists
+                existing = next((p for p in stub.people if p["name"] == name), None)
+                if existing:
+                    self._json(200, existing)
+                    return
+                person_id = f"person-{len(stub.people) + 1}"
+                person = {"id": person_id, "name": name}
+                stub.people.append(person)
+                self._json(200, person)
 
             def _authorized(self) -> bool:
                 return self.headers.get("x-api-key") == API_KEY
