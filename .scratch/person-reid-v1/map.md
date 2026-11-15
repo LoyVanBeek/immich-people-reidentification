@@ -2,6 +2,8 @@
 
 Labels: wayfinder:map
 
+Spec: [spec.md](spec.md) (Status: ready-for-agent)
+
 ## Destination
 
 A buildable spec for Re-ID v1: a Python (uv-packaged) Docker container on the Pi 5 that, on nightly manual/batch runs, detects persons, stores embeddings incrementally (wipeable via UI), rebuilds clusters from scratch each run within a configurable timespan window (default: same calendar day), anchors clusters via Immich face labels, and proposes name assignments — confirmed through a small web UI with dry-run mode before anything is written back to Immich. Ready for `/to-spec`.
