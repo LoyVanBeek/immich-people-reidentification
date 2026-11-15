@@ -32,6 +32,18 @@ class ImmichConfig:
 
 
 @dataclass(frozen=True)
+class DetectionConfig:
+    """Quality gates and the pixel source: spec tuning knobs."""
+
+    pixel_source: str = "preview"  # Immich preview thumbnail, or "original"
+    confidence_floor: float = 0.35
+    min_box_height: float = 100.0
+
+
+PIXEL_SOURCES = ("preview", "original")
+
+
+@dataclass(frozen=True)
 class RunConfig:
     log_level: str = "info"
 
@@ -40,6 +52,7 @@ class RunConfig:
 class Config:
     immich: ImmichConfig
     store_path: Path
+    detection: DetectionConfig
     run: RunConfig
 
 
@@ -74,6 +87,15 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
     run_raw = _table(raw, "run")
     log_level = _log_level(run_raw.get("log_level", "info"))
 
+    detection_raw = _table(raw, "detection")
+    pixel_source = detection_raw.get("pixel_source", "preview")
+    if not isinstance(pixel_source, str) or pixel_source not in PIXEL_SOURCES:
+        raise ConfigError(
+            f"[detection] pixel_source must be one of {', '.join(PIXEL_SOURCES)}"
+        )
+    confidence_floor = _confidence_floor(detection_raw)
+    min_box_height = _min_box_height(detection_raw)
+
     return Config(
         immich=ImmichConfig(
             base_url=base_url.rstrip("/"),
@@ -82,6 +104,11 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
             timeout_seconds=timeout_seconds,
         ),
         store_path=store_path,
+        detection=DetectionConfig(
+            pixel_source=pixel_source,
+            confidence_floor=confidence_floor,
+            min_box_height=min_box_height,
+        ),
         run=RunConfig(log_level=log_level),
     )
 
@@ -125,3 +152,17 @@ def _log_level(value: Any) -> str:
     if not isinstance(value, str) or value.lower() not in LOG_LEVELS:
         raise ConfigError(f"[run] log_level must be one of {', '.join(LOG_LEVELS)}")
     return value.lower()
+
+
+def _confidence_floor(detection_raw: dict[str, Any]) -> float:
+    value = detection_raw.get("confidence_floor", 0.35)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+        raise ConfigError("[detection] confidence_floor must be a number in [0, 1]")
+    return float(value)
+
+
+def _min_box_height(detection_raw: dict[str, Any]) -> float:
+    value = detection_raw.get("min_box_height", 100)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        raise ConfigError("[detection] min_box_height must be a positive number of pixels")
+    return float(value)

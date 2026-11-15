@@ -7,10 +7,20 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "click>=8.1",
     "httpx>=0.28",
+    # Detector: YOLO11n runtime (weights are vendored; see ADR 0002 for the
+    # runtime choice). Needs no network at runtime — weights load locally.
+    "ultralytics>=8.3",
+    # Embedder: OSNet-AIN x1.0 runs on official PyTorch wheels (ADR 0001),
+    # which ship aarch64 (Pi 5) and x86_64 builds for Python 3.13.
+    "torch>=2.6",
+    # Pixel decode and full-person crop resizing.
+    "opencv-python>=4.10",
+    "numpy>=1.26",
 ]
 
 [project.scripts]
 reid-batch = "reid.cli:batch"
+reid-wipe = "reid.wipe:main"
 
 [dependency-groups]
 dev = [
@@ -35,3 +45,16 @@ python_version = "3.13"
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_return_any = false
+
+# ultralytics and opencv-python ship incomplete or no type hints; skip
+# following them so their internal typing cannot leak into strict checks.
+# The vendored torchreid module is verbatim upstream code: never annotated.
+[[tool.mypy.overrides]]
+module = ["ultralytics.*", "cv2", "reid._vendor.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+ignore_errors = true

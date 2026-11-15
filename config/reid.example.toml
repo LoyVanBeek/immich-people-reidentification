@@ -22,10 +22,32 @@ page_size = 1000
 timeout_seconds = 60
 
 [store]
-# Where the local store (checkpoint, and later embeddings/proposals) lives.
+# Where the local store (checkpoint, embeddings, and later proposals) lives.
 # Mount a volume here so the checkpoint survives container restarts.
 path = "/data/reid.sqlite3"
+
+[detection]
+# Which Immich pixels feed the YOLO person detector.
+#   preview  - the server-generated preview thumbnail (default; smaller
+#              transfers, sufficient for detection at imgsz 640)
+#   original - full-resolution originals (slower; only useful if previews
+#              lose small/distant persons you care about)
+pixel_source = "preview"
+
+# YOLO detections below this confidence are dropped before embedding.
+# Dropped counts are reported per run as "gate drops: low_confidence=N".
+confidence_floor = 0.35
+
+# Detections shorter than this many pixels (in the source image) are dropped;
+# keeps far-away, barely-visible people out of the store.
+# Dropped counts are reported per run as "below_min_height=N".
+min_box_height = 100.0
 
 [run]
 # debug | info | warning | error
 log_level = "info"
+
+# Resetting: `reid-wipe` erases all stored embeddings and resets the batch
+# checkpoint so the next run reprocesses every asset from scratch. Run it
+# only at a batch/configuration boundary (e.g. after changing detection
+# settings) - never as part of a per-asset confirmation flow.

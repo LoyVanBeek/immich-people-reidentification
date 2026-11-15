@@ -68,6 +68,25 @@ class ImmichClient:
                 return assets
             page = int(next_page)
 
+    def fetch_pixels(self, asset_id: str, source: str = "preview") -> bytes:
+        """Fetch one asset's pixels (JPEG bytes) from Immich.
+
+        The default source is Immich's preview thumbnail (~1440px), which
+        the pipeline detects on and crops from; "original" is the fallback
+        knob. No thumbnail-to-original coordinate mapping happens in v1.
+        """
+        path = f"/api/assets/{asset_id}/thumbnail?size=preview"
+        if source == "original":
+            path = f"/api/assets/{asset_id}/original"
+        response = httpx.get(
+            f"{self._base_url}{path}",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if response.status_code >= 400:
+            raise ImmichError(response.status_code, _error_message(response))
+        return response.content
+
     def _search_page(self, created_after: str | None, page: int) -> dict[str, Any]:
         request_body: dict[str, Any] = {
             "type": "IMAGE",

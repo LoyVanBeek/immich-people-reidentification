@@ -40,6 +40,25 @@ PHOTO_8_CREATED_AT = "2026-11-10T13:00:00.000Z"
 PHOTO_9_CREATED_AT = "2026-11-10T13:30:00.000Z"
 PHOTO_10_CREATED_AT = "2026-11-10T14:00:00.000Z"
 
+# Ticket 10: three people with their backs to the camera (must contribute
+# exactly three appearances) and a person clipped by the right image edge
+# (must be kept).
+PHOTO_TRIO_ID = "019a5c1e-7c3d-7f0e-9a1b-00000000000c"
+PHOTO_EDGE_CLIPPED_ID = "019a5c1e-7c3d-7f0e-9a1b-00000000000d"
+
+PHOTO_TRIO_CREATED_AT = "2026-11-10T15:00:00.000Z"
+PHOTO_EDGE_CLIPPED_CREATED_AT = "2026-11-10T15:30:00.000Z"
+
+# Photos that land after the detection-registry checkpoint (15:30), for the
+# incremental run over every detection fixture.
+PHOTO_11_LATE_ID = "019a5c1e-7c3d-7f0e-9a1b-00000000000e"
+PHOTO_12_LATE_ID = "019a5c1e-7c3d-7f0e-9a1b-00000000000f"
+PHOTO_13_LATE_ID = "019a5c1e-7c3d-7f0e-9a1b-000000000010"
+
+PHOTO_11_CREATED_AT = "2026-11-10T16:00:00.000Z"
+PHOTO_12_CREATED_AT = "2026-11-10T16:30:00.000Z"
+PHOTO_13_CREATED_AT = "2026-11-10T17:00:00.000Z"
+
 # The latest createdAt in the seven-photo registry; the checkpoint after a
 # full run over it.
 EXTENDED_PHOTO_MAX_CREATED_AT = PHOTO_7_CREATED_AT
@@ -58,6 +77,11 @@ PHOTO_FILE_NAMES = {
     PHOTO_8_PARK_ID: "reid-fixture-park.jpg",
     PHOTO_9_PARK_ID: "reid-fixture-park.jpg",
     PHOTO_10_PARK_ID: "reid-fixture-park.jpg",
+    PHOTO_TRIO_ID: "reid-fixture-trio.jpg",
+    PHOTO_EDGE_CLIPPED_ID: "reid-fixture-edge-clipped.jpg",
+    PHOTO_11_LATE_ID: "reid-fixture-park.jpg",
+    PHOTO_12_LATE_ID: "reid-fixture-indoor.jpg",
+    PHOTO_13_LATE_ID: "reid-fixture-park.jpg",
 }
 
 
@@ -119,11 +143,43 @@ def late_photos() -> list[dict[str, Any]]:
     ]
 
 
+def detection_late_photos() -> list[dict[str, Any]]:
+    """Photos landing after the detection-registry checkpoint (15:30)."""
+    return [
+        _asset(PHOTO_11_LATE_ID, created_at=PHOTO_11_CREATED_AT, asset_type="IMAGE"),
+        _asset(PHOTO_12_LATE_ID, created_at=PHOTO_12_CREATED_AT, asset_type="IMAGE"),
+        _asset(PHOTO_13_LATE_ID, created_at=PHOTO_13_CREATED_AT, asset_type="IMAGE"),
+    ]
+
+
+def detection_extras() -> list[dict[str, Any]]:
+    """The ticket-10 detection fixtures: a trio and an edge-clipped person."""
+    return [
+        _asset(PHOTO_TRIO_ID, created_at=PHOTO_TRIO_CREATED_AT, asset_type="IMAGE"),
+        _asset(
+            PHOTO_EDGE_CLIPPED_ID,
+            created_at=PHOTO_EDGE_CLIPPED_CREATED_AT,
+            asset_type="IMAGE",
+        ),
+    ]
+
+
+def detection_registry() -> list[dict[str, Any]]:
+    """Every fixture photo exactly once plus the video, for detection runs."""
+    seen = {a["id"] for a in asset_registry()}
+    combined = list(asset_registry())
+    for asset in [*extended_asset_registry(), *detection_extras()]:
+        if asset["id"] not in seen:
+            seen.add(asset["id"])
+            combined.append(asset)
+    return combined
+
+
 def smoke_registry() -> list[dict[str, Any]]:
     """Every photo exactly once plus the video, for the container smoke test."""
     seen = {a["id"] for a in asset_registry()}
     combined = list(asset_registry())
-    for asset in [*extended_asset_registry(), *late_photos()]:
+    for asset in [*extended_asset_registry(), *late_photos(), *detection_extras()]:
         if asset["id"] not in seen:
             seen.add(asset["id"])
             combined.append(asset)

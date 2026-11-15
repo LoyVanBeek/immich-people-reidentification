@@ -25,22 +25,23 @@ def stub() -> Iterator[StubImmich]:
 def make_config(tmp_path: Path) -> Callable[[StubImmich, int], Path]:
     """Write a reid.toml pointing a run at a stub Immich with a fresh store path."""
 
-    def _make(server: StubImmich, page_size: int = 1000) -> Path:
-        config_path = tmp_path / "reid.toml"
-        config_path.write_text(
-            "\n".join(
-                [
-                    "[immich]",
-                    f'base_url = "{server.base_url}"',
-                    f'api_key = "{API_KEY}"',
-                    f"page_size = {page_size}",
-                    "",
-                    "[store]",
-                    f'path = "{tmp_path / "reid.sqlite3"}"',
-                    "",
-                ]
-            )
-        )
+    def _make(server: StubImmich, page_size: int = 1000, detection: dict | None = None, name: str = "reid") -> Path:
+        config_path = tmp_path / f"{name}.toml"
+        lines = [
+            "[immich]",
+            f'base_url = "{server.base_url}"',
+            f'api_key = "{API_KEY}"',
+            f"page_size = {page_size}",
+            "",
+            "[store]",
+            f'path = "{tmp_path / f"{name}.sqlite3"}"',
+            "",
+        ]
+        if detection is not None:
+            lines += ["[detection]"]
+            lines += [f"{key} = {value!r}" for key, value in detection.items()]
+            lines += [""]
+        config_path.write_text("\n".join(lines))
         return config_path
 
     return _make

@@ -20,6 +20,10 @@ _Avoid_: detection, person (ambiguous between the human and the instance)
 The body-region pixels cropped from the photo for one person appearance; the input to the embedding model. Distinct from Immich's face box, which covers only the face and serves anchoring.
 _Avoid_: face crop (that means Immich's face detection region)
 
+**Quality gate**:
+One ordered filter between raw person detections and stored appearances, configured in `[detection]`: the confidence floor drops weak detections, the minimum box height drops barely-visible ones. Edge-clipped boxes are deliberately kept (a clipped person is still an appearance). Each gate's drop count is reported per run.
+_Avoid_: threshold (there are two gates, and only one is a threshold), filter step
+
 **Cluster**:
 One person's appearance-group within one timespan window, formed by clustering embeddings. Not a persistent identity: the same human may legitimately form multiple clusters in a window, and clusters are never merged across windows.
 _Avoid_: identity, person

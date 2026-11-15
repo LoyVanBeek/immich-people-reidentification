@@ -47,6 +47,13 @@ def batch(config_path: Path) -> None:
         f"batch run complete: assets fetched={len(summary.assets)} "
         f"checkpoint={summary.checkpoint_before} -> {summary.checkpoint_after}"
     )
+    click.echo(
+        f"appearances embedded={summary.appearances} "
+        f"edge_clipped_kept={summary.edge_clipped_kept} "
+        f"assets_without_persons={summary.assets_without_persons}"
+    )
+    counts = summary.gate_counts
+    click.echo(f"gate drops: low_confidence={counts.low_confidence} below_min_height={counts.below_min_height}")
 
 
 if __name__ == "__main__":
