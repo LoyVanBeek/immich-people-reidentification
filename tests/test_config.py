@@ -27,6 +27,9 @@ api_key = "k"
 
 [store]
 path = "store.sqlite3"
+
+[head_detection]
+weights_path = "/home/loy/git/immich-person-reidentification/src/reid/weights/scrfd_500m.onnx"
 """
 
 

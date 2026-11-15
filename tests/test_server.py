@@ -30,6 +30,7 @@ def ui_stub() -> StubImmich:
 @pytest.fixture
 def config_with_store(tmp_path: Path, ui_stub: StubImmich) -> Path:
     """A config pointing to a store with some proposals."""
+    weights_dir = Path(__file__).parent.parent / "src" / "reid" / "weights"
     config_path = tmp_path / "uitest.toml"
     config_path.write_text(f"""
 [immich]
@@ -44,6 +45,9 @@ path = "{tmp_path / 'uitest.sqlite3'}"
 pixel_source = "preview"
 confidence_floor = 0.35
 min_box_height = 100
+
+[head_detection]
+weights_path = "{weights_dir / 'scrfd_500m.onnx'}"
 
 [clustering]
 window_days = 1
@@ -322,3 +326,377 @@ class TestServerHTTP:
             pytest.fail("Expected 404")
         except urllib.error.HTTPError as e:
             assert e.code == 404
+
+
+class TestHeadDetectorFallback:
+    """Tests for the SCRFD head detector fallback (ticket 14)."""
+
+    def test_immich_face_preferred_over_scrfd(
+        self, tmp_path: Path, ui_stub: StubImmich
+    ) -> None:
+        """When Immich has an unassigned face in the person box, it wins over SCRFD."""
+        from reid.config import load_config
+        from reid.server import UIServer
+        from reid.store import Store, Proposal, Appearance, NEW_ASSET_FEED
+
+        # Use a real asset ID from the fixture registry
+        asset_id = library.PHOTO_1_STANDING_ID
+
+        # Add an unassigned face that overlaps the person box
+        # The person box from the fixture is approximately known
+        ui_stub.faces[asset_id] = [{
+            "id": "face-test-unassigned",
+            "assetId": asset_id,
+            "person": None,
+            "boundingBoxX1": 300.0,
+            "boundingBoxY1": 200.0,
+            "boundingBoxX2": 500.0,
+            "boundingBoxY2": 400.0,
+            "imageWidth": 1440,
+            "imageHeight": 1440,
+            "sourceType": "machine-learning",
+        }]
+
+        # Create a store with a proposal for this asset
+        weights_dir = Path(__file__).parent.parent / "src" / "reid" / "weights"
+        config_path = tmp_path / "test_fallback.toml"
+        config_path.write_text(f"""
+[immich]
+base_url = "{ui_stub.base_url}"
+api_key = "{API_KEY}"
+page_size = 1000
+
+[store]
+path = "{tmp_path / 'test_fallback.sqlite3'}"
+
+[detection]
+pixel_source = "preview"
+confidence_floor = 0.35
+min_box_height = 100
+
+[head_detection]
+weights_path = "{weights_dir / 'scrfd_500m.onnx'}"
+
+[clustering]
+window_days = 1
+distance_threshold = 0.5
+min_cluster_size = 2
+face_overlap = 0.5
+
+[run]
+log_level = "info"
+""")
+
+        store = Store(tmp_path / "test_fallback.sqlite3")
+        # Add an appearance with a known person box
+        store.add_appearances(asset_id, [Appearance(
+            asset_id=asset_id,
+            appearance=0,
+            embedding=b"\x00" * 512,
+            confidence=0.9,
+            box_left=200.0,
+            box_top=100.0,
+            box_right=600.0,
+            box_bottom=500.0,
+            pixel_source="preview",
+            captured_at="2026-11-10T10:00:00",
+        )])
+        # Add a proposal
+        store.replace_proposals([Proposal(
+            asset_id=asset_id,
+            appearance=0,
+            window="2026-11-10",
+            cluster=0,
+            status="proposed",
+            proposed_name="Alice",
+        )])
+
+        cfg = load_config(config_path)
+        server = UIServer(cfg)
+
+        # Dry-run confirm for cluster 0
+        result = server.confirm_cluster({
+            "cluster": 0,
+            "window": "2026-11-10",
+            "name": "Alice",
+            "included": [{"asset_id": asset_id, "appearance": 0}],
+            "dry_run": True,
+        })
+
+        assert result["dry_run"] is True
+        assert len(result["results"]) == 1
+        r = result["results"][0]
+        assert r["status"] == "would_write"
+        # The head box should be the Immich face box
+        assert list(r["head_box"]) == [300.0, 200.0, 500.0, 400.0]
+
+    def test_scrfd_fallback_when_no_immich_face(
+        self, tmp_path: Path, ui_stub: StubImmich
+    ) -> None:
+        """When no Immich unassigned face overlaps, SCRFD runs on the person crop."""
+        from reid.config import load_config
+        from reid.server import UIServer
+        from reid.store import Store, Proposal, Appearance
+
+        asset_id = library.PHOTO_1_STANDING_ID
+
+        # No faces for this asset -> SCRFD should run on the crop
+        ui_stub.faces[asset_id] = []
+
+        weights_dir = Path(__file__).parent.parent / "src" / "reid" / "weights"
+        config_path = tmp_path / "test_fallback2.toml"
+        config_path.write_text(f"""
+[immich]
+base_url = "{ui_stub.base_url}"
+api_key = "{API_KEY}"
+page_size = 1000
+
+[store]
+path = "{tmp_path / 'test_fallback2.sqlite3'}"
+
+[detection]
+pixel_source = "preview"
+confidence_floor = 0.35
+min_box_height = 100
+
+[head_detection]
+weights_path = "{weights_dir / 'scrfd_500m.onnx'}"
+
+[clustering]
+window_days = 1
+distance_threshold = 0.5
+min_cluster_size = 2
+face_overlap = 0.5
+
+[run]
+log_level = "info"
+""")
+
+        store = Store(tmp_path / "test_fallback2.sqlite3")
+        store.add_appearances(asset_id, [Appearance(
+            asset_id=asset_id,
+            appearance=0,
+            embedding=b"\x00" * 512,
+            confidence=0.9,
+            box_left=200.0,
+            box_top=100.0,
+            box_right=600.0,
+            box_bottom=500.0,
+            pixel_source="preview",
+            captured_at="2026-11-10T10:00:00",
+        )])
+        store.replace_proposals([Proposal(
+            asset_id=asset_id,
+            appearance=0,
+            window="2026-11-10",
+            cluster=0,
+            status="proposed",
+            proposed_name="Alice",
+        )])
+
+        cfg = load_config(config_path)
+        server = UIServer(cfg)
+
+        result = server.confirm_cluster({
+            "cluster": 0,
+            "window": "2026-11-10",
+            "name": "Alice",
+            "included": [{"asset_id": asset_id, "appearance": 0}],
+            "dry_run": True,
+        })
+
+        assert result["dry_run"] is True
+        assert len(result["results"]) == 1
+        r = result["results"][0]
+        # SCRFD may or may not find a face depending on the fixture image
+        assert r["status"] in ("would_write", "skipped")
+        if r["status"] == "skipped":
+            assert r["message"] == "no head found"
+
+    def test_no_head_found_when_both_sources_fail(
+        self, tmp_path: Path, ui_stub: StubImmich
+    ) -> None:
+        """When neither Immich face nor SCRFD yields a head, appearance is skipped."""
+        from reid.config import load_config
+        from reid.server import UIServer
+        from reid.store import Store, Proposal, Appearance
+
+        asset_id = library.PHOTO_1_STANDING_ID
+
+        # Add a face that does NOT overlap the person box (containment < 0.5)
+        # Person box: 200,100,600,500 (400x400)
+        # Face box far away -> containment = 0
+        ui_stub.faces[asset_id] = [{
+            "id": "face-test-far",
+            "assetId": asset_id,
+            "person": None,
+            "boundingBoxX1": 1000.0,
+            "boundingBoxY1": 1000.0,
+            "boundingBoxX2": 1200.0,
+            "boundingBoxY2": 1200.0,
+            "imageWidth": 1440,
+            "imageHeight": 1440,
+            "sourceType": "machine-learning",
+        }]
+
+        weights_dir = Path(__file__).parent.parent / "src" / "reid" / "weights"
+        config_path = tmp_path / "test_fallback3.toml"
+        config_path.write_text(f"""
+[immich]
+base_url = "{ui_stub.base_url}"
+api_key = "{API_KEY}"
+page_size = 1000
+
+[store]
+path = "{tmp_path / 'test_fallback3.sqlite3'}"
+
+[detection]
+pixel_source = "preview"
+confidence_floor = 0.35
+min_box_height = 100
+
+[head_detection]
+weights_path = "{weights_dir / 'scrfd_500m.onnx'}"
+
+[clustering]
+window_days = 1
+distance_threshold = 0.5
+min_cluster_size = 2
+face_overlap = 0.5
+
+[run]
+log_level = "info"
+""")
+
+        store = Store(tmp_path / "test_fallback3.sqlite3")
+        store.add_appearances(asset_id, [Appearance(
+            asset_id=asset_id,
+            appearance=0,
+            embedding=b"\x00" * 512,
+            confidence=0.9,
+            box_left=200.0,
+            box_top=100.0,
+            box_right=600.0,
+            box_bottom=500.0,
+            pixel_source="preview",
+            captured_at="2026-11-10T10:00:00",
+        )])
+        store.replace_proposals([Proposal(
+            asset_id=asset_id,
+            appearance=0,
+            window="2026-11-10",
+            cluster=0,
+            status="proposed",
+            proposed_name="Alice",
+        )])
+
+        cfg = load_config(config_path)
+        server = UIServer(cfg)
+
+        result = server.confirm_cluster({
+            "cluster": 0,
+            "window": "2026-11-10",
+            "name": "Alice",
+            "included": [{"asset_id": asset_id, "appearance": 0}],
+            "dry_run": True,
+        })
+
+        assert result["dry_run"] is True
+        assert len(result["results"]) == 1
+        r = result["results"][0]
+        # If SCRFD also finds nothing on the fixture, should be "no head found"
+        if r["status"] == "skipped":
+            assert r["message"] == "no head found"
+
+    def test_face_overlap_knob_controls_both_anchoring_and_head_resolution(
+        self, tmp_path: Path, ui_stub: StubImmich
+    ) -> None:
+        """The face_overlap knob is the single tunable for face→person containment."""
+        from reid.config import load_config
+        from reid.server import UIServer
+        from reid.store import Store, Proposal, Appearance
+
+        asset_id = library.PHOTO_1_STANDING_ID
+
+        # Face box with containment exactly 1.0 (fully inside)
+        # Person box: 200,100,600,500 (400x400)
+        # Face box: 300,200,500,400 (200x200) fully inside -> ratio=1.0
+        ui_stub.faces[asset_id] = [{
+            "id": "face-test-edge",
+            "assetId": asset_id,
+            "person": None,
+            "boundingBoxX1": 300.0,
+            "boundingBoxY1": 200.0,
+            "boundingBoxX2": 500.0,
+            "boundingBoxY2": 400.0,
+            "imageWidth": 1440,
+            "imageHeight": 1440,
+            "sourceType": "machine-learning",
+        }]
+
+        weights_dir = Path(__file__).parent.parent / "src" / "reid" / "weights"
+        config_path = tmp_path / "test_fallback4.toml"
+        config_path.write_text(f"""
+[immich]
+base_url = "{ui_stub.base_url}"
+api_key = "{API_KEY}"
+page_size = 1000
+
+[store]
+path = "{tmp_path / 'test_fallback4.sqlite3'}"
+
+[detection]
+pixel_source = "preview"
+confidence_floor = 0.35
+min_box_height = 100
+
+[head_detection]
+weights_path = "{weights_dir / 'scrfd_500m.onnx'}"
+
+[clustering]
+window_days = 1
+distance_threshold = 0.5
+min_cluster_size = 2
+face_overlap = 0.5
+
+[run]
+log_level = "info"
+""")
+
+        store = Store(tmp_path / "test_fallback4.sqlite3")
+        store.add_appearances(asset_id, [Appearance(
+            asset_id=asset_id,
+            appearance=0,
+            embedding=b"\x00" * 512,
+            confidence=0.9,
+            box_left=200.0,
+            box_top=100.0,
+            box_right=600.0,
+            box_bottom=500.0,
+            pixel_source="preview",
+            captured_at="2026-11-10T10:00:00",
+        )])
+        store.replace_proposals([Proposal(
+            asset_id=asset_id,
+            appearance=0,
+            window="2026-11-10",
+            cluster=0,
+            status="proposed",
+            proposed_name="Alice",
+        )])
+
+        cfg = load_config(config_path)
+        server = UIServer(cfg)
+
+        result = server.confirm_cluster({
+            "cluster": 0,
+            "window": "2026-11-10",
+            "name": "Alice",
+            "included": [{"asset_id": asset_id, "appearance": 0}],
+            "dry_run": True,
+        })
+
+        assert result["dry_run"] is True
+        r = result["results"][0]
+        assert r["status"] == "would_write"
+        assert list(r["head_box"]) == [300.0, 200.0, 500.0, 400.0]

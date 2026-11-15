@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlparse, parse_qs
 
 from .config import Config, load_config, ConfigError
+from .head_detector import HeadDetectorConfig
 from .immich import ImmichClient, ImmichError
 from .store import Store, Proposal, Appearance, NEW_ASSET_FEED, WriteLedgerEntry, Tombstone
 from .anchoring import WindowSummary
@@ -202,12 +203,20 @@ class UIServer:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.store = Store(cfg.store_path)
+        head_cfg = HeadDetectorConfig(
+            weights_path=cfg.head_detection.weights_path,
+            input_size=cfg.head_detection.input_size,
+            confidence_threshold=cfg.head_detection.confidence_threshold,
+            top_expansion_ratio=cfg.head_detection.top_expansion_ratio,
+            width_expansion_ratio=cfg.head_detection.width_expansion_ratio,
+            nms_threshold=cfg.head_detection.nms_threshold,
+        )
         self.immich = ImmichClient(
             cfg.immich.base_url,
             cfg.immich.api_key,
             page_size=cfg.immich.page_size,
             timeout=cfg.immich.timeout_seconds,
-            head_detector_cfg=cfg.head_detection,
+            head_detector_cfg=head_cfg,
         )
         self._dry_run = True  # default to dry-run; toggled via UI
 
@@ -585,12 +594,20 @@ class UIServer:
             return {"error": "write-scoped API key not configured"}
 
         # Create a write-scoped client (with head detector for fallback)
+        head_cfg = HeadDetectorConfig(
+            weights_path=self.cfg.head_detection.weights_path,
+            input_size=self.cfg.head_detection.input_size,
+            confidence_threshold=self.cfg.head_detection.confidence_threshold,
+            top_expansion_ratio=self.cfg.head_detection.top_expansion_ratio,
+            width_expansion_ratio=self.cfg.head_detection.width_expansion_ratio,
+            nms_threshold=self.cfg.head_detection.nms_threshold,
+        )
         write_client = ImmichClient(
             self.cfg.immich.base_url,
             write_api_key,
             page_size=self.cfg.immich.page_size,
             timeout=self.cfg.immich.timeout_seconds,
-            head_detector_cfg=self.cfg.head_detection,
+            head_detector_cfg=head_cfg,
         )
 
         # Find or create the person

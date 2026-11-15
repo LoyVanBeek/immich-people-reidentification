@@ -45,6 +45,8 @@ def ui_stub() -> Iterator[StubImmich]:
 def make_config(tmp_path: Path) -> Callable[[StubImmich, int], Path]:
     """Write a reid.toml pointing a run at a stub Immich with a fresh store path."""
 
+    weights_dir = Path(__file__).parent.parent / "src" / "reid" / "weights"
+
     def _make(
         server: StubImmich,
         page_size: int = 1000,
@@ -61,6 +63,9 @@ def make_config(tmp_path: Path) -> Callable[[StubImmich, int], Path]:
             "",
             "[store]",
             f'path = "{tmp_path / f"{name}.sqlite3"}"',
+            "",
+            "[head_detection]",
+            f'weights_path = "{weights_dir / "scrfd_500m.onnx"}"',
             "",
         ]
         if detection is not None:
