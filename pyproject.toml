@@ -1,0 +1,37 @@
+[project]
+name = "immich-person-reidentification"
+version = "0.1.0"
+description = "Person re-identification for Immich: detect, embed, cluster, and propose name assignments from a Pi 5 container."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "click>=8.1",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+reid-batch = "reid.cli:batch"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18",
+    "pytest>=8.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.13,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "reid"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false

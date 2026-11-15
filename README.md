@@ -1,0 +1,58 @@
+# Immich Person Re-identification
+
+A Raspberry Pi 5 container that detects persons in new Immich photos, embeds
+them, clusters them within a timespan window, anchors clusters with Immich's
+face labels, and proposes name assignments through a confirmation UI.
+
+Status: early development — the batch container and checkpointed new-asset
+feed are the first slice. See `.scratch/person-reid-v1/` for the spec and
+tickets.
+
+## What works today
+
+`reid-batch` runs one batch: it connects to Immich with a read-scoped API key,
+fetches every photo created after the last checkpoint, and persists the new
+checkpoint. A second consecutive run processes zero assets; a crashed run
+resumes from the checkpoint rather than reprocessing the library.
+
+## Operator setup
+
+1. Create a **read-scoped** API key in Immich (Account Settings → API Keys):
+   enable `asset.read` only. The pipeline reads asset metadata and pixels; it
+   writes nothing to Immich in this slice.
+2. Copy `config/reid.example.toml`, edit the Immich base URL, and either put
+   the API key in the file or (recommended) export `IMMICH_API_KEY`.
+3. Build and run (the image is ARM64; build on the Pi 5 itself or with
+   `docker buildx`):
+
+   ```bash
+   docker buildx build --platform linux/arm64 -t reid-batch .
+   docker run --rm --user "$(id -u):$(id -g)" \
+     -v "$PWD/reid.toml:/etc/reid/reid.toml:ro" \
+     -v /srv/reid-data:/data \
+     reid-batch --config /etc/reid/reid.toml
+   ```
+
+   `--user` makes the container write the store in `/data` as the host user —
+   needed for bind mounts. Schedule the same command nightly via cron or a
+   systemd timer.
+4. Sanity-check the image end-to-end with the stub Immich server used by the
+   test suite: `scripts/container-smoke.sh`.
+
+## Layout
+
+- `src/reid/` — the Python package (batch entry point, Immich client, local store)
+- `tests/` — the container-boundary test seam: a stub Immich HTTP server that
+  records requests, plus a small fixture photo library
+- `config/reid.example.toml` — annotated config file; real settings live in a
+  copy of this file
+- `scripts/container-smoke.sh` — end-to-end smoke test of the built ARM64 image
+- `Dockerfile` — multi-stage build; the image needs no network beyond the Immich API
+
+## Development
+
+```bash
+uv sync            # Python 3.13 environment
+uv run pytest      # container-boundary tests
+uv run mypy src tests
+```

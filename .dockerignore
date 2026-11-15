@@ -1,0 +1,12 @@
+# Local development and CI artifacts
+.git
+.gitignore
+.scratch
+.venv
+__pycache__
+.mypy_cache
+.pytest_cache
+docs
+tests
+Dockerfile
+.dockerignore
