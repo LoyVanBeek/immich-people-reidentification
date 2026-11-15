@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import numpy as np
+
+from .head_detector import HeadDetector, HeadDetectorConfig, HeadDetectorError, map_crop_box_to_full_image
 
 
 class ImmichError(Exception):
@@ -83,11 +86,15 @@ class ImmichClient:
         *,
         page_size: int,
         timeout: float,
+        head_detector_cfg: HeadDetectorConfig | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._page_size = page_size
         self._timeout = timeout
         self._headers = {"x-api-key": api_key, "accept": "application/json"}
+        self._head_detector: HeadDetector | None = None
+        if head_detector_cfg is not None:
+            self._head_detector = HeadDetector(head_detector_cfg)
 
     def fetch_new_assets(self, created_after: str | None = None) -> list[Asset]:
         """Fetch photo assets created strictly after the given checkpoint.
@@ -262,13 +269,17 @@ class ImmichClient:
         asset_id: str,
         person_box: tuple[float, float, float, float],
         min_containment: float = 0.5,
+        pixel_source: str = "preview",
     ) -> tuple[float, float, float, float] | None:
         """Resolve a head box for the given person box on the asset.
 
         Prefers Immich's own unassigned face detections that are contained
         in the person box (intersection / face-area >= min_containment).
-        Returns the best match's box, or None if no suitable face exists.
+        Falls back to SCRFD-500M on the person crop if no suitable Immich
+        face exists. Returns the best match's box in full-image coordinates,
+        or None if no head is found from either source.
         """
+        # 1. Try Immich's unassigned face detections first
         faces = self.fetch_faces(asset_id)
         best_face: Face | None = None
         best_ratio = -1.0
@@ -281,7 +292,54 @@ class ImmichClient:
                 best_face, best_ratio = face, ratio
         if best_face is not None:
             return (best_face.left, best_face.top, best_face.right, best_face.bottom)
-        return None
+
+        # 2. Fallback to SCRFD on the person crop
+        if self._head_detector is None:
+            return None
+
+        try:
+            # Fetch the person crop pixels
+            payload = self.fetch_pixels(asset_id, source=pixel_source)
+            image = self._decode_pixels(payload)
+            crop = self._crop_person(image, person_box)
+            if crop.size == 0:
+                return None
+
+            # Detect face on the crop
+            face_det = self._head_detector.detect(crop)
+            if face_det is None:
+                return None
+
+            # Expand face box to head box in crop coordinates
+            head_box_crop = self._head_detector.expand_face_to_head(face_det, crop.shape[:2])
+
+            # Map back to full-image coordinates
+            full_shape = image.shape[:2]
+            head_box_full = map_crop_box_to_full_image(head_box_crop, person_box, crop.shape[:2], full_shape)
+            return head_box_full
+
+        except (HeadDetectorError, Exception):
+            # Any error in the fallback path: no head found
+            return None
+
+    @staticmethod
+    def _decode_pixels(payload: bytes) -> np.ndarray:
+        """Decode an asset's image bytes into the BGR array the models expect."""
+        import cv2
+        image = cv2.imdecode(np.frombuffer(payload, np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise HeadDetectorError("pixels are not a decodable image")
+        return image
+
+    @staticmethod
+    def _crop_person(image: np.ndarray, person_box: tuple[float, float, float, float]) -> np.ndarray:
+        """The full-person crop: source pixels clamped to the image bounds."""
+        height, width = image.shape[:2]
+        left = max(0, int(person_box[0]))
+        top = max(0, int(person_box[1]))
+        right = min(width, int(person_box[2]))
+        bottom = min(height, int(person_box[3]))
+        return image[top:bottom, left:right]
 
     @staticmethod
     def _face_person_overlap(

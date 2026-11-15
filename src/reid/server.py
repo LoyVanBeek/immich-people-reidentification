@@ -207,6 +207,7 @@ class UIServer:
             cfg.immich.api_key,
             page_size=cfg.immich.page_size,
             timeout=cfg.immich.timeout_seconds,
+            head_detector_cfg=cfg.head_detection,
         )
         self._dry_run = True  # default to dry-run; toggled via UI
 
@@ -548,7 +549,12 @@ class UIServer:
 
                 # Resolve head box
                 person_box = appearance.box
-                head_box = self.immich.resolve_head_box(prop.asset_id, person_box, self.cfg.clustering.face_overlap)
+                head_box = self.immich.resolve_head_box(
+                    prop.asset_id,
+                    person_box,
+                    self.cfg.clustering.face_overlap,
+                    pixel_source=self.cfg.detection.pixel_source,
+                )
                 if head_box is None:
                     results.append({
                         "asset_id": prop.asset_id,
@@ -578,12 +584,13 @@ class UIServer:
         if not write_api_key:
             return {"error": "write-scoped API key not configured"}
 
-        # Create a write-scoped client
+        # Create a write-scoped client (with head detector for fallback)
         write_client = ImmichClient(
             self.cfg.immich.base_url,
             write_api_key,
             page_size=self.cfg.immich.page_size,
             timeout=self.cfg.immich.timeout_seconds,
+            head_detector_cfg=self.cfg.head_detection,
         )
 
         # Find or create the person

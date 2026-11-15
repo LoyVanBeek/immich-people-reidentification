@@ -41,6 +41,18 @@ class DetectionConfig:
     min_box_height: float = 100.0
 
 
+@dataclass(frozen=True)
+class HeadDetectionConfig:
+    """SCRFD head detector configuration: spec tuning knobs."""
+
+    weights_path: str
+    input_size: int = 320
+    confidence_threshold: float = 0.5
+    top_expansion_ratio: float = 0.55
+    width_expansion_ratio: float = 1.8
+    nms_threshold: float = 0.4
+
+
 PIXEL_SOURCES = ("preview", "original")
 
 
@@ -64,6 +76,7 @@ class Config:
     immich: ImmichConfig
     store_path: Path
     detection: DetectionConfig
+    head_detection: HeadDetectionConfig
     clustering: ClusteringConfig
     run: RunConfig
 
@@ -120,6 +133,14 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
     min_cluster_size = _minimum_int(clustering_raw, "min_cluster_size", 1, "[clustering]", 2)
     face_overlap = _unit_float(clustering_raw, "face_overlap", "[clustering]", 0.5)
 
+    head_detection_raw = _table(raw, "head_detection")
+    head_weights_path = _required_str(head_detection_raw, "weights_path", "[head_detection]")
+    head_input_size = _minimum_int(head_detection_raw, "input_size", 1, "[head_detection]", 320)
+    head_confidence_threshold = _unit_float(head_detection_raw, "confidence_threshold", "[head_detection]", 0.5)
+    head_top_expansion_ratio = _positive_float(head_detection_raw, "top_expansion_ratio", "[head_detection]", 0.55)
+    head_width_expansion_ratio = _positive_float(head_detection_raw, "width_expansion_ratio", "[head_detection]", 1.8)
+    head_nms_threshold = _unit_float(head_detection_raw, "nms_threshold", "[head_detection]", 0.4)
+
     return Config(
         immich=ImmichConfig(
             base_url=base_url.rstrip("/"),
@@ -133,6 +154,14 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
             pixel_source=pixel_source,
             confidence_floor=confidence_floor,
             min_box_height=min_box_height,
+        ),
+        head_detection=HeadDetectionConfig(
+            weights_path=head_weights_path,
+            input_size=head_input_size,
+            confidence_threshold=head_confidence_threshold,
+            top_expansion_ratio=head_top_expansion_ratio,
+            width_expansion_ratio=head_width_expansion_ratio,
+            nms_threshold=head_nms_threshold,
         ),
         clustering=ClusteringConfig(
             window_days=window_days,
