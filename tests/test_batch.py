@@ -29,8 +29,8 @@ def test_first_run_fetches_all_new_photos_and_advances_the_checkpoint(
     assert result.exit_code == 0, result.output
     for asset_id in library.photo_ids():
         assert asset_id in result.output, f"missing {asset_id} in run output"
-    # Check for base time without milliseconds (isoformat drops .000)
-    assert library.PHOTO_MAX_CREATED_AT.replace(".000", "") in result.output, (
+    # Check for checkpoint with milliseconds (isoformat_z includes .000Z)
+    assert library.PHOTO_MAX_CREATED_AT in result.output, (
         "checkpoint not reported in run output"
     )
 
