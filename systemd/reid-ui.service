@@ -1,0 +1,45 @@
+# reid-ui.service — Confirmation UI for Immich Person Re-ID
+# Installed by install-systemd.sh to /etc/systemd/system/reid-ui.service
+#
+# This is a long-running service that serves the confirmation UI on
+# port 8080 (by default). It pulls the image from ghcr.io.
+#
+# To enable: systemctl enable --now reid-ui.service
+# To view logs: journalctl -u reid-ui -f
+
+[Unit]
+Description=Immich Person Re-ID confirmation UI
+Documentation=https://github.com/loy/immich-person-reidentification
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/immich-person-reidentification
+Environment=GHCR_IMAGE=ghcr.io/loy/immich-person-reidentification:latest
+# Pull latest image on start
+ExecStartPre=/usr/bin/docker pull ${GHCR_IMAGE}
+# Run the UI server
+ExecStart=/usr/bin/docker run --rm \
+  --platform linux/arm64 \
+  --network host \
+  --user "${UID}:${GID}" \
+  -v /home/pi/immich-person-reidentification/reid.toml:/etc/reid/reid.toml:ro \
+  -v /home/pi/immich-person-reidentification/reid-data:/data \
+  ${GHCR_IMAGE} \
+  reid-ui --config /etc/reid/reid.toml
+# Restart on failure, but not too aggressively
+Restart=on-failure
+RestartSec=30
+# Timeout for graceful shutdown
+TimeoutStopSec=30
+# Log to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reid-ui
+
+[Install]
+WantedBy=multi-user.target

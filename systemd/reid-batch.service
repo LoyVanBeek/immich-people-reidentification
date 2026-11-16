@@ -1,0 +1,43 @@
+# reid-batch.service — Nightly batch run for Immich Person Re-ID
+# Installed by install-systemd.sh to /etc/systemd/system/reid-batch.service
+#
+# This service runs the batch once and exits. It is triggered by
+# reid-batch.timer (see below) on a nightly schedule.
+#
+# The container image is pulled from ghcr.io (see install-systemd.sh
+# for the GHCR_IMAGE variable). If you build locally, change the
+# Image= line to your local tag.
+
+[Unit]
+Description=Immich Person Re-ID batch run
+Documentation=https://github.com/loy/immich-person-reidentification
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/immich-person-reidentification
+Environment=GHCR_IMAGE=ghcr.io/loy/immich-person-reidentification:latest
+# Pull latest image before each run
+ExecStartPre=/usr/bin/docker pull ${GHCR_IMAGE}
+# Run the batch
+ExecStart=/usr/bin/docker run --rm \
+  --platform linux/arm64 \
+  --network host \
+  --user "${UID}:${GID}" \
+  -v /home/pi/immich-person-reidentification/reid.toml:/etc/reid/reid.toml:ro \
+  -v /home/pi/immich-person-reidentification/reid-data:/data \
+  ${GHCR_IMAGE} \
+  reid-batch --config /etc/reid/reid.toml
+# Timeout after 30 minutes (safety net)
+TimeoutSec=1800
+# Log to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reid-batch
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,91 @@
+# docker-compose.yml — Immich Person Re-ID on Raspberry Pi 5
+#
+# Two profiles:
+#   - `local`  : build from source on the Pi (default, no ghcr.io auth needed)
+#   - `remote` : pull from ghcr.io (requires `docker login ghcr.io` or public image)
+#
+# Usage:
+#   docker compose --profile local up -d         # build locally
+#   docker compose --profile remote pull         # pull from ghcr.io
+#   docker compose --profile remote up -d        # run pre-built image
+#
+# Config is read from ./reid.toml (mounted at /etc/reid/reid.toml).
+# Data persists in ./reid-data/ (mounted at /data).
+
+services:
+  reid-batch:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms: ["linux/arm64"]
+    image: reid-batch:local
+    container_name: reid-batch
+    network_mode: host
+    user: "${UID}:${GID}"
+    volumes:
+      - ./reid.toml:/etc/reid/reid.toml:ro
+      - ./reid-data:/data
+    entrypoint: ["reid-batch"]
+    command: ["--config", "/etc/reid/reid.toml"]
+    restart: "no"  # batch runs are triggered manually or via systemd timer
+
+  reid-batch-remote:
+    profiles: ["remote"]
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-loy}/immich-person-reidentification:latest
+    container_name: reid-batch
+    network_mode: host
+    user: "${UID}:${GID}"
+    volumes:
+      - ./reid.toml:/etc/reid/reid.toml:ro
+      - ./reid-data:/data
+    entrypoint: ["reid-batch"]
+    command: ["--config", "/etc/reid/reid.toml"]
+    restart: "no"
+
+  reid-ui:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms: ["linux/arm64"]
+    image: reid-batch:local
+    container_name: reid-ui
+    network_mode: host
+    user: "${UID}:${GID}"
+    volumes:
+      - ./reid.toml:/etc/reid/reid.toml:ro
+      - ./reid-data:/data
+    entrypoint: ["reid-batch"]
+    command: ["reid-ui", "--config", "/etc/reid/reid.toml"]
+    restart: unless-stopped
+
+  reid-ui-remote:
+    profiles: ["remote"]
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-loy}/immich-person-reidentification:latest
+    container_name: reid-ui
+    network_mode: host
+    user: "${UID}:${GID}"
+    volumes:
+      - ./reid.toml:/etc/reid/reid.toml:ro
+      - ./reid-data:/data
+    entrypoint: ["reid-batch"]
+    command: ["reid-ui", "--config", "/etc/reid/reid.toml"]
+    restart: unless-stopped
+
+  reid-wipe:
+    profiles: ["local", "remote"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms: ["linux/arm64"]
+    image: reid-batch:local
+    container_name: reid-wipe
+    network_mode: host
+    user: "${UID}:${GID}"
+    volumes:
+      - ./reid.toml:/etc/reid/reid.toml:ro
+      - ./reid-data:/data
+    entrypoint: ["reid-batch"]
+    command: ["reid-wipe", "--config", "/etc/reid/reid.toml"]
+    restart: "no"
