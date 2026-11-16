@@ -160,9 +160,7 @@ class LightConvStream(nn.Module):
 
     def __init__(self, in_channels, out_channels, depth):
         super().__init__()
-        assert depth >= 1, "depth must be equal to or larger than 1, but got {}".format(
-            depth
-        )
+        assert depth >= 1, f"depth must be equal to or larger than 1, but got {depth}"
         layers = []
         layers += [LightConv3x3(in_channels, out_channels)]
         for i in range(depth - 1):
@@ -387,15 +385,7 @@ class OSNet(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-
-            elif isinstance(m, nn.InstanceNorm2d):
+            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.InstanceNorm2d)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 

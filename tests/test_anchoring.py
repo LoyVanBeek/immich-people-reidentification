@@ -19,7 +19,6 @@ from typing import Any
 
 import pytest
 from click.testing import Result
-
 from reid.clustering import capture_day
 from reid.enums import ProposalStatus
 from reid.store import Store

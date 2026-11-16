@@ -12,7 +12,7 @@ import logging
 import mimetypes
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -136,7 +136,7 @@ class UIAPIHandler(BaseHTTPRequestHandler):
     """HTTP handler for the confirmation UI API."""
 
     # Class variable set by serve()
-    ui_server: "UIServer" = None  # type: ignore[assignment]
+    ui_server: UIServer = None  # type: ignore[assignment]
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -657,7 +657,7 @@ class UIServer:
             )
             ask_for_name = sum(1 for p in props if p.status == ProposalStatus.ASK_NAME)
 
-            def pct(n: int) -> float:
+            def pct(n: int, clusters=clusters) -> float:
                 return 100.0 * n / clusters if clusters else 0.0
 
             stats.append(
@@ -739,7 +739,7 @@ class UIServer:
 
         results = []
         dry_run_actions = []
-        timestamp = datetime.now(timezone.utc)
+        timestamp = datetime.now(UTC)
 
         for prop in write_props:
             appearances_by_asset = self.store.appearances_by_asset()
@@ -822,7 +822,7 @@ class UIServer:
                 return {"error": f"failed to create person: {exc.message}"}
 
         results = []
-        timestamp = datetime.now(timezone.utc)
+        timestamp = datetime.now(UTC)
 
         for prop in write_props:
             appearances_by_asset = self.store.appearances_by_asset()
@@ -894,7 +894,7 @@ class UIServer:
                 return {"error": f"failed to create person: {exc.message}"}
 
         results = []
-        timestamp = datetime.now(timezone.utc)
+        timestamp = datetime.now(UTC)
 
         for action in batch.actions:
             # Only replay actions that would_write

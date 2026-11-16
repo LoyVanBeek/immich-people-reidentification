@@ -9,10 +9,9 @@ sizing, and threshold edges.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import numpy as np
-
 from reid.anchoring import AnchorConfig, build_window, claim_face, face_person_overlap
 from reid.clustering import (
     average_linkage_clusters,
@@ -74,7 +73,6 @@ def test_a_lone_appearance_is_its_own_cluster() -> None:
     assert clusters == [(0,)]
 
 
-UTC = timezone.utc
 OFFSET_EAST = timezone(timedelta(hours=2))  # e.g. Europe/Berlin in summer
 
 

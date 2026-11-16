@@ -75,7 +75,7 @@ def batch(config_path: Path) -> None:
     for window in summary.windows:
         clusters = window.clusters
 
-        def pct(count: int) -> str:
+        def pct(count: int, clusters=clusters) -> str:
             return f"{100.0 * count / clusters:.1f}%" if clusters else "0.0%"
 
         click.echo(

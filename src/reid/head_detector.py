@@ -158,7 +158,7 @@ class HeadDetector:
                     continue
 
                 # Decode bbox: [dx, dy, dw, dh] relative to anchor center
-                dx, dy, dw, dh = bbox_map[j]
+                _dx, _dy, dw, dh = bbox_map[j]
                 cx, cy = anchor_centers[j]
 
                 # SCRFD box decoding: assumes insightface's raw SCRFD ONNX export format.

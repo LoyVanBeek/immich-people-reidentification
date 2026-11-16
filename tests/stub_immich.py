@@ -62,7 +62,7 @@ class StubImmich:
     def base_url(self) -> str:
         assert self._server is not None
         address = self._server.server_address
-        return f"http://{str(address[0])}:{int(address[1])}"
+        return f"http://{address[0]!s}:{int(address[1])}"
 
     def search_requests(self) -> list[RecordedRequest]:
         with self._lock:
@@ -86,14 +86,14 @@ class StubImmich:
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, format: str, *args: Any) -> None:  # noqa: N802
+            def log_message(self, format: str, *args: Any) -> None:
                 pass  # keep test output clean
 
-            def do_GET(self) -> None:  # noqa: N802
+            def do_GET(self) -> None:
                 stub._record(self, b"")
                 self._serve_get()
 
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> None:
                 body_bytes = self._read_body()
                 stub._record(self, body_bytes)
                 path = self.path.split("?")[0]

@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any
 
 from click.testing import CliRunner, Result
-
 from reid.cli import batch
 from reid.config import API_KEY_ENV
 

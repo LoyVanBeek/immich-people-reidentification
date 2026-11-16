@@ -369,7 +369,7 @@ class ImmichClient:
                 "asset %s: Immich error during SCRFD fallback: %s", asset_id, exc
             )
             return None
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Catch-all for truly unexpected errors (OOM, etc.) — log and continue
             _log.exception("asset %s: unexpected error in SCRFD fallback", asset_id)
             return None
