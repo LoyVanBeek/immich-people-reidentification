@@ -227,8 +227,7 @@ function wireEvents() {
   document.querySelectorAll("[data-promote]").forEach(btn => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.promote;
-      toast(`batch ${id} promoted → real writes replayed (not implemented)`);
-      // TODO: ticket #15
+      await promoteBatch(id);
     });
   });
 
@@ -286,6 +285,33 @@ function wirePaneEvents() {
   document.querySelector(".b-name")?.addEventListener("click", () => namePrompt(state.activeCluster));
 }
 
+/* ---------- Dry-run batch actions ---------- */
+async function loadDryRunBatches() {
+  try {
+    const res = await fetch("/api/dry-run-batches");
+    const batches = await res.json();
+    state.dryBatches = batches;
+    render();
+  } catch (err) {
+    _log.warning("failed to load dry-run batches: %s", err);
+  }
+}
+
+async function promoteBatch(id) {
+  try {
+    const res = await fetch(`/api/promote/${id}`, { method: "POST" });
+    const data = await res.json();
+    if (data.error) {
+      toast(`promote failed: ${data.error}`);
+      return;
+    }
+    toast(`promoted batch ${id}: ${data.results.filter(r => r.status === "written").length} written`);
+    loadDryRunBatches();
+  } catch (err) {
+    toast(`promote error: ${err.message}`);
+  }
+}
+
 /* ---------- Actions ---------- */
 function buildAssignment(clusterRow) {
   // Build assignment pane from cluster row + evidence
@@ -322,14 +348,38 @@ async function doConfirm(cluster) {
   // For now just mark as confirmed locally
   c.status = "confirmed";
   const w = state.evidence.filter(e => e.cluster === cluster && e.window === c.window);
+  const included = w.filter(e => e.status === "will_write" && e.included);
   const st = {
-    writable: w.filter(e => e.status === "will_write" && e.included).length,
+    writable: included.length,
     conflicted: w.filter(e => e.status === "conflict_skip").length,
     nohead: w.filter(e => e.status === "no_head_skip").length,
   };
   if (state.dryRun) {
-    // TODO: record dry-run batch in #15
-    toast(`recorded (dry-run): ${c.proposed_name} ×${st.writable} — promote later`);
+    // POST /api/confirm with dry_run: true
+    const body = {
+      cluster: c.cluster,
+      window: c.window,
+      name: c.proposed_name,
+      included: included.map(e => ({ asset_id: e.asset_id, appearance: e.appearance })),
+      dry_run: true,
+    };
+    try {
+      const res = await fetch("/api/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.error) {
+        toast(`dry-run failed: ${data.error}`);
+        return;
+      }
+      toast(`recorded (dry-run): ${data.name} ×${data.results.filter(r => r.status === "would_write").length} — batch ${data.batch_id}`);
+      // Refresh dry-run batch list
+      loadDryRunBatches();
+    } catch (err) {
+      toast(`dry-run error: ${err.message}`);
+    }
   } else {
     toast(`wrote ${st.writable} faces → ${c.proposed_name}` +
       ((st.conflicted || 0) + (st.nohead || 0) ? ` (skipped ${(st.conflicted || 0) + (st.nohead || 0)})` : ""));
@@ -425,7 +475,11 @@ function toast(msg) {
 }
 
 /* ---------- Boot ---------- */
-loadInitialState().catch(err => {
+async function boot() {
+  await loadInitialState();
+  await loadDryRunBatches();
+}
+boot().catch(err => {
   console.error("Failed to load UI state:", err);
   document.getElementById("app").innerHTML = `<div style="padding:20px;color:var(--bad)">Failed to load: ${esc(err.message)}</div>`;
 });

@@ -6,9 +6,14 @@ embeddings, proposals, dry-run batches, the write ledger, and tombstones.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+
+from .enums import DryRunActionStatus, ProposalStatus
 
 # The checkpoint for the checkpointed new-asset feed.
 NEW_ASSET_FEED = "new-assets"
@@ -31,20 +36,11 @@ class Appearance:
     box_right: float
     box_bottom: float
     pixel_source: str  # "preview" or "original" — where the crop came from
-    captured_at: str = ""  # asset capture time; upload fallback resolved by the client
+    captured_at: datetime | None  # asset capture time; None for rows without one
 
     @property
     def box(self) -> tuple[float, float, float, float]:
         return (self.box_left, self.box_top, self.box_right, self.box_bottom)
-
-
-# Proposal statuses: what a run concluded about one appearance. Singletons
-# get no proposal row at all; anchor-less clusters below the minimum do not
-# either.
-PROPOSED = "proposed"
-ASK_NAME = "ask_name"
-CONFLICTED = "conflicted"
-LABELED = "labeled"
 
 
 @dataclass(frozen=True)
@@ -55,7 +51,7 @@ class Proposal:
     appearance: int
     window: str  # timespan window key the cluster was built in
     cluster: int  # zero-based cluster index within the window
-    status: str  # one of PROPOSAL_STATUSES
+    status: ProposalStatus
     proposed_name: str | None  # the unanimous anchor name, when proposed
 
 
@@ -67,7 +63,7 @@ class WriteLedgerEntry:
     person_id: str
     cluster: int
     window: str
-    timestamp: str  # ISO timestamp of the write
+    timestamp: datetime  # wall-clock UTC instant of the write
 
 
 @dataclass(frozen=True)
@@ -76,6 +72,30 @@ class Tombstone:
 
     asset_id: str
     person_id: str
+
+
+@dataclass(frozen=True)
+class DryRunAction:
+    """One action in a dry-run batch: what would be written for one appearance."""
+
+    asset_id: str
+    appearance: int
+    head_box: tuple[float, float, float, float] | None
+    status: DryRunActionStatus
+    message: str | None = None
+
+
+@dataclass(frozen=True)
+class DryRunBatch:
+    """A collection of dry-run confirmations that can be promoted as a unit."""
+
+    id: str
+    name: str
+    window: str
+    cluster: int
+    timestamp: datetime  # wall-clock UTC instant when the batch was recorded
+    actions: list[DryRunAction]
+    promoted_at: datetime | None = None  # set when the batch has been promoted
 
 
 class Store:
@@ -106,7 +126,6 @@ class Store:
                 )
                 """
             )
-            self._migrate()
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS proposal (
@@ -141,9 +160,38 @@ class Store:
                 )
                 """
             )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dry_run_batch (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    window TEXT NOT NULL,
+                    cluster INTEGER NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    promoted_at TEXT
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dry_run_action (
+                    batch_id TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    appearance INTEGER NOT NULL,
+                    head_box TEXT,  -- JSON array [x1, y1, x2, y2] or null
+                    status TEXT NOT NULL,
+                    message TEXT,
+                    PRIMARY KEY (batch_id, asset_id, appearance),
+                    FOREIGN KEY (batch_id) REFERENCES dry_run_batch(id) ON DELETE CASCADE
+                )
+                """
+            )
             self._conn.commit()
+            self._migrate()
         except sqlite3.Error as exc:
-            raise StoreError(f"cannot initialize the local store at {path}: {exc}") from exc
+            raise StoreError(
+                f"cannot initialize the local store at {path}: {exc}"
+            ) from exc
 
     def _migrate(self) -> None:
         """Add columns introduced after a store was first created.
@@ -152,12 +200,24 @@ class Store:
         captured_at; those appearances are excluded from clustering until
         the store is wiped and rebuilt.
         """
-        columns = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(appearance)")}
+        columns = {
+            str(row[1]) for row in self._conn.execute("PRAGMA table_info(appearance)")
+        }
         if "captured_at" not in columns:
-            self._conn.execute("ALTER TABLE appearance ADD COLUMN captured_at TEXT NOT NULL DEFAULT ''")
+            self._conn.execute(
+                "ALTER TABLE appearance ADD COLUMN captured_at TEXT NOT NULL DEFAULT ''"
+            )
+        batch_columns = {
+            str(row[1])
+            for row in self._conn.execute("PRAGMA table_info(dry_run_batch)")
+        }
+        if "promoted_at" not in batch_columns:
+            self._conn.execute("ALTER TABLE dry_run_batch ADD COLUMN promoted_at TEXT")
 
     def get_checkpoint(self, feed: str) -> str | None:
-        row = self._conn.execute("SELECT value FROM checkpoint WHERE feed = ?", (feed,)).fetchone()
+        row = self._conn.execute(
+            "SELECT value FROM checkpoint WHERE feed = ?", (feed,)
+        ).fetchone()
         return None if row is None else str(row[0])
 
     def set_checkpoint(self, feed: str, value: str) -> None:
@@ -198,7 +258,7 @@ class Store:
                         row.box_right,
                         row.box_bottom,
                         row.pixel_source,
-                        row.captured_at,
+                        row.captured_at.isoformat() if row.captured_at else "",
                     )
                     for row in rows
                 ],
@@ -211,6 +271,10 @@ class Store:
         ).fetchall()
         by_asset: dict[str, list[Appearance]] = {}
         for row in rows:
+            captured_at_str = str(row[9])
+            captured_at = (
+                datetime.fromisoformat(captured_at_str) if captured_at_str else None
+            )
             appearance = Appearance(
                 asset_id=str(row[0]),
                 appearance=int(row[1]),
@@ -221,7 +285,7 @@ class Store:
                 box_right=float(row[6]),
                 box_bottom=float(row[7]),
                 pixel_source=str(row[8]),
-                captured_at=str(row[9]),
+                captured_at=captured_at,
             )
             by_asset.setdefault(appearance.asset_id, []).append(appearance)
         return by_asset
@@ -247,7 +311,7 @@ class Store:
                         row.appearance,
                         row.window,
                         row.cluster,
-                        row.status,
+                        row.status.value,
                         row.proposed_name,
                     )
                     for row in rows
@@ -265,7 +329,7 @@ class Store:
                 appearance=int(row[1]),
                 window=str(row[2]),
                 cluster=int(row[3]),
-                status=str(row[4]),
+                status=ProposalStatus(str(row[4])),
                 proposed_name=None if row[5] is None else str(row[5]),
             )
             for row in rows
@@ -282,7 +346,13 @@ class Store:
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(asset_id, person_id) DO NOTHING
                 """,
-                (entry.asset_id, entry.person_id, entry.cluster, entry.window, entry.timestamp),
+                (
+                    entry.asset_id,
+                    entry.person_id,
+                    entry.cluster,
+                    entry.window,
+                    entry.timestamp.isoformat(),
+                ),
             )
 
     def has_write_ledger_entry(self, asset_id: str, person_id: str) -> bool:
@@ -304,10 +374,14 @@ class Store:
                 person_id=str(row[1]),
                 cluster=int(row[2]),
                 window=str(row[3]),
-                timestamp=str(row[4]),
+                timestamp=datetime.fromisoformat(str(row[4])),
             )
             for row in rows
         ]
+
+    def write_ledger(self) -> list[WriteLedgerEntry]:
+        """All write ledger entries (alias for get_write_ledger_entries)."""
+        return self.get_write_ledger_entries()
 
     # -- tombstones -----------------------------------------------------------
 
@@ -331,6 +405,120 @@ class Store:
         ).fetchone()
         return row is not None
 
+    def tombstones(self) -> list[Tombstone]:
+        """All tombstoned asset-person pairs."""
+        rows = self._conn.execute(
+            "SELECT asset_id, person_id FROM tombstone"
+        ).fetchall()
+        return [Tombstone(asset_id=str(row[0]), person_id=str(row[1])) for row in rows]
+
+    # -- dry-run batches ------------------------------------------------------
+
+    def add_dry_run_batch(
+        self,
+        name: str,
+        window: str,
+        cluster: int,
+        timestamp: datetime,
+        actions: list[DryRunAction],
+    ) -> str:
+        """Persist a dry-run batch and return its ID."""
+        batch_id = str(uuid.uuid4())
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO dry_run_batch (id, name, window, cluster, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (batch_id, name, window, cluster, timestamp.isoformat()),
+            )
+            for action in actions:
+                head_box_json = (
+                    json.dumps(list(action.head_box))
+                    if action.head_box is not None
+                    else None
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO dry_run_action (batch_id, asset_id, appearance, head_box, status, message)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        batch_id,
+                        action.asset_id,
+                        action.appearance,
+                        head_box_json,
+                        action.status.value,
+                        action.message,
+                    ),
+                )
+        return batch_id
+
+    def get_dry_run_batch(self, batch_id: str) -> DryRunBatch | None:
+        """Get a dry-run batch by ID, or None if not found."""
+        row = self._conn.execute(
+            "SELECT id, name, window, cluster, timestamp, promoted_at "
+            "FROM dry_run_batch WHERE id = ?",
+            (batch_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        action_rows = self._conn.execute(
+            "SELECT asset_id, appearance, head_box, status, message FROM dry_run_action WHERE batch_id = ? ORDER BY ROWID",
+            (batch_id,),
+        ).fetchall()
+
+        actions = []
+        for arow in action_rows:
+            head_box = json.loads(arow[2]) if arow[2] is not None else None
+            if head_box is not None:
+                head_box = tuple(head_box)
+            actions.append(
+                DryRunAction(
+                    asset_id=str(arow[0]),
+                    appearance=int(arow[1]),
+                    head_box=head_box,
+                    status=DryRunActionStatus(str(arow[3])),
+                    message=arow[4] if arow[4] is not None else None,
+                )
+            )
+
+        promoted_at_str = row[5]
+        return DryRunBatch(
+            id=str(row[0]),
+            name=str(row[1]),
+            window=str(row[2]),
+            cluster=int(row[3]),
+            timestamp=datetime.fromisoformat(str(row[4])),
+            actions=actions,
+            promoted_at=(
+                datetime.fromisoformat(str(promoted_at_str))
+                if promoted_at_str is not None
+                else None
+            ),
+        )
+
+    def get_dry_run_batches(self) -> list[DryRunBatch]:
+        """List all dry-run batches, newest first."""
+        rows = self._conn.execute(
+            "SELECT id FROM dry_run_batch ORDER BY timestamp DESC"
+        ).fetchall()
+        batches = [
+            batch
+            for batch in (self.get_dry_run_batch(str(row[0])) for row in rows)
+            if batch is not None
+        ]
+        return batches
+
+    def mark_dry_run_batch_promoted(self, batch_id: str, timestamp: datetime) -> None:
+        """Record that a dry-run batch has been promoted."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE dry_run_batch SET promoted_at = ? WHERE id = ?",
+                (timestamp.isoformat(), batch_id),
+            )
+
     # -- wipe ----------------------------------------------------------------
 
     def wipe(self) -> int:
@@ -341,10 +529,14 @@ class Store:
         next run re-fetches and re-embeds every photo from scratch.
         """
         with self._conn:
-            removed = self._conn.execute("SELECT count(*) FROM appearance").fetchone()[0]
+            removed = self._conn.execute("SELECT count(*) FROM appearance").fetchone()[
+                0
+            ]
             self._conn.execute("DELETE FROM appearance")
             self._conn.execute("DELETE FROM proposal")
             self._conn.execute("DELETE FROM write_ledger")
             self._conn.execute("DELETE FROM tombstone")
+            self._conn.execute("DELETE FROM dry_run_action")
+            self._conn.execute("DELETE FROM dry_run_batch")
             self._conn.execute("DELETE FROM checkpoint")
         return int(removed)

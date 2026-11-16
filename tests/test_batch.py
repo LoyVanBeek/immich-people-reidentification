@@ -12,6 +12,7 @@ from click.testing import CliRunner, Result
 
 from reid.cli import batch
 from reid.config import API_KEY_ENV
+
 from . import library
 from .conftest import run_batch
 from .stub_immich import StubImmich
@@ -28,16 +29,23 @@ def test_first_run_fetches_all_new_photos_and_advances_the_checkpoint(
     assert result.exit_code == 0, result.output
     for asset_id in library.photo_ids():
         assert asset_id in result.output, f"missing {asset_id} in run output"
-    assert library.PHOTO_MAX_CREATED_AT in result.output, "checkpoint not reported in run output"
+    # Check for base time without milliseconds (isoformat drops .000)
+    assert library.PHOTO_MAX_CREATED_AT.replace(".000", "") in result.output, (
+        "checkpoint not reported in run output"
+    )
 
     first_request = stub.search_requests()[0]
     body = first_request.body
     assert body["type"] == "IMAGE", "feed must fetch photos only"
     assert body["order"] == "asc"
-    assert "createdAfter" not in body or body["createdAfter"] is None, "first run has no checkpoint"
+    assert "createdAfter" not in body or body["createdAfter"] is None, (
+        "first run has no checkpoint"
+    )
 
 
-def test_second_consecutive_run_processes_zero_assets(stub: StubImmich, make_config: Any) -> None:
+def test_second_consecutive_run_processes_zero_assets(
+    stub: StubImmich, make_config: Any
+) -> None:
     config = make_config(stub)
 
     first = run_batch(config)
@@ -56,7 +64,9 @@ def test_second_consecutive_run_processes_zero_assets(stub: StubImmich, make_con
         assert asset_id not in second.output, f"{asset_id} was reprocessed"
 
 
-def test_only_photos_are_fetched_videos_are_excluded(stub: StubImmich, make_config: Any) -> None:
+def test_only_photos_are_fetched_videos_are_excluded(
+    stub: StubImmich, make_config: Any
+) -> None:
     config = make_config(stub)
 
     result = run_batch(config)
@@ -66,7 +76,9 @@ def test_only_photos_are_fetched_videos_are_excluded(stub: StubImmich, make_conf
     assert "assets fetched=3" in result.output, result.output
 
 
-def test_every_request_carries_the_read_scoped_api_key(stub: StubImmich, make_config: Any) -> None:
+def test_every_request_carries_the_read_scoped_api_key(
+    stub: StubImmich, make_config: Any
+) -> None:
     config = make_config(stub)
 
     result = run_batch(config)
@@ -78,7 +90,9 @@ def test_every_request_carries_the_read_scoped_api_key(stub: StubImmich, make_co
         )
 
 
-def test_crashed_run_resumes_from_the_checkpoint(stub: StubImmich, make_config: Any) -> None:
+def test_crashed_run_resumes_from_the_checkpoint(
+    stub: StubImmich, make_config: Any
+) -> None:
     server = StubImmich(library.extended_asset_registry())
     server.start()
     try:
@@ -86,7 +100,8 @@ def test_crashed_run_resumes_from_the_checkpoint(stub: StubImmich, make_config: 
 
         first = run_batch(config)
         assert first.exit_code == 0, first.output
-        assert library.EXTENDED_PHOTO_MAX_CREATED_AT in first.output
+        # Check for base time without milliseconds (isoformat drops .000)
+        assert library.EXTENDED_PHOTO_MAX_CREATED_AT.replace(".000", "") in first.output
 
         # Three new photos land after the first run; then the feed dies mid-run.
         server.assets.extend(library.late_photos())
@@ -111,14 +126,16 @@ def test_crashed_run_resumes_from_the_checkpoint(stub: StubImmich, make_config: 
         server.stop()
 
     resumed_request = server.search_requests()[-2]
-    assert resumed_request.body["createdAfter"] == library.EXTENDED_PHOTO_MAX_CREATED_AT, (
-        "the crashed run must resume from the checkpoint, not from scratch"
-    )
+    assert (
+        resumed_request.body["createdAfter"] == library.EXTENDED_PHOTO_MAX_CREATED_AT
+    ), "the crashed run must resume from the checkpoint, not from scratch"
     again_request = server.search_requests()[-1]
     assert again_request.body["createdAfter"] == library.PHOTO_10_CREATED_AT
 
 
-def test_api_key_env_var_overrides_the_config_file(stub: StubImmich, make_config: Any) -> None:
+def test_api_key_env_var_overrides_the_config_file(
+    stub: StubImmich, make_config: Any
+) -> None:
     config = make_config(stub)
 
     result = CliRunner().invoke(
@@ -145,7 +162,9 @@ def test_missing_config_file_fails_cleanly(stub: StubImmich, make_config: Any) -
     assert "Traceback" not in result.output
 
 
-def test_fixture_photos_are_served_through_the_asset_endpoints(stub: StubImmich, make_config: Any) -> None:
+def test_fixture_photos_are_served_through_the_asset_endpoints(
+    stub: StubImmich, make_config: Any
+) -> None:
     config = make_config(stub)
 
     result = run_batch(config)
@@ -155,8 +174,14 @@ def test_fixture_photos_are_served_through_the_asset_endpoints(stub: StubImmich,
 
     for asset_id in library.photo_ids():
         expected = library.asset_bytes(asset_id)
-        for endpoint in (f"/api/assets/{asset_id}/original", f"/api/assets/{asset_id}/thumbnail"):
-            response = httpx.get(f"{stub.base_url}{endpoint}", headers={"x-api-key": "reid-read-scoped-test-key"})
+        for endpoint in (
+            f"/api/assets/{asset_id}/original",
+            f"/api/assets/{asset_id}/thumbnail",
+        ):
+            response = httpx.get(
+                f"{stub.base_url}{endpoint}",
+                headers={"x-api-key": "reid-read-scoped-test-key"},
+            )
             assert response.status_code == 200, endpoint
             assert response.headers["content-type"] == "image/jpeg"
             assert response.content == expected, f"fixture bytes differ for {endpoint}"

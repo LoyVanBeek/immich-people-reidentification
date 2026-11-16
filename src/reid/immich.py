@@ -8,14 +8,33 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
 import numpy as np
 
-from .head_detector import HeadDetector, HeadDetectorConfig, HeadDetectorError, map_crop_box_to_full_image
+from .head_detector import (
+    HeadDetector,
+    HeadDetectorConfig,
+    HeadDetectorError,
+    map_crop_box_to_full_image,
+)
 
 _log = logging.getLogger("reid.immich")
+
+
+def isoformat_z(dt: datetime) -> str:
+    """Format a datetime as ISO 8601 with a 'Z' suffix when UTC.
+
+    Immich uses ISO 8601 with 'Z' suffix for UTC (e.g., 2026-11-10T17:00:00.000Z).
+    Python's isoformat() uses +00:00 for UTC, which differs in string comparison,
+    so UTC instants are rendered with millisecond precision and a Z suffix;
+    non-UTC values keep their standard isoformat rendering.
+    """
+    if dt.tzinfo is not None and dt.tzinfo.utcoffset(dt) == timedelta(0):
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return dt.isoformat()
 
 
 class ImmichError(Exception):
@@ -32,8 +51,8 @@ class Asset:
     """The asset fields the pipeline needs from the checkpointed feed."""
 
     id: str
-    created_at: str
-    captured_at: str  # capture time: EXIF when present, else upload time
+    created_at: datetime
+    captured_at: datetime  # capture time: EXIF when present, else upload time
     original_file_name: str
 
 
@@ -114,7 +133,7 @@ class ImmichClient:
                 assets.append(
                     Asset(
                         id=item["id"],
-                        created_at=item["createdAt"],
+                        created_at=datetime.fromisoformat(item["createdAt"]),
                         captured_at=_capture_time(item),
                         original_file_name=item.get("originalFileName") or "",
                     )
@@ -203,7 +222,12 @@ class ImmichClient:
             for item in body.get("people", []):
                 person_id = item.get("id")
                 person_name = item.get("name")
-                if isinstance(person_id, str) and person_id and isinstance(person_name, str) and person_name.strip():
+                if (
+                    isinstance(person_id, str)
+                    and person_id
+                    and isinstance(person_name, str)
+                    and person_name.strip()
+                ):
                     people.append(Person(id=person_id, name=person_name.strip()))
             if not body.get("hasNextPage", False):
                 break
@@ -232,7 +256,12 @@ class ImmichClient:
         body: dict[str, Any] = response.json()
         person_id = body.get("id")
         person_name = body.get("name")
-        if not isinstance(person_id, str) or not person_id or not isinstance(person_name, str) or not person_name.strip():
+        if (
+            not isinstance(person_id, str)
+            or not person_id
+            or not isinstance(person_name, str)
+            or not person_name.strip()
+        ):
             raise ImmichError(response.status_code, "invalid person creation response")
         return CreatedPerson(id=person_id, name=person_name.strip())
 
@@ -316,12 +345,18 @@ class ImmichClient:
                 return None
 
             # Expand face box to head box in crop coordinates
-            head_box_crop = self._head_detector.expand_face_to_head(face_det, crop.shape[:2])
+            head_box_crop = self._head_detector.expand_face_to_head(
+                face_det, crop.shape[:2]
+            )
 
             # Map back to full-image coordinates
             full_shape = image.shape[:2]
-            head_box_full = map_crop_box_to_full_image(head_box_crop, person_box, crop.shape[:2], full_shape)
-            _log.debug("asset %s: SCRFD fallback head box = %s", asset_id, head_box_full)
+            head_box_full = map_crop_box_to_full_image(
+                head_box_crop, person_box, crop.shape[:2], full_shape
+            )
+            _log.debug(
+                "asset %s: SCRFD fallback head box = %s", asset_id, head_box_full
+            )
             return head_box_full
 
         except HeadDetectorError as exc:
@@ -330,9 +365,11 @@ class ImmichClient:
             return None
         except ImmichError as exc:
             # Unexpected Immich API error during fallback
-            _log.error("asset %s: Immich error during SCRFD fallback: %s", asset_id, exc)
+            _log.error(
+                "asset %s: Immich error during SCRFD fallback: %s", asset_id, exc
+            )
             return None
-        except Exception as exc:
+        except Exception:
             # Catch-all for truly unexpected errors (OOM, etc.) — log and continue
             _log.exception("asset %s: unexpected error in SCRFD fallback", asset_id)
             return None
@@ -341,13 +378,16 @@ class ImmichClient:
     def _decode_pixels(payload: bytes) -> np.ndarray:
         """Decode an asset's image bytes into the BGR array the models expect."""
         import cv2
+
         image = cv2.imdecode(np.frombuffer(payload, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise HeadDetectorError("pixels are not a decodable image")
         return image
 
     @staticmethod
-    def _crop_person(image: np.ndarray, person_box: tuple[float, float, float, float]) -> np.ndarray:
+    def _crop_person(
+        image: np.ndarray, person_box: tuple[float, float, float, float]
+    ) -> np.ndarray:
         """The full-person crop: source pixels clamped to the image bounds."""
         height, width = image.shape[:2]
         left = max(0, int(person_box[0]))
@@ -420,14 +460,14 @@ class ImmichClient:
         return body
 
 
-def _capture_time(item: dict[str, Any]) -> str:
+def _capture_time(item: dict[str, Any]) -> datetime:
     """The asset's capture time: EXIF when present, upload time otherwise."""
     exif = item.get("exifInfo")
     if isinstance(exif, dict):
         date_time_original = exif.get("dateTimeOriginal")
         if isinstance(date_time_original, str) and date_time_original:
-            return date_time_original
-    return str(item["createdAt"])
+            return datetime.fromisoformat(date_time_original)
+    return datetime.fromisoformat(item["createdAt"])
 
 
 def _error_message(response: httpx.Response) -> str:

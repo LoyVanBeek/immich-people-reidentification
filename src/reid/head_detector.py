@@ -9,12 +9,10 @@ the person box.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
 
 import cv2
 import numpy as np
-import onnxruntime as ort  # type: ignore[import-untyped]
+import onnxruntime as ort
 
 
 @dataclass(frozen=True)
@@ -58,7 +56,9 @@ class HeadDetector:
         try:
             return ort.InferenceSession(weights_path, providers=providers)
         except Exception as exc:
-            raise HeadDetectorError(f"failed to load SCRFD weights from {weights_path}: {exc}") from exc
+            raise HeadDetectorError(
+                f"failed to load SCRFD weights from {weights_path}: {exc}"
+            ) from exc
 
     def detect(self, crop_bgr: np.ndarray) -> FaceDetection | None:
         """Detect the best face in a person crop.
@@ -76,7 +76,9 @@ class HeadDetector:
         # Parse outputs (SCRFD multi-scale: cls, bbox, kps for each stride)
         # Output order typically: [cls_8, bbox_8, kps_8, cls_16, bbox_16, kps_16, cls_32, bbox_32, kps_32]
         # We only need cls and bbox; kps are ignored for head box expansion.
-        detections = self._postprocess(outputs, scale, pad_left, pad_top, crop_bgr.shape[:2])
+        detections = self._postprocess(
+            outputs, scale, pad_left, pad_top, crop_bgr.shape[:2]
+        )
 
         if not detections:
             return None
@@ -95,13 +97,19 @@ class HeadDetector:
         new_width = int(width * scale)
 
         # Resize
-        resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+        resized = cv2.resize(
+            image, (new_width, new_height), interpolation=cv2.INTER_LINEAR
+        )
 
         # Pad to square
-        padded = np.full((self._cfg.input_size, self._cfg.input_size, 3), 114, dtype=np.uint8)  # 114 = typical SCRFD pad value
+        padded = np.full(
+            (self._cfg.input_size, self._cfg.input_size, 3), 114, dtype=np.uint8
+        )  # 114 = typical SCRFD pad value
         pad_top = (self._cfg.input_size - new_height) // 2
         pad_left = (self._cfg.input_size - new_width) // 2
-        padded[pad_top:pad_top + new_height, pad_left:pad_left + new_width] = resized
+        padded[pad_top : pad_top + new_height, pad_left : pad_left + new_width] = (
+            resized
+        )
 
         # BGR to RGB, normalize to [0, 1], HWC -> CHW, add batch dim
         rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
@@ -199,7 +207,9 @@ class HeadDetector:
         if not detections:
             return []
 
-        boxes = np.array([[d.left, d.top, d.right, d.bottom] for d in detections], dtype=np.float32)
+        boxes = np.array(
+            [[d.left, d.top, d.right, d.bottom] for d in detections], dtype=np.float32
+        )
         scores = np.array([d.score for d in detections], dtype=np.float32)
 
         # Standard NMS
@@ -231,7 +241,9 @@ class HeadDetector:
 
         return [detections[i] for i in keep]
 
-    def expand_face_to_head(self, face: FaceDetection, crop_shape: tuple[int, int]) -> tuple[float, float, float, float]:
+    def expand_face_to_head(
+        self, face: FaceDetection, crop_shape: tuple[int, int]
+    ) -> tuple[float, float, float, float]:
         """Expand a face box to a head box using geometric expansion.
 
         Expansion strategy (calibrated against Immich's SCRFD boxes):
@@ -241,7 +253,6 @@ class HeadDetector:
         - Clamp to crop bounds
         """
         crop_h, crop_w = crop_shape
-        face_w = face.right - face.left
         face_h = face.bottom - face.top
 
         # Expand

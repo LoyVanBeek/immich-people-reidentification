@@ -47,7 +47,7 @@ class PersonEmbedder:
         for key, value in state_dict.items():
             # Drop the DataParallel `module.` prefix.
             if key.startswith("module."):
-                key = key[len("module."):]
+                key = key[len("module.") :]
             if key in model_state and model_state[key].shape == value.shape:
                 compatible[key] = value
         if not compatible:

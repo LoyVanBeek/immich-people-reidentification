@@ -7,12 +7,13 @@ behavior the clustering slice depends on.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from reid.enums import ProposalStatus
 from reid.store import (
-    ASK_NAME,
     Appearance,
     Proposal,
     Store,
@@ -24,7 +25,9 @@ def store(tmp_path: Path) -> Store:
     return Store(tmp_path / "store.sqlite3")
 
 
-def appearance_row(asset_id: str, index: int = 0, captured_at: str = "2026-11-10T08:00:00.000Z") -> Appearance:
+def appearance_row(
+    asset_id: str, index: int = 0, captured_at: datetime | None = None
+) -> Appearance:
     return Appearance(
         asset_id=asset_id,
         appearance=index,
@@ -35,50 +38,61 @@ def appearance_row(asset_id: str, index: int = 0, captured_at: str = "2026-11-10
         box_right=3.0,
         box_bottom=4.0,
         pixel_source="preview",
-        captured_at=captured_at,
+        captured_at=captured_at or datetime.fromisoformat("2026-11-10T08:00:00.000Z"),
     )
 
 
 def test_appearances_keep_their_capture_time(store: Store) -> None:
-    store.add_appearances("asset-1", [appearance_row("asset-1")])
+    captured_at = datetime.fromisoformat("2026-11-10T08:00:00.000Z")
+    store.add_appearances(
+        "asset-1", [appearance_row("asset-1", captured_at=captured_at)]
+    )
     rows = store.appearances_by_asset()["asset-1"]
     assert len(rows) == 1
-    assert rows[0].captured_at == "2026-11-10T08:00:00.000Z"
+    assert rows[0].captured_at == captured_at
 
 
 def test_proposals_round_trip_through_the_store(store: Store) -> None:
     rows = [
-        Proposal("asset-1", 0, "2026-11-10", 0, "proposed", "Albert"),
-        Proposal("asset-1", 1, "2026-11-10", 0, "labeled", None),
-        Proposal("asset-2", 0, "2026-11-10", 1, "ask_name", None),
+        Proposal("asset-1", 0, "2026-11-10", 0, ProposalStatus.PROPOSED, "Albert"),
+        Proposal("asset-1", 1, "2026-11-10", 0, ProposalStatus.LABELED, None),
+        Proposal("asset-2", 0, "2026-11-10", 1, ProposalStatus.ASK_NAME, None),
     ]
     store.replace_proposals(rows)
 
     read_back = store.proposals()
     assert len(read_back) == 3
-    by_asset = {(proposal.asset_id, proposal.appearance): proposal for proposal in read_back}
+    by_asset = {
+        (proposal.asset_id, proposal.appearance): proposal for proposal in read_back
+    }
     assert by_asset[("asset-1", 0)].proposed_name == "Albert"
-    assert by_asset[("asset-1", 0)].status == "proposed"
+    assert by_asset[("asset-1", 0)].status == ProposalStatus.PROPOSED
     assert by_asset[("asset-1", 0)].window == "2026-11-10"
     assert by_asset[("asset-1", 0)].cluster == 0
-    assert by_asset[("asset-1", 1)].status == "labeled"
-    assert by_asset[("asset-2", 0)].status == ASK_NAME
+    assert by_asset[("asset-1", 1)].status == ProposalStatus.LABELED
+    assert by_asset[("asset-2", 0)].status == ProposalStatus.ASK_NAME
 
 
 def test_each_run_replaces_the_previous_proposals_wholesale(store: Store) -> None:
-    store.replace_proposals([Proposal("asset-1", 0, "2026-11-10", 0, "proposed", "Albert")])
+    store.replace_proposals(
+        [Proposal("asset-1", 0, "2026-11-10", 0, ProposalStatus.PROPOSED, "Albert")]
+    )
 
-    store.replace_proposals([Proposal("asset-2", 0, "2026-11-10", 0, "ask_name", None)])
+    store.replace_proposals(
+        [Proposal("asset-2", 0, "2026-11-10", 0, ProposalStatus.ASK_NAME, None)]
+    )
 
     read_back = store.proposals()
     assert len(read_back) == 1
     assert read_back[0].asset_id == "asset-2"
-    assert read_back[0].status == "ask_name"
+    assert read_back[0].status == ProposalStatus.ASK_NAME
 
 
 def test_a_wipe_erases_proposals_together_with_the_appearances(store: Store) -> None:
     store.add_appearances("asset-1", [appearance_row("asset-1")])
-    store.replace_proposals([Proposal("asset-1", 0, "2026-11-10", 0, "proposed", "Albert")])
+    store.replace_proposals(
+        [Proposal("asset-1", 0, "2026-11-10", 0, ProposalStatus.PROPOSED, "Albert")]
+    )
 
     removed = store.wipe()
 
@@ -87,7 +101,9 @@ def test_a_wipe_erases_proposals_together_with_the_appearances(store: Store) -> 
     assert store.proposals() == []
     # The store stays usable afterwards.
     store.add_appearances("asset-2", [appearance_row("asset-2")])
-    store.replace_proposals([Proposal("asset-2", 0, "2026-11-10", 0, "proposed", "Bea")])
+    store.replace_proposals(
+        [Proposal("asset-2", 0, "2026-11-10", 0, ProposalStatus.PROPOSED, "Bea")]
+    )
     assert len(store.proposals()) == 1
 
 
@@ -123,8 +139,10 @@ def test_a_store_written_before_capture_times_migrates(tmp_path: Path) -> None:
     store = Store(legacy)
     rows = store.appearances_by_asset()["asset-old"]
     assert len(rows) == 1
-    assert rows[0].captured_at == ""
+    assert rows[0].captured_at == datetime.min
 
     store.add_appearances("asset-new", [appearance_row("asset-new")])
     by_asset = store.appearances_by_asset()
-    assert by_asset["asset-new"][0].captured_at == "2026-11-10T08:00:00.000Z"
+    assert by_asset["asset-new"][0].captured_at == datetime.fromisoformat(
+        "2026-11-10T08:00:00.000Z"
+    )

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import click
 
 from .batch import run_batch
 from .config import ConfigError, load_config
-from .immich import ImmichError
+from .immich import ImmichError, isoformat_z
 from .store import StoreError
 
 _FATAL_ERRORS = (ImmichError, ConfigError, StoreError)
@@ -33,7 +34,11 @@ def batch(config_path: Path) -> None:
         raise SystemExit(1) from None
 
     level = getattr(logging, cfg.run.log_level.upper())
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=sys.stderr)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
 
     try:
         summary = run_batch(cfg)
@@ -41,11 +46,22 @@ def batch(config_path: Path) -> None:
         click.echo(f"error: {exc}", err=True)
         raise SystemExit(1) from None
 
+    def _fmt_iso(dt: datetime | None) -> str:
+        """Format datetime as ISO string with Z suffix for UTC."""
+        if dt is None:
+            return ""
+        return isoformat_z(dt)
+
     for asset in summary.assets:
-        click.echo(f"asset {asset.id} {asset.original_file_name} created_at={asset.created_at}")
+        click.echo(
+            f"asset {asset.id} {asset.original_file_name} created_at={_fmt_iso(asset.created_at)}"
+        )
+    # Format datetimes as ISO strings with Z suffix for consistent output
+    cp_before = _fmt_iso(summary.checkpoint_before)
+    cp_after = _fmt_iso(summary.checkpoint_after)
     click.echo(
         f"batch run complete: assets fetched={len(summary.assets)} "
-        f"checkpoint={summary.checkpoint_before} -> {summary.checkpoint_after}"
+        f"checkpoint={cp_before} -> {cp_after}"
     )
     click.echo(
         f"appearances embedded={summary.appearances} "
@@ -53,7 +69,9 @@ def batch(config_path: Path) -> None:
         f"assets_without_persons={summary.assets_without_persons}"
     )
     counts = summary.gate_counts
-    click.echo(f"gate drops: low_confidence={counts.low_confidence} below_min_height={counts.below_min_height}")
+    click.echo(
+        f"gate drops: low_confidence={counts.low_confidence} below_min_height={counts.below_min_height}"
+    )
     for window in summary.windows:
         clusters = window.clusters
 

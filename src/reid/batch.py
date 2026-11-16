@@ -32,9 +32,9 @@ from .clustering import (
 from .config import Config
 from .detector import PersonDetector
 from .embedder import PersonEmbedder
-from .immich import Asset, ImmichClient
+from .immich import Asset, ImmichClient, isoformat_z
 from .pipeline import GateConfig, GateCounts, process_asset
-from .store import NEW_ASSET_FEED, Appearance, Proposal, Store
+from .store import NEW_ASSET_FEED, Appearance, Proposal, Store, Tombstone
 
 _log = logging.getLogger("reid.batch")
 
@@ -47,8 +47,8 @@ OSNET_AIN_WEIGHTS = WEIGHTS_DIR / "osnet_ain_x1_0_combineall.pth"
 @dataclass(frozen=True)
 class RunSummary:
     assets: tuple[Asset, ...]
-    checkpoint_before: str | None
-    checkpoint_after: str | None
+    checkpoint_before: datetime | None
+    checkpoint_after: datetime | None
     appearances: int
     gate_counts: GateCounts
     edge_clipped_kept: int
@@ -66,6 +66,9 @@ def run_batch(cfg: Config) -> RunSummary:
     )
 
     checkpoint_before = store.get_checkpoint(NEW_ASSET_FEED)
+    checkpoint_before_dt = (
+        datetime.fromisoformat(checkpoint_before) if checkpoint_before else None
+    )
     _log.info("batch run starting: checkpoint=%s", checkpoint_before)
 
     assets = client.fetch_new_assets(checkpoint_before)
@@ -77,17 +80,18 @@ def run_batch(cfg: Config) -> RunSummary:
         assets, client, cfg, store, gate_config
     )
     windows = _cluster_and_anchor(store, client, cfg)
-    checkpoint_after = _advance_checkpoint(store, checkpoint_before, assets)
+    checkpoint_after = _advance_checkpoint(store, checkpoint_before_dt, assets)
+    checkpoint_after_str = checkpoint_after.isoformat() if checkpoint_after else None
     _log.info(
         "batch run complete: fetched=%d appearances=%d checkpoint=%s -> %s",
         len(assets),
         embedded,
         checkpoint_before,
-        checkpoint_after,
+        checkpoint_after_str,
     )
     return RunSummary(
         assets=tuple(assets),
-        checkpoint_before=checkpoint_before,
+        checkpoint_before=checkpoint_before_dt,
         checkpoint_after=checkpoint_after,
         appearances=embedded,
         gate_counts=gate_counts,
@@ -163,7 +167,9 @@ def _process_assets(
     return embedded, counts, edge_clipped_kept, assets_without_persons
 
 
-def _cluster_and_anchor(store: Store, client: ImmichClient, cfg: Config) -> tuple[WindowSummary, ...]:
+def _cluster_and_anchor(
+    store: Store, client: ImmichClient, cfg: Config
+) -> tuple[WindowSummary, ...]:
     """Rebuild clusters from scratch and anchor them with Immich face labels.
 
     Runs over every stored appearance (not just this run's new ones), so a
@@ -182,6 +188,30 @@ def _cluster_and_anchor(store: Store, client: ImmichClient, cfg: Config) -> tupl
     asset_ids = sorted(appearances_by_asset)
     faces_by_asset = {asset_id: client.fetch_faces(asset_id) for asset_id in asset_ids}
     _log.info("anchoring: fetched face detections for %d asset(s)", len(asset_ids))
+
+    # --- Tombstone detection ---
+    # For each (asset_id, person_id) in the write ledger, check if the face
+    # still exists in Immich. If not, record a tombstone so we never re-propose.
+    ledger_entries = store.get_write_ledger_entries()
+    if ledger_entries:
+        ledger_by_asset: dict[str, set[str]] = {}
+        for entry in ledger_entries:
+            ledger_by_asset.setdefault(entry.asset_id, set()).add(entry.person_id)
+        for asset_id, person_ids in ledger_by_asset.items():
+            current_faces = faces_by_asset.get(asset_id, ())
+            current_person_ids = {
+                f.person_id for f in current_faces if f.person_id is not None
+            }
+            for person_id in person_ids:
+                if person_id not in current_person_ids:
+                    store.add_tombstone(
+                        Tombstone(asset_id=asset_id, person_id=person_id)
+                    )
+                    _log.info(
+                        "tombstone: asset %s person %s removed in Immich",
+                        asset_id,
+                        person_id,
+                    )
 
     day_by_asset: dict[str, date | None] = {
         asset_id: capture_day(appearances_by_asset[asset_id][0].captured_at)
@@ -204,7 +234,9 @@ def _cluster_and_anchor(store: Store, client: ImmichClient, cfg: Config) -> tupl
         day = day_by_asset[asset_id]
         if day is None:
             continue
-        windows.setdefault(window_by_day[day], []).extend(appearances_by_asset[asset_id])
+        windows.setdefault(window_by_day[day], []).extend(
+            appearances_by_asset[asset_id]
+        )
 
     anchor_config = AnchorConfig(
         face_overlap=cfg.clustering.face_overlap,
@@ -214,10 +246,14 @@ def _cluster_and_anchor(store: Store, client: ImmichClient, cfg: Config) -> tupl
     summaries: list[WindowSummary] = []
     for window in sorted(windows):
         members = sorted(
-            windows[window], key=lambda appearance: (appearance.asset_id, appearance.appearance)
+            windows[window],
+            key=lambda appearance: (appearance.asset_id, appearance.appearance),
         )
         embeddings = np.stack(
-            [np.frombuffer(appearance.embedding, dtype=np.float32) for appearance in members]
+            [
+                np.frombuffer(appearance.embedding, dtype=np.float32)
+                for appearance in members
+            ]
         )
         clusters = sorted(
             average_linkage_clusters(
@@ -243,9 +279,14 @@ def _cluster_and_anchor(store: Store, client: ImmichClient, cfg: Config) -> tupl
     return tuple(summaries)
 
 
+def _format_checkpoint(dt: datetime) -> str:
+    """Format a datetime as the Immich API expects for createdAfter."""
+    return isoformat_z(dt)
+
+
 def _advance_checkpoint(
-    store: Store, checkpoint_before: str | None, assets: list[Asset]
-) -> str | None:
+    store: Store, checkpoint_before: datetime | None, assets: list[Asset]
+) -> datetime | None:
     """Advance the checkpoint to the newest asset seen, or leave it if none.
 
     Ordering compares parsed timestamps (the checkpoint is a wall-clock
@@ -254,15 +295,9 @@ def _advance_checkpoint(
     """
     checkpoint_after = checkpoint_before
     if assets:
-        newest_asset = max(assets, key=lambda asset: _parse_timestamp(asset.created_at))
+        newest_asset = max(assets, key=lambda asset: asset.created_at)
         newest = newest_asset.created_at
-        if checkpoint_before is None or _parse_timestamp(newest) > _parse_timestamp(
-            checkpoint_before
-        ):
-            store.set_checkpoint(NEW_ASSET_FEED, newest)
+        if checkpoint_before is None or newest > checkpoint_before:
+            store.set_checkpoint(NEW_ASSET_FEED, _format_checkpoint(newest))
             checkpoint_after = newest
     return checkpoint_after
-
-
-def _parse_timestamp(value: str) -> datetime:
-    return datetime.fromisoformat(value)

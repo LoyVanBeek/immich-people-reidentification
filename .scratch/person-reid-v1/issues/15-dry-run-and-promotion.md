@@ -6,7 +6,7 @@ Part of: [Person Re-ID v1 — Map](../map.md)
 
 **Blocked by:** [13: Confirm-and-write: head boxes, person creation, and the write ledger](13-confirm-and-write-back.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Dry-run is a top-bar toggle with an unmistakable full-width mode banner and a relabeled confirm button
 - [ ] Confirming in dry-run mode produces zero Immich writes — no faces written, no person creation

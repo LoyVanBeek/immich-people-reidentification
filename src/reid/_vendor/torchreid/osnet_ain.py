@@ -14,7 +14,6 @@
 # The architecture code below is otherwise verbatim upstream.
 from __future__ import annotations
 
-import torch
 from torch import nn
 from torch.nn import functional as F
 
@@ -345,7 +344,9 @@ class OSNet(nn.Module):
         self.conv5 = Conv1x1(channels[3], channels[3])
         self.global_avgpool = nn.AdaptiveAvgPool2d(1)
         # fully connected layer
-        self.fc = self._construct_fc_layer(self.feature_dim, channels[3], dropout_p=None)
+        self.fc = self._construct_fc_layer(
+            self.feature_dim, channels[3], dropout_p=None
+        )
         # identity classification layer
         self.classifier = nn.Linear(self.feature_dim, num_classes)
 

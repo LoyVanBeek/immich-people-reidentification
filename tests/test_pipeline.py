@@ -9,14 +9,11 @@ through the store's public API.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from pathlib import Path
 
-import numpy as np
-import pytest
 from click.testing import Result
 
 from reid.store import Store
+
 from . import library
 from .conftest import run_batch
 from .stub_immich import StubImmich
@@ -108,7 +105,9 @@ def test_quality_gates_run_in_order_and_counts_are_logged(
     # Height minimum above every person box: survivors drop at the SECOND
     # gate with the first gate never involved. A named config gets a fresh
     # store, so the second run starts from an empty checkpoint.
-    tall = make_config(detection_stub, detection={"min_box_height": 100000}, name="tall")
+    tall = make_config(
+        detection_stub, detection={"min_box_height": 100000}, name="tall"
+    )
     result = run_batch(tall)
     assert result.exit_code == 0, result.output
     assert appearances(tall) == {}
@@ -144,4 +143,6 @@ def wipe(config_path) -> Result:
 
     from reid.wipe import main
 
-    return CliRunner().invoke(main, ["--config", str(config_path)], catch_exceptions=False)
+    return CliRunner().invoke(
+        main, ["--config", str(config_path)], catch_exceptions=False
+    )

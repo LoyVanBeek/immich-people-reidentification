@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from reid.cli import batch
+
 from . import library
 from .stub_immich import API_KEY, StubImmich
 
@@ -84,4 +85,6 @@ def make_config(tmp_path: Path) -> Callable[[StubImmich, int], Path]:
 
 def run_batch(config_path: Path) -> Result:
     """Invoke the real batch entry point the way an operator schedules it."""
-    return CliRunner().invoke(batch, ["--config", str(config_path)], catch_exceptions=False)
+    return CliRunner().invoke(
+        batch, ["--config", str(config_path)], catch_exceptions=False
+    )

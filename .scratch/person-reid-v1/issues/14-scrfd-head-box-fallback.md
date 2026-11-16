@@ -6,7 +6,7 @@ Part of: [Person Re-ID v1 — Map](../map.md)
 
 **Blocked by:** [13: Confirm-and-write: head boxes, person creation, and the write ledger](13-confirm-and-write-back.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] When no Immich unassigned face is contained in the person box, SCRFD-500M at 320×320 (weights vendored into the image) detects a head on the appearance's full-person crop
 - [ ] The detected face box is expanded geometrically to a head box, with tunable constants

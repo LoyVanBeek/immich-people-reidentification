@@ -15,7 +15,6 @@ remain singletons.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta, tzinfo
 
 import numpy as np
@@ -33,7 +32,9 @@ def cosine_distance_matrix(embeddings: np.ndarray) -> np.ndarray:
     return 1.0 - similarity
 
 
-def average_linkage_clusters(distance: np.ndarray, threshold: float) -> list[tuple[int, ...]]:
+def average_linkage_clusters(
+    distance: np.ndarray, threshold: float
+) -> list[tuple[int, ...]]:
     """Agglomerative average-linkage clustering, cut at the threshold.
 
     Starts from single appearances and repeatedly merges the two clusters
@@ -59,17 +60,16 @@ def average_linkage_clusters(distance: np.ndarray, threshold: float) -> list[tup
     return [tuple(sorted(members)) for members in clusters]
 
 
-def capture_day(captured_at: str, tz: tzinfo | None = None) -> date | None:
+def capture_day(captured_at: datetime, tz: tzinfo | None = None) -> date | None:
     """The local calendar day an asset was captured, or None if unusable.
 
     A timestamp with a timezone is converted into the given timezone (the
     Pi's local timezone when omitted); a naive timestamp is treated as
-    already-local wall time. Unparseable strings yield None.
+    already-local wall time.
     """
-    try:
-        moment = datetime.fromisoformat(captured_at)
-    except ValueError:
+    if captured_at == datetime.min:
         return None
+    moment = captured_at
     if moment.tzinfo is None:
         return moment.date()
     local = moment.astimezone(tz) if tz is not None else moment.astimezone()

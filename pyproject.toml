@@ -16,6 +16,7 @@ dependencies = [
     # Pixel decode and full-person crop resizing.
     "opencv-python>=4.10",
     "numpy>=1.26",
+    "onnxruntime>=1.32.0",
 ]
 
 [project.scripts]
@@ -26,7 +27,9 @@ reid-ui = "reid.server:main"
 [dependency-groups]
 dev = [
     "mypy>=1.18",
+    "pre-commit>=4.7.0",
     "pytest>=8.4",
+    "ty>=0.0.104",
 ]
 
 [build-system]
@@ -59,3 +62,11 @@ module = ["ultralytics.*", "cv2", "reid._vendor.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
 ignore_errors = true
+
+# Third-party libs without stubs — ignore missing imports
+[[tool.mypy.overrides]]
+module = ["numpy", "torch", "onnxruntime", "httpx", "pytest", "click", "ultralytics", "cv2"]
+ignore_missing_imports = true
+
+[tool.ty]
+baseline = "ty-baseline.txt"

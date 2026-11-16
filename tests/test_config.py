@@ -68,16 +68,18 @@ face_overlap = 0.6
 @pytest.mark.parametrize(
     ("body", "message"),
     [
-        ('window_days = 0\n', "window_days"),
+        ("window_days = 0\n", "window_days"),
         ('window_days = "soon"\n', "window_days"),
-        ('distance_threshold = -0.1\n', "distance_threshold"),
+        ("distance_threshold = -0.1\n", "distance_threshold"),
         ('distance_threshold = "loose"\n', "distance_threshold"),
-        ('min_cluster_size = 0\n', "min_cluster_size"),
-        ('face_overlap = 1.5\n', "face_overlap"),
-        ('face_overlap = -0.1\n', "face_overlap"),
+        ("min_cluster_size = 0\n", "min_cluster_size"),
+        ("face_overlap = 1.5\n", "face_overlap"),
+        ("face_overlap = -0.1\n", "face_overlap"),
     ],
 )
-def test_invalid_clustering_knobs_are_rejected(tmp_path: Path, body: str, message: str) -> None:
+def test_invalid_clustering_knobs_are_rejected(
+    tmp_path: Path, body: str, message: str
+) -> None:
     with pytest.raises(ConfigError) as excinfo:
         load_config(
             write_config(

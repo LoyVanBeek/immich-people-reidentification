@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import signal
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -144,7 +144,9 @@ class StubImmich:
 
             def _faces(self, parsed: Any) -> None:
                 asset_id = parse_qs(parsed.query).get("id", [None])[0]
-                known = any(a["id"] == asset_id and a["type"] == "IMAGE" for a in stub.assets)
+                known = any(
+                    a["id"] == asset_id and a["type"] == "IMAGE" for a in stub.assets
+                )
                 if asset_id is None or not known:
                     self._json(404, {"message": "not found"})
                     return
@@ -160,12 +162,15 @@ class StubImmich:
                 end = start + size
                 window = stub.people[start:end]
                 has_next = end < len(stub.people)
-                self._json(200, {
-                    "people": window,
-                    "total": len(stub.people),
-                    "hidden": 0,
-                    "hasNextPage": has_next,
-                })
+                self._json(
+                    200,
+                    {
+                        "people": window,
+                        "total": len(stub.people),
+                        "hidden": 0,
+                        "hasNextPage": has_next,
+                    },
+                )
 
             def _search(self, body: dict[str, Any]) -> None:
                 page = int(body.get("page", 1))
@@ -197,7 +202,9 @@ class StubImmich:
                     self._json(400, {"message": "assetId and personId required"})
                     return
                 # Check if asset exists
-                known = any(a["id"] == asset_id and a["type"] == "IMAGE" for a in stub.assets)
+                known = any(
+                    a["id"] == asset_id and a["type"] == "IMAGE" for a in stub.assets
+                )
                 if not known:
                     self._json(404, {"message": "asset not found"})
                     return
@@ -220,18 +227,30 @@ class StubImmich:
                 # Store the created face for potential future GET /faces queries
                 if asset_id not in stub.faces:
                     stub.faces[asset_id] = []
-                stub.faces[asset_id].append({
-                    "id": face_id,
-                    "assetId": asset_id,
-                    "person": {"id": person_id, "name": next((p["name"] for p in stub.people if p["id"] == person_id), "")},
-                    "boundingBoxX1": body.get("boundingBoxX1"),
-                    "boundingBoxY1": body.get("boundingBoxY1"),
-                    "boundingBoxX2": body.get("boundingBoxX2"),
-                    "boundingBoxY2": body.get("boundingBoxY2"),
-                    "imageWidth": 1440,
-                    "imageHeight": 1440,
-                    "sourceType": "manual",
-                })
+                stub.faces[asset_id].append(
+                    {
+                        "id": face_id,
+                        "assetId": asset_id,
+                        "person": {
+                            "id": person_id,
+                            "name": next(
+                                (
+                                    p["name"]
+                                    for p in stub.people
+                                    if p["id"] == person_id
+                                ),
+                                "",
+                            ),
+                        },
+                        "boundingBoxX1": body.get("boundingBoxX1"),
+                        "boundingBoxY1": body.get("boundingBoxY1"),
+                        "boundingBoxX2": body.get("boundingBoxX2"),
+                        "boundingBoxY2": body.get("boundingBoxY2"),
+                        "imageWidth": 1440,
+                        "imageHeight": 1440,
+                        "sourceType": "manual",
+                    }
+                )
                 self._json(200, face)
 
             def _create_person(self, body: dict[str, Any]) -> None:
@@ -270,20 +289,32 @@ class StubImmich:
 
     def _record(self, request: BaseHTTPRequestHandler, body_bytes: bytes) -> None:
         body: Any
-        if body_bytes and request.headers.get("content-type", "").startswith("application/json"):
+        if body_bytes and request.headers.get("content-type", "").startswith(
+            "application/json"
+        ):
             body = json.loads(body_bytes)
         else:
             body = None
         headers = {k.lower(): v for k, v in request.headers.items()}
         with self._lock:
             self.requests.append(
-                RecordedRequest(method=request.command, path=request.path, body=body, headers=headers)
+                RecordedRequest(
+                    method=request.command,
+                    path=request.path,
+                    body=body,
+                    headers=headers,
+                )
             )
 
     def _asset_for_path(self, path: str) -> dict[str, Any] | None:
         # /api/assets/<id>/original and /api/assets/<id>/thumbnail
         parts = path.split("?")[0].rstrip("/").split("/")
-        if len(parts) == 5 and parts[1] == "api" and parts[2] == "assets" and parts[4] in ("original", "thumbnail", "preview"):
+        if (
+            len(parts) == 5
+            and parts[1] == "api"
+            and parts[2] == "assets"
+            and parts[4] in ("original", "thumbnail", "preview")
+        ):
             for asset in self.assets:
                 if asset["id"] == parts[3] and asset["type"] == "IMAGE":
                     return asset
@@ -304,7 +335,6 @@ class StubImmich:
 def main() -> None:
     """Run the stub Immich server from the command line (container smoke test)."""
     import argparse
-    import sys
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=0)

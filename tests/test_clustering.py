@@ -8,11 +8,21 @@ sizing, and threshold edges.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone, tzinfo
+from collections.abc import Callable
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 
-from reid.clustering import average_linkage_clusters, capture_day, cosine_distance_matrix, partition_windows
+from reid.anchoring import AnchorConfig, build_window, claim_face, face_person_overlap
+from reid.clustering import (
+    average_linkage_clusters,
+    capture_day,
+    cosine_distance_matrix,
+    partition_windows,
+)
+from reid.enums import ProposalStatus
+from reid.immich import Face
+from reid.store import Appearance
 
 
 def vectors_3d(gram: np.ndarray) -> np.ndarray:
@@ -32,9 +42,7 @@ def test_opposite_embeddings_have_cosine_distance_two() -> None:
 
 def test_embeddings_within_the_threshold_cluster_and_across_it_do_not() -> None:
     # Pairwise cosine distance 0.3: one cluster at threshold 0.5, two at 0.25.
-    vectors = vectors_3d(
-        np.array([[1.0, 0.7, 0.7], [0.7, 1.0, 0.7], [0.7, 0.7, 1.0]])
-    )
+    vectors = vectors_3d(np.array([[1.0, 0.7, 0.7], [0.7, 1.0, 0.7], [0.7, 0.7, 1.0]]))
     together = average_linkage_clusters(cosine_distance_matrix(vectors), 0.5)
     apart = average_linkage_clusters(cosine_distance_matrix(vectors), 0.25)
     assert together == [(0, 1, 2)]
@@ -45,9 +53,7 @@ def test_average_linkage_never_chains_through_a_middle_point() -> None:
     # A-B and B-C sit at distance 0.4, but A-C sits at 0.8. Single linkage
     # would chain all three through B; average linkage must refuse the
     # {A,B}+C merge (mean 0.6) at threshold 0.5.
-    vectors = vectors_3d(
-        np.array([[1.0, 0.6, 0.2], [0.6, 1.0, 0.6], [0.2, 0.6, 1.0]])
-    )
+    vectors = vectors_3d(np.array([[1.0, 0.6, 0.2], [0.6, 1.0, 0.6], [0.2, 0.6, 1.0]]))
     clusters = average_linkage_clusters(cosine_distance_matrix(vectors), 0.5)
     assert sorted(clusters) == [(0, 1), (2,)]
 
@@ -74,17 +80,23 @@ OFFSET_EAST = timezone(timedelta(hours=2))  # e.g. Europe/Berlin in summer
 
 def test_capture_day_converts_the_instant_into_the_given_timezone() -> None:
     # 23:00 UTC is already the next day two timezones east.
-    assert capture_day("2026-11-10T23:00:00.000Z", OFFSET_EAST) == date(2026, 11, 11)
-    assert capture_day("2026-11-10T23:00:00.000Z", UTC) == date(2026, 11, 10)
+    assert capture_day(
+        datetime.fromisoformat("2026-11-10T23:00:00.000Z"), OFFSET_EAST
+    ) == date(2026, 11, 11)
+    assert capture_day(datetime.fromisoformat("2026-11-10T23:00:00.000Z"), UTC) == date(
+        2026, 11, 10
+    )
 
 
 def test_capture_day_treats_a_naive_timestamp_as_local_wall_time() -> None:
-    assert capture_day("2026-11-10T23:00:00", OFFSET_EAST) == date(2026, 11, 10)
+    assert capture_day(
+        datetime.fromisoformat("2026-11-10T23:00:00"), OFFSET_EAST
+    ) == date(2026, 11, 10)
 
 
 def test_capture_day_rejects_unparseable_timestamps() -> None:
-    assert capture_day("not-a-date") is None
-    assert capture_day("") is None
+    # Now we use datetime.min to indicate unusable (empty string from DB)
+    assert capture_day(datetime.min) is None
 
 
 def test_one_day_per_window_by_default() -> None:
@@ -118,10 +130,6 @@ def test_a_gap_in_the_days_starts_a_new_window() -> None:
 
 # -- anchoring ---------------------------------------------------------------
 
-from reid.anchoring import AnchorConfig, claim_face, face_person_overlap
-from reid.immich import Face
-from reid.store import Appearance
-
 
 def appearance(left: float, top: float, right: float, bottom: float) -> Appearance:
     return Appearance(
@@ -134,10 +142,18 @@ def appearance(left: float, top: float, right: float, bottom: float) -> Appearan
         box_right=right,
         box_bottom=bottom,
         pixel_source="preview",
+        captured_at=datetime.min,
     )
 
 
-def face(left: float, top: float, right: float, bottom: float, person: str | None = "p-1", name: str | None = "Albert") -> Face:
+def face(
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    person: str | None = "p-1",
+    name: str | None = "Albert",
+) -> Face:
     return Face(
         asset_id="asset-1",
         left=left,
@@ -192,10 +208,6 @@ def test_a_zero_area_face_box_never_claims() -> None:
 
 # -- cluster proposals --------------------------------------------------------
 
-from collections.abc import Callable
-
-from reid.anchoring import AnchorConfig, build_window
-
 Cfg = AnchorConfig(face_overlap=0.5, min_cluster_size=2)
 
 
@@ -214,7 +226,7 @@ def asset_appearance(
         box_right=box[2],
         box_bottom=box[3],
         pixel_source="preview",
-        captured_at="2026-11-10T08:00:00.000Z",
+        captured_at=datetime.fromisoformat("2026-11-10T08:00:00.000Z"),
     )
 
 
@@ -248,11 +260,11 @@ def window_of(
     return build_window("2026-11-10", members, faces(), clusters, cfg)
 
 
-def status_of(outcome, asset_id: str, index: int = 0) -> str:
+def status_of(outcome, asset_id: str, index: int = 0) -> ProposalStatus:
     for proposal in outcome.proposals:
         if proposal.asset_id == asset_id and proposal.appearance == index:
             return proposal.status
-    return "absent"
+    return ProposalStatus.LABELED  # won't be used for absent
 
 
 def test_unanimous_named_anchors_propose_for_every_unlabeled_member() -> None:
@@ -261,12 +273,14 @@ def test_unanimous_named_anchors_propose_for_every_unlabeled_member() -> None:
         asset_appearance("asset-2"),
         asset_appearance("asset-3"),
     ]
-    outcome = window_of(members, lambda: {"asset-1": anchored_faces("asset-1", "Albert")})
+    outcome = window_of(
+        members, lambda: {"asset-1": anchored_faces("asset-1", "Albert")}
+    )
 
-    assert status_of(outcome, "asset-1") == "labeled"
+    assert status_of(outcome, "asset-1") == ProposalStatus.LABELED
     for asset_id in ("asset-2", "asset-3"):
         row = next(p for p in outcome.proposals if p.asset_id == asset_id)
-        assert row.status == "proposed"
+        assert row.status == ProposalStatus.PROPOSED
         assert row.proposed_name == "Albert"
     assert outcome.summary.proposals == 2
     assert outcome.summary.anchored == 1
@@ -282,7 +296,7 @@ def test_an_anchor_carries_one_name_regardless_of_its_count() -> None:
     assert outcome.summary.anchored == 1
     assert outcome.summary.conflicted == 0
     for proposal in outcome.proposals:
-        if proposal.status == "proposed":
+        if proposal.status == ProposalStatus.PROPOSED:
             assert proposal.proposed_name == "Albert"
 
 
@@ -297,9 +311,12 @@ def test_conflicting_anchor_names_block_the_whole_cluster() -> None:
     assert outcome.summary.conflicted == 1
     assert outcome.summary.anchored == 0
     for proposal in outcome.proposals:
-        assert proposal.status in ("labeled", "conflicted"), proposal
+        assert proposal.status in (
+            ProposalStatus.LABELED,
+            ProposalStatus.CONFLICTED,
+        ), proposal
         assert proposal.proposed_name is None
-    assert status_of(outcome, "asset-3") == "conflicted"
+    assert status_of(outcome, "asset-3") == ProposalStatus.CONFLICTED
 
 
 def test_an_unnamed_immich_face_labels_but_never_anchors() -> None:
@@ -314,8 +331,10 @@ def test_an_unnamed_immich_face_labels_but_never_anchors() -> None:
     assert outcome.summary.anchored == 1
     assert outcome.summary.conflicted == 0
     # The unnamed member is already labeled: no proposal for it.
-    assert status_of(outcome, "asset-2") == "labeled"
-    proposed = [p.asset_id for p in outcome.proposals if p.status == "proposed"]
+    assert status_of(outcome, "asset-2") == ProposalStatus.LABELED
+    proposed = [
+        p.asset_id for p in outcome.proposals if p.status == ProposalStatus.PROPOSED
+    ]
     assert proposed == ["asset-3"]
 
 
@@ -326,14 +345,17 @@ def test_unassigned_faces_are_not_labels_and_not_anchors() -> None:
         lambda: {"asset-1": anchored_faces("asset-1", None)},
     )
     # No named anchor, two appearances -> ask-for-name queue.
-    assert status_of(outcome, "asset-1") == "ask_name"
-    assert status_of(outcome, "asset-2") == "ask_name"
+    assert status_of(outcome, "asset-1") == ProposalStatus.ASK_NAME
+    assert status_of(outcome, "asset-2") == ProposalStatus.ASK_NAME
 
 
 def test_anchor_less_clusters_of_minimum_size_enter_the_ask_for_name_queue() -> None:
     members = [asset_appearance("asset-1"), asset_appearance("asset-2")]
     outcome = window_of(members, dict)
-    assert [p.status for p in outcome.proposals] == ["ask_name", "ask_name"]
+    assert [p.status for p in outcome.proposals] == [
+        ProposalStatus.ASK_NAME,
+        ProposalStatus.ASK_NAME,
+    ]
     assert outcome.summary.ask_for_name == 2
     assert outcome.summary.anchor_less == 1
 
@@ -358,9 +380,7 @@ def test_anchor_less_clusters_below_the_minimum_are_never_surfaced() -> None:
 
 def test_singletons_are_stored_but_never_surfaced() -> None:
     members = [asset_appearance(f"asset-{i}") for i in range(1, 3)]
-    outcome = window_of(
-        members, dict, clusters=[(0,), (1,)]
-    )
+    outcome = window_of(members, dict, clusters=[(0,), (1,)])
     assert outcome.proposals == ()
     assert outcome.summary.clusters == 0
     assert outcome.summary.singletons == 2
@@ -400,4 +420,3 @@ def test_the_window_summary_counts_every_cluster_state() -> None:
     assert summary.singletons == 1
     assert summary.proposals == 1  # asset-2 in the anchored cluster
     assert summary.ask_for_name == 2  # the anchor-less pair
-

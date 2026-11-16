@@ -97,14 +97,20 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
     except OSError as exc:
         raise ConfigError(f"config file not readable: {config_path}: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"config file is not valid TOML: {config_path}: {exc}") from exc
+        raise ConfigError(
+            f"config file is not valid TOML: {config_path}: {exc}"
+        ) from exc
 
     immich_raw = _table(raw, "immich")
     base_url = _required_str(immich_raw, "base_url", "[immich]")
-    page_size = _bounded_int(immich_raw, "page_size", 1, MAX_PAGE_SIZE, "[immich]", MAX_PAGE_SIZE)
+    page_size = _bounded_int(
+        immich_raw, "page_size", 1, MAX_PAGE_SIZE, "[immich]", MAX_PAGE_SIZE
+    )
     timeout_seconds = _positive_float(immich_raw, "timeout_seconds", "[immich]", 60.0)
 
-    api_key = env.get(API_KEY_ENV, "").strip() or _required_str(immich_raw, "api_key", "[immich]")
+    api_key = env.get(API_KEY_ENV, "").strip() or _required_str(
+        immich_raw, "api_key", "[immich]"
+    )
     write_api_key = immich_raw.get("write_api_key")
     if write_api_key is not None and not isinstance(write_api_key, str):
         raise ConfigError("[immich] write_api_key must be a string")
@@ -121,25 +127,46 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
         raise ConfigError(
             f"[detection] pixel_source must be one of {', '.join(PIXEL_SOURCES)}"
         )
-    confidence_floor = _unit_float(detection_raw, "confidence_floor", "[detection]", 0.35)
+    confidence_floor = _unit_float(
+        detection_raw, "confidence_floor", "[detection]", 0.35
+    )
     min_box_height = _min_box_height(detection_raw)
 
     clustering_raw = _table(raw, "clustering")
     window_days = _minimum_int(clustering_raw, "window_days", 1, "[clustering]", 1)
     distance_threshold = _float_in_range(
-        clustering_raw, "distance_threshold", 0.0, None, "[clustering]", 0.5,
+        clustering_raw,
+        "distance_threshold",
+        0.0,
+        None,
+        "[clustering]",
+        0.5,
         "must be a non-negative number",
     )
-    min_cluster_size = _minimum_int(clustering_raw, "min_cluster_size", 1, "[clustering]", 2)
+    min_cluster_size = _minimum_int(
+        clustering_raw, "min_cluster_size", 1, "[clustering]", 2
+    )
     face_overlap = _unit_float(clustering_raw, "face_overlap", "[clustering]", 0.5)
 
     head_detection_raw = _table(raw, "head_detection")
-    head_weights_path = _required_str(head_detection_raw, "weights_path", "[head_detection]")
-    head_input_size = _minimum_int(head_detection_raw, "input_size", 1, "[head_detection]", 320)
-    head_confidence_threshold = _unit_float(head_detection_raw, "confidence_threshold", "[head_detection]", 0.5)
-    head_top_expansion_ratio = _positive_float(head_detection_raw, "top_expansion_ratio", "[head_detection]", 0.55)
-    head_width_expansion_ratio = _positive_float(head_detection_raw, "width_expansion_ratio", "[head_detection]", 1.8)
-    head_nms_threshold = _unit_float(head_detection_raw, "nms_threshold", "[head_detection]", 0.4)
+    head_weights_path = _required_str(
+        head_detection_raw, "weights_path", "[head_detection]"
+    )
+    head_input_size = _minimum_int(
+        head_detection_raw, "input_size", 1, "[head_detection]", 320
+    )
+    head_confidence_threshold = _unit_float(
+        head_detection_raw, "confidence_threshold", "[head_detection]", 0.5
+    )
+    head_top_expansion_ratio = _positive_float(
+        head_detection_raw, "top_expansion_ratio", "[head_detection]", 0.55
+    )
+    head_width_expansion_ratio = _positive_float(
+        head_detection_raw, "width_expansion_ratio", "[head_detection]", 1.8
+    )
+    head_nms_threshold = _unit_float(
+        head_detection_raw, "nms_threshold", "[head_detection]", 0.4
+    )
 
     return Config(
         immich=ImmichConfig(
@@ -192,14 +219,22 @@ def _required_str(table: dict[str, Any], key: str, section: str) -> str:
     return value.strip()
 
 
-def _bounded_int(table: dict[str, Any], key: str, low: int, high: int, section: str, default: int) -> int:
+def _bounded_int(
+    table: dict[str, Any], key: str, low: int, high: int, section: str, default: int
+) -> int:
     value = table.get(key, default)
-    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not low <= value <= high
+    ):
         raise ConfigError(f"{section} {key} must be an integer in [{low}, {high}]")
     return value
 
 
-def _positive_float(table: dict[str, Any], key: str, section: str, default: float) -> float:
+def _positive_float(
+    table: dict[str, Any], key: str, section: str, default: float
+) -> float:
     value = table.get(key, default)
     if isinstance(value, int) and not isinstance(value, bool):
         value = float(value)
@@ -220,17 +255,25 @@ def _float_in_range(
     value = table.get(key, default)
     if isinstance(value, int) and not isinstance(value, bool):
         value = float(value)
-    in_range = isinstance(value, (int, float)) and value >= low and (high is None or value <= high)
+    in_range = (
+        isinstance(value, (int, float))
+        and value >= low
+        and (high is None or value <= high)
+    )
     if not in_range:
         raise ConfigError(f"{section} {key} {message}")
     return float(value)
 
 
 def _unit_float(table: dict[str, Any], key: str, section: str, default: float) -> float:
-    return _float_in_range(table, key, 0.0, 1.0, section, default, "must be a number in [0, 1]")
+    return _float_in_range(
+        table, key, 0.0, 1.0, section, default, "must be a number in [0, 1]"
+    )
 
 
-def _minimum_int(table: dict[str, Any], key: str, low: int, section: str, default: int) -> int:
+def _minimum_int(
+    table: dict[str, Any], key: str, low: int, section: str, default: int
+) -> int:
     value = table.get(key, default)
     if not isinstance(value, int) or isinstance(value, bool) or value < low:
         raise ConfigError(f"{section} {key} must be an integer of at least {low}")
@@ -246,5 +289,7 @@ def _log_level(value: Any) -> str:
 def _min_box_height(detection_raw: dict[str, Any]) -> float:
     value = detection_raw.get("min_box_height", 100)
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
-        raise ConfigError("[detection] min_box_height must be a positive number of pixels")
+        raise ConfigError(
+            "[detection] min_box_height must be a positive number of pixels"
+        )
     return float(value)

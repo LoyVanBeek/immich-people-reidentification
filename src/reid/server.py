@@ -10,20 +10,31 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
-import os
 import sys
-from dataclasses import dataclass, asdict
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
-from .config import Config, load_config, ConfigError
+from .config import Config, load_config
+from .enums import (
+    ClusterRowStatus,
+    DryRunActionStatus,
+    EvidenceCardStatus,
+    ProposalStatus,
+    WriteResultStatus,
+)
 from .head_detector import HeadDetectorConfig
-from .immich import ImmichClient, ImmichError
-from .store import Store, Proposal, Appearance, NEW_ASSET_FEED, WriteLedgerEntry, Tombstone
-from .anchoring import WindowSummary
-from .batch import run_batch
+from .immich import ImmichClient, ImmichError, isoformat_z
+from .store import (
+    Appearance,
+    DryRunAction,
+    Proposal,
+    Store,
+    WriteLedgerEntry,
+)
 
 _log = logging.getLogger("reid.server")
 
@@ -45,7 +56,7 @@ class ClusterRow:
     conflicted: int
     ask_for_name: int
     labeled: int
-    status: str  # open | confirmed | skipped
+    status: ClusterRowStatus
     crops: list[dict[str, Any]]  # placeholder crop data for sidebar strip
 
 
@@ -57,10 +68,10 @@ class EvidenceCard:
     appearance: int
     window: str
     cluster: int
-    date: str
+    date: str  # ISO format date string for JSON serialization
     confidence: float
     immich_label: str | None
-    status: str  # will_write | already_labeled | conflict_skip | no_head_skip
+    status: EvidenceCardStatus
     included: bool  # checkbox state for writable appearances
     pixel_source: str  # "preview" | "original"
 
@@ -143,6 +154,8 @@ class UIAPIHandler(BaseHTTPRequestHandler):
             self._send_json(self.ui_server.get_proposals())
         elif path == "/api/summary":
             self._send_json(self.ui_server.get_summary())
+        elif path == "/api/dry-run-batches":
+            self._send_json(self.ui_server.get_dry_run_batches())
         elif path == "/" or path == "/index.html":
             self._serve_static("index.html")
         else:
@@ -161,6 +174,13 @@ class UIAPIHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Invalid JSON")
                 return
             result = self.ui_server.confirm_cluster(body)
+            self._send_json(result)
+        elif path.startswith("/api/promote/"):
+            batch_id = path[len("/api/promote/") :]
+            if not batch_id:
+                self.send_error(400, "Missing batch ID")
+                return
+            result = self.ui_server.promote_batch(batch_id)
             self._send_json(result)
         else:
             self.send_error(405, "Method not allowed")
@@ -224,13 +244,22 @@ class UIServer:
         """Assemble the complete UI state for the initial page load."""
         proposals = self.store.proposals()
         appearances_by_asset = self.store.appearances_by_asset()
-        checkpoint = self.store.get_checkpoint(NEW_ASSET_FEED)
 
         # Group proposals by window + cluster
         clusters = self._build_cluster_rows(proposals, appearances_by_asset)
         active_cluster = clusters[0].cluster if clusters else None
-        evidence = self._build_evidence_for_cluster(active_cluster, proposals, appearances_by_asset) if active_cluster is not None else []
-        assignment = self._build_assignment(active_cluster, proposals, appearances_by_asset) if active_cluster is not None else None
+        evidence = (
+            self._build_evidence_for_cluster(
+                active_cluster, proposals, appearances_by_asset
+            )
+            if active_cluster is not None
+            else []
+        )
+        assignment = (
+            self._build_assignment(active_cluster, proposals, appearances_by_asset)
+            if active_cluster is not None
+            else None
+        )
         stats = self._build_stats()
         config_knobs = self.get_config_knobs()
         people = self.get_people()
@@ -256,7 +285,9 @@ class UIServer:
         cluster = int(cluster_q)
         proposals = self.store.proposals()
         appearances_by_asset = self.store.appearances_by_asset()
-        evidence = self._build_evidence_for_cluster(cluster, proposals, appearances_by_asset, window_q)
+        evidence = self._build_evidence_for_cluster(
+            cluster, proposals, appearances_by_asset, window_q
+        )
         return [asdict(e) for e in evidence]
 
     def get_people(self) -> list[str]:
@@ -286,8 +317,153 @@ class UIServer:
         """Return window summaries from the latest run (recomputed from proposals)."""
         return [asdict(s) for s in self._build_stats()]
 
+    def _make_write_client(self) -> ImmichClient:
+        """Create a write-scoped Immich client with head detector for fallback."""
+        head_cfg = HeadDetectorConfig(
+            weights_path=self.cfg.head_detection.weights_path,
+            input_size=self.cfg.head_detection.input_size,
+            confidence_threshold=self.cfg.head_detection.confidence_threshold,
+            top_expansion_ratio=self.cfg.head_detection.top_expansion_ratio,
+            width_expansion_ratio=self.cfg.head_detection.width_expansion_ratio,
+            nms_threshold=self.cfg.head_detection.nms_threshold,
+        )
+        return ImmichClient(
+            self.cfg.immich.base_url,
+            self.cfg.immich.write_api_key,
+            page_size=self.cfg.immich.page_size,
+            timeout=self.cfg.immich.timeout_seconds,
+            head_detector_cfg=head_cfg,
+        )
+
+    def _write_appearance(
+        self,
+        write_client: ImmichClient,
+        asset_id: str,
+        appearance: Appearance,
+        person_id: str,
+        cluster: int,
+        window: str,
+        timestamp: datetime,
+        dry_run: bool = False,
+        expected_head_box: tuple[float, float, float, float] | None = None,
+    ) -> dict[str, Any]:
+        """Shared write logic for one appearance (used by confirm and promote)."""
+        # Check if already written (via write ledger) - idempotency
+        if self.store.has_write_ledger_entry(asset_id, person_id):
+            return {
+                "asset_id": asset_id,
+                "appearance": appearance.appearance,
+                "status": WriteResultStatus.SKIPPED.value,
+                "message": "already written (ledger)",
+            }
+
+        # Check tombstone
+        if self.store.has_tombstone(asset_id, person_id):
+            return {
+                "asset_id": asset_id,
+                "appearance": appearance.appearance,
+                "status": WriteResultStatus.SKIPPED.value,
+                "message": "tombstone (manually removed in Immich)",
+            }
+
+        # Check existing faces for conflicts and already-labeled
+        person_box = appearance.box
+        has_conflict, already_labeled = write_client.check_existing_faces(
+            asset_id, person_box, person_id, self.cfg.clustering.face_overlap
+        )
+
+        if already_labeled:
+            # Already has this person's face - skip and journal
+            if not dry_run:
+                self.store.add_write_ledger_entry(
+                    WriteLedgerEntry(
+                        asset_id=asset_id,
+                        person_id=person_id,
+                        cluster=cluster,
+                        window=window,
+                        timestamp=timestamp,
+                    )
+                )
+            return {
+                "asset_id": asset_id,
+                "appearance": appearance.appearance,
+                "status": WriteResultStatus.SKIPPED.value,
+                "message": "already labeled in Immich",
+            }
+
+        if has_conflict:
+            # Different person's overlapping face - conflict
+            return {
+                "asset_id": asset_id,
+                "appearance": appearance.appearance,
+                "status": WriteResultStatus.SKIPPED.value,
+                "message": "conflict: different person's overlapping face",
+            }
+
+        # Resolve head box
+        if dry_run:
+            head_box = write_client.resolve_head_box(
+                asset_id, person_box, self.cfg.clustering.face_overlap
+            )
+        else:
+            # Promote: use the recorded head box (replay recorded actions)
+            head_box = expected_head_box
+        if head_box is None:
+            return {
+                "asset_id": asset_id,
+                "appearance": appearance.appearance,
+                "status": WriteResultStatus.SKIPPED.value,
+                "message": "no head found" + (" (recorded)" if not dry_run else ""),
+            }
+
+        if dry_run:
+            return {
+                "asset_id": asset_id,
+                "appearance": appearance.appearance,
+                "status": WriteResultStatus.WOULD_WRITE.value,
+                "head_box": head_box,
+            }
+
+        # Real write
+        try:
+            write_client.create_face(
+                asset_id,
+                person_id,
+                head_box[0],
+                head_box[1],
+                head_box[2],
+                head_box[3],
+            )
+        except ImmichError as exc:
+            return {
+                "asset_id": asset_id,
+                "appearance": appearance.appearance,
+                "status": WriteResultStatus.ERROR.value,
+                "message": f"face creation failed: {exc.message}",
+            }
+
+        # Journal the write
+        self.store.add_write_ledger_entry(
+            WriteLedgerEntry(
+                asset_id=asset_id,
+                person_id=person_id,
+                cluster=cluster,
+                window=window,
+                timestamp=timestamp,
+            )
+        )
+
+        return {
+            "asset_id": asset_id,
+            "appearance": appearance.appearance,
+            "status": WriteResultStatus.WRITTEN.value,
+            "head_box": head_box,
+        }
+
     def _build_cluster_rows(
-        self, proposals: list[Proposal], appearances_by_asset: dict[str, list[Appearance]]
+        self,
+        proposals: list[Proposal],
+        appearances_by_asset: dict[str, list[Appearance]],
     ) -> list[ClusterRow]:
         """Build the review queue sidebar rows grouped by window + cluster."""
         # Group by (window, cluster)
@@ -310,34 +486,37 @@ class UIServer:
 
             # Confidence = average of proposal confidences
             confidences = [
-                confidence_lookup.get((p.asset_id, p.appearance), 0.0)
-                for p in props
+                confidence_lookup.get((p.asset_id, p.appearance), 0.0) for p in props
             ]
             confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
-            rows.append(ClusterRow(
-                cluster=cluster_id,
-                window=window,
-                proposed_name=proposed_name,
-                anchor=anchor,
-                confidence=confidence,
-                appearances=len(props),
-                writable=writable,
-                conflicted=conflicted,
-                ask_for_name=no_head,
-                labeled=labeled,
-                status="open",  # UI-only; not persisted
-                crops=[],  # placeholder; real crop thumbnails would need separate endpoint
-            ))
+            rows.append(
+                ClusterRow(
+                    cluster=cluster_id,
+                    window=window,
+                    proposed_name=proposed_name,
+                    anchor=anchor,
+                    confidence=confidence,
+                    appearances=len(props),
+                    writable=writable,
+                    conflicted=conflicted,
+                    ask_for_name=no_head,
+                    labeled=labeled,
+                    status=ClusterRowStatus.OPEN,  # UI-only; not persisted
+                    crops=[],  # placeholder; real crop thumbnails would need separate endpoint
+                )
+            )
         return rows
 
     def _status_counts(self, props: list[Proposal]) -> tuple[int, int, int, int]:
         """Return (writable, conflicted, no_head, labeled) counts for a proposal group."""
         return (
-            sum(1 for p in props if p.status == "proposed"),
-            sum(1 for p in props if p.status == "conflicted"),
-            sum(1 for p in props if p.status == "ask_name"),  # ask-for-name; real no-head in #14
-            sum(1 for p in props if p.status == "labeled"),
+            sum(1 for p in props if p.status == ProposalStatus.PROPOSED),
+            sum(1 for p in props if p.status == ProposalStatus.CONFLICTED),
+            sum(
+                1 for p in props if p.status == ProposalStatus.ASK_NAME
+            ),  # ask-for-name; real no-head in #14
+            sum(1 for p in props if p.status == ProposalStatus.LABELED),
         )
 
     def _anchor_and_name(self, props: list[Proposal]) -> tuple[str | None, str | None]:
@@ -345,7 +524,7 @@ class UIServer:
         proposed_name = next((p.proposed_name for p in props if p.proposed_name), None)
         if proposed_name:
             return proposed_name, f"{proposed_name} (anchored)"
-        if any(p.status == "ask_name" for p in props):
+        if any(p.status == ProposalStatus.ASK_NAME for p in props):
             return None, "ask for name"
         return None, None
 
@@ -360,42 +539,56 @@ class UIServer:
         if cluster is None:
             return []
 
-        target_props = [p for p in proposals if p.cluster == cluster and (window is None or p.window == window)]
+        target_props = [
+            p
+            for p in proposals
+            if p.cluster == cluster and (window is None or p.window == window)
+        ]
         if not target_props:
             return []
 
         cards: list[EvidenceCard] = []
         for prop in target_props:
             app_list = appearances_by_asset.get(prop.asset_id, [])
-            appearance = next((a for a in app_list if a.appearance == prop.appearance), None)
+            appearance = next(
+                (a for a in app_list if a.appearance == prop.appearance), None
+            )
             if appearance is None:
                 continue
 
             # Status chip mapping
             status_map = {
-                "proposed": "will_write",
-                "labeled": "already_labeled",
-                "conflicted": "conflict_skip",
-                "ask_name": "ask_for_name",  # ask-for-name queue; no-head fallback in #14
+                ProposalStatus.PROPOSED: EvidenceCardStatus.WILL_WRITE,
+                ProposalStatus.LABELED: EvidenceCardStatus.ALREADY_LABELED,
+                ProposalStatus.CONFLICTED: EvidenceCardStatus.CONFLICT_SKIP,
+                ProposalStatus.ASK_NAME: EvidenceCardStatus.ASK_NAME,
             }
-            status = status_map.get(prop.status, "will_write")
-            included = prop.status == "proposed"  # default include writable
+            status = status_map.get(prop.status, EvidenceCardStatus.WILL_WRITE)
+            included = (
+                prop.status == ProposalStatus.PROPOSED
+            )  # default include writable
 
-            # Date from captured_at or created_at fallback
-            date_str = appearance.captured_at or "unknown"
+            # Date from captured_at - convert to ISO string for JSON serialization
+            date_str = (
+                isoformat_z(appearance.captured_at)
+                if appearance.captured_at is not None
+                else "unknown"
+            )
 
-            cards.append(EvidenceCard(
-                asset_id=prop.asset_id,
-                appearance=prop.appearance,
-                window=prop.window,
-                cluster=prop.cluster,
-                date=date_str,
-                confidence=appearance.confidence,
-                immich_label=None,  # would need to re-fetch faces to get this
-                status=status,
-                included=included,
-                pixel_source=appearance.pixel_source,
-            ))
+            cards.append(
+                EvidenceCard(
+                    asset_id=prop.asset_id,
+                    appearance=prop.appearance,
+                    window=prop.window,
+                    cluster=prop.cluster,
+                    date=date_str,
+                    confidence=appearance.confidence,
+                    immich_label=None,  # would need to re-fetch faces to get this
+                    status=status,
+                    included=included,
+                    pixel_source=appearance.pixel_source,
+                )
+            )
         return cards
 
     def _build_assignment(
@@ -445,27 +638,41 @@ class UIServer:
 
             multi = {cid: mem for cid, mem in clusters_by_id.items() if len(mem) >= 2}
             clusters = len(multi)
-            anchored = sum(1 for mem in multi.values() if any(p.proposed_name for p in mem))
-            conflicted = sum(1 for mem in multi.values() if any(p.status == "conflicted" for p in mem))
-            anchor_less = sum(1 for mem in multi.values() if all(p.status == "ask_name" for p in mem))
+            anchored = sum(
+                1 for mem in multi.values() if any(p.proposed_name for p in mem)
+            )
+            conflicted = sum(
+                1
+                for mem in multi.values()
+                if any(p.status == ProposalStatus.CONFLICTED for p in mem)
+            )
+            anchor_less = sum(
+                1
+                for mem in multi.values()
+                if all(p.status == ProposalStatus.ASK_NAME for p in mem)
+            )
             singletons = sum(1 for mem in clusters_by_id.values() if len(mem) == 1)
-            proposals_count = sum(1 for p in props if p.status == "proposed")
-            ask_for_name = sum(1 for p in props if p.status == "ask_name")
+            proposals_count = sum(
+                1 for p in props if p.status == ProposalStatus.PROPOSED
+            )
+            ask_for_name = sum(1 for p in props if p.status == ProposalStatus.ASK_NAME)
 
             def pct(n: int) -> float:
                 return 100.0 * n / clusters if clusters else 0.0
 
-            stats.append(StatsPane(
-                window=window,
-                appearances=len(props),
-                clusters=clusters,
-                anchored_pct=pct(anchored),
-                conflicted_pct=pct(conflicted),
-                anchor_less_pct=pct(anchor_less),
-                singletons=singletons,
-                proposals=proposals_count,
-                ask_for_name=ask_for_name,
-            ))
+            stats.append(
+                StatsPane(
+                    window=window,
+                    appearances=len(props),
+                    clusters=clusters,
+                    anchored_pct=pct(anchored),
+                    conflicted_pct=pct(conflicted),
+                    anchor_less_pct=pct(anchor_less),
+                    singletons=singletons,
+                    proposals=proposals_count,
+                    ask_for_name=ask_for_name,
+                )
+            )
         return stats
 
     def confirm_cluster(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -480,13 +687,10 @@ class UIServer:
 
         Returns a dict with the results of the confirmation.
         """
-        from datetime import datetime, timezone
-
         cluster = int(body.get("cluster", -1))
         window = str(body.get("window", ""))
         name = str(body.get("name", "")).strip()
         included = body.get("included", [])
-        dry_run = bool(body.get("dry_run", True))
 
         if cluster < 0 or not window or not name:
             return {"error": "missing required fields"}
@@ -497,8 +701,11 @@ class UIServer:
         # Get the proposals for this cluster
         proposals = self.store.proposals()
         target_props = [
-            p for p in proposals
-            if p.cluster == cluster and p.window == window and p.status == "proposed"
+            p
+            for p in proposals
+            if p.cluster == cluster
+            and p.window == window
+            and p.status == ProposalStatus.PROPOSED
         ]
 
         if not target_props:
@@ -512,81 +719,88 @@ class UIServer:
         }
 
         # Filter to only included proposals
-        write_props = [p for p in target_props if (p.asset_id, p.appearance) in included_set]
+        write_props = [
+            p for p in target_props if (p.asset_id, p.appearance) in included_set
+        ]
 
         if not write_props:
             return {"error": "none of the included appearances are writable"}
 
-        # Resolve the target person
-        if dry_run:
-            # In dry-run, we don't actually create the person or write faces
-            # Just return what would happen
-            person_id = "dry-run-person-id"
-            results = []
-            for prop in write_props:
-                appearances_by_asset = self.store.appearances_by_asset()
-                app_list = appearances_by_asset.get(prop.asset_id, [])
-                appearance = next((a for a in app_list if a.appearance == prop.appearance), None)
-                if appearance is None:
-                    results.append({
-                        "asset_id": prop.asset_id,
-                        "appearance": prop.appearance,
-                        "status": "error",
-                        "message": "appearance not found",
-                    })
-                    continue
+        # Resolve the target person (for dry-run we still need the real person_id
+        # to check ledger/tombstones correctly)
+        existing_person = self.immich.find_person_by_name(name)
+        if existing_person is not None:
+            person_id = existing_person.id
+        else:
+            # No existing person; use a placeholder that won't match any real ledger entry
+            # The shared helper uses person_id for ledger/tombstone checks, so this
+            # ensures dry-run correctly shows "would_write" for new people
+            person_id = f"new-person:{name}"
 
-                # Check if already written (via write ledger)
-                if self.store.has_write_ledger_entry(prop.asset_id, person_id):
-                    results.append({
-                        "asset_id": prop.asset_id,
-                        "appearance": prop.appearance,
-                        "status": "skipped",
-                        "message": "already written (ledger)",
-                    })
-                    continue
+        results = []
+        dry_run_actions = []
+        timestamp = datetime.now(timezone.utc)
 
-                # Check tombstone
-                if self.store.has_tombstone(prop.asset_id, person_id):
-                    results.append({
-                        "asset_id": prop.asset_id,
-                        "appearance": prop.appearance,
-                        "status": "skipped",
-                        "message": "tombstone (manually removed in Immich)",
-                    })
-                    continue
-
-                # Resolve head box
-                person_box = appearance.box
-                head_box = self.immich.resolve_head_box(
-                    prop.asset_id,
-                    person_box,
-                    self.cfg.clustering.face_overlap,
-                    pixel_source=self.cfg.detection.pixel_source,
-                )
-                if head_box is None:
-                    results.append({
-                        "asset_id": prop.asset_id,
-                        "appearance": prop.appearance,
-                        "status": "skipped",
-                        "message": "no head found",
-                    })
-                    continue
-
-                results.append({
+        for prop in write_props:
+            appearances_by_asset = self.store.appearances_by_asset()
+            app_list = appearances_by_asset.get(prop.asset_id, [])
+            appearance = next(
+                (a for a in app_list if a.appearance == prop.appearance), None
+            )
+            if appearance is None:
+                result = {
                     "asset_id": prop.asset_id,
                     "appearance": prop.appearance,
-                    "status": "would_write",
-                    "head_box": head_box,
-                })
+                    "status": WriteResultStatus.ERROR.value,
+                    "message": "appearance not found",
+                }
+                results.append(result)
+                dry_run_actions.append(
+                    DryRunAction(
+                        asset_id=prop.asset_id,
+                        appearance=prop.appearance,
+                        head_box=None,
+                        status=DryRunActionStatus.ERROR,
+                        message="appearance not found",
+                    )
+                )
+                continue
 
-            return {
-                "cluster": cluster,
-                "window": window,
-                "name": name,
-                "dry_run": True,
-                "results": results,
-            }
+            # Use shared write logic (dry_run=True)
+            result = self._write_appearance(
+                write_client=self.immich,  # read client has head detector
+                asset_id=prop.asset_id,
+                appearance=appearance,
+                person_id=person_id,
+                cluster=cluster,
+                window=window,
+                timestamp=timestamp,
+                dry_run=True,
+            )
+            results.append(result)
+            dry_run_actions.append(
+                DryRunAction(
+                    asset_id=prop.asset_id,
+                    appearance=prop.appearance,
+                    head_box=result.get("head_box"),
+                    status=DryRunActionStatus(result["status"]),
+                    message=result.get("message"),
+                )
+            )
+
+        # Persist the dry-run batch
+        batch_id = self.store.add_dry_run_batch(
+            name, window, cluster, timestamp, dry_run_actions
+        )
+
+        return {
+            "cluster": cluster,
+            "window": window,
+            "name": name,
+            "dry_run": True,
+            "batch_id": batch_id,
+            "results": results,
+        }
 
         # Real write path: need write-scoped API key
         write_api_key = self.cfg.immich.write_api_key
@@ -594,21 +808,7 @@ class UIServer:
             return {"error": "write-scoped API key not configured"}
 
         # Create a write-scoped client (with head detector for fallback)
-        head_cfg = HeadDetectorConfig(
-            weights_path=self.cfg.head_detection.weights_path,
-            input_size=self.cfg.head_detection.input_size,
-            confidence_threshold=self.cfg.head_detection.confidence_threshold,
-            top_expansion_ratio=self.cfg.head_detection.top_expansion_ratio,
-            width_expansion_ratio=self.cfg.head_detection.width_expansion_ratio,
-            nms_threshold=self.cfg.head_detection.nms_threshold,
-        )
-        write_client = ImmichClient(
-            self.cfg.immich.base_url,
-            write_api_key,
-            page_size=self.cfg.immich.page_size,
-            timeout=self.cfg.immich.timeout_seconds,
-            head_detector_cfg=head_cfg,
-        )
+        write_client = self._make_write_client()
 
         # Find or create the person
         existing_person = write_client.find_person_by_name(name)
@@ -622,119 +822,37 @@ class UIServer:
                 return {"error": f"failed to create person: {exc.message}"}
 
         results = []
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(timezone.utc)
 
         for prop in write_props:
             appearances_by_asset = self.store.appearances_by_asset()
             app_list = appearances_by_asset.get(prop.asset_id, [])
-            appearance = next((a for a in app_list if a.appearance == prop.appearance), None)
-            if appearance is None:
-                results.append({
-                    "asset_id": prop.asset_id,
-                    "appearance": prop.appearance,
-                    "status": "error",
-                    "message": "appearance not found",
-                })
-                continue
-
-            # Check if already written (via write ledger) - idempotency
-            if self.store.has_write_ledger_entry(prop.asset_id, person_id):
-                results.append({
-                    "asset_id": prop.asset_id,
-                    "appearance": prop.appearance,
-                    "status": "skipped",
-                    "message": "already written (ledger)",
-                })
-                continue
-
-            # Check tombstone
-            if self.store.has_tombstone(prop.asset_id, person_id):
-                results.append({
-                    "asset_id": prop.asset_id,
-                    "appearance": prop.appearance,
-                    "status": "skipped",
-                    "message": "tombstone (manually removed in Immich)",
-                })
-                continue
-
-            # Check existing faces for conflicts and already-labeled
-            person_box = appearance.box
-            has_conflict, already_labeled = write_client.check_existing_faces(
-                prop.asset_id, person_box, person_id, self.cfg.clustering.face_overlap
+            appearance = next(
+                (a for a in app_list if a.appearance == prop.appearance), None
             )
-
-            if already_labeled:
-                # Already has this person's face - skip and journal
-                self.store.add_write_ledger_entry(WriteLedgerEntry(
-                    asset_id=prop.asset_id,
-                    person_id=person_id,
-                    cluster=cluster,
-                    window=window,
-                    timestamp=timestamp,
-                ))
-                results.append({
-                    "asset_id": prop.asset_id,
-                    "appearance": prop.appearance,
-                    "status": "skipped",
-                    "message": "already labeled in Immich",
-                })
-                continue
-
-            if has_conflict:
-                # Different person's overlapping face - conflict
-                results.append({
-                    "asset_id": prop.asset_id,
-                    "appearance": prop.appearance,
-                    "status": "skipped",
-                    "message": "conflict: different person's overlapping face",
-                })
-                continue
-
-            # Resolve head box
-            head_box = write_client.resolve_head_box(prop.asset_id, person_box, self.cfg.clustering.face_overlap)
-            if head_box is None:
-                results.append({
-                    "asset_id": prop.asset_id,
-                    "appearance": prop.appearance,
-                    "status": "skipped",
-                    "message": "no head found",
-                })
-                continue
-
-            # Write the face
-            try:
-                write_client.create_face(
-                    prop.asset_id,
-                    person_id,
-                    head_box[0],
-                    head_box[1],
-                    head_box[2],
-                    head_box[3],
+            if appearance is None:
+                results.append(
+                    {
+                        "asset_id": prop.asset_id,
+                        "appearance": prop.appearance,
+                        "status": WriteResultStatus.ERROR.value,
+                        "message": "appearance not found",
+                    }
                 )
-            except ImmichError as exc:
-                results.append({
-                    "asset_id": prop.asset_id,
-                    "appearance": prop.appearance,
-                    "status": "error",
-                    "message": f"face creation failed: {exc.message}",
-                })
                 continue
 
-            # Journal the write
-            self.store.add_write_ledger_entry(WriteLedgerEntry(
+            # Use shared write logic (dry_run=False)
+            result = self._write_appearance(
+                write_client=write_client,
                 asset_id=prop.asset_id,
+                appearance=appearance,
                 person_id=person_id,
                 cluster=cluster,
                 window=window,
                 timestamp=timestamp,
-            ))
-
-            results.append({
-                "asset_id": prop.asset_id,
-                "appearance": prop.appearance,
-                "status": "written",
-                "head_box": head_box,
-            })
+                dry_run=False,
+            )
+            results.append(result)
 
         return {
             "cluster": cluster,
@@ -744,6 +862,100 @@ class UIServer:
             "dry_run": False,
             "results": results,
         }
+
+    def promote_batch(self, batch_id: str) -> dict[str, Any]:
+        """Promote a dry-run batch: replay its actions as real writes to Immich."""
+
+        # Get the dry-run batch
+        batch = self.store.get_dry_run_batch(batch_id)
+        if batch is None:
+            return {"error": f"batch not found: {batch_id}"}
+
+        if batch.promoted_at is not None:
+            return {"error": "batch already promoted"}
+
+        # Need write-scoped API key
+        write_api_key = self.cfg.immich.write_api_key
+        if not write_api_key:
+            return {"error": "write-scoped API key not configured"}
+
+        # Create a write-scoped client (with head detector for fallback)
+        write_client = self._make_write_client()
+
+        # Find or create the person
+        existing_person = write_client.find_person_by_name(batch.name)
+        if existing_person is not None:
+            person_id = existing_person.id
+        else:
+            try:
+                created = write_client.create_person(batch.name)
+                person_id = created.id
+            except ImmichError as exc:
+                return {"error": f"failed to create person: {exc.message}"}
+
+        results = []
+        timestamp = datetime.now(timezone.utc)
+
+        for action in batch.actions:
+            # Only replay actions that would_write
+            if action.status != DryRunActionStatus.WOULD_WRITE:
+                results.append(
+                    {
+                        "asset_id": action.asset_id,
+                        "appearance": action.appearance,
+                        "status": WriteResultStatus.SKIPPED.value,
+                        "message": action.message or "not a writable action",
+                    }
+                )
+                continue
+
+            # Get the appearance for the person box
+            appearances_by_asset = self.store.appearances_by_asset()
+            app_list = appearances_by_asset.get(action.asset_id, [])
+            appearance = next(
+                (a for a in app_list if a.appearance == action.appearance), None
+            )
+            if appearance is None:
+                results.append(
+                    {
+                        "asset_id": action.asset_id,
+                        "appearance": action.appearance,
+                        "status": WriteResultStatus.ERROR.value,
+                        "message": "appearance not found",
+                    }
+                )
+                continue
+
+            # Use shared write logic (dry_run=False, replay recorded head box)
+            result = self._write_appearance(
+                write_client=write_client,
+                asset_id=action.asset_id,
+                appearance=appearance,
+                person_id=person_id,
+                cluster=batch.cluster,
+                window=batch.window,
+                timestamp=timestamp,
+                dry_run=False,
+                expected_head_box=action.head_box,
+            )
+            results.append(result)
+
+        # Mark the batch as promoted
+        self.store.mark_dry_run_batch_promoted(batch_id, timestamp)
+
+        return {
+            "batch_id": batch_id,
+            "promoted": True,
+            "person_id": person_id,
+            "name": batch.name,
+            "window": batch.window,
+            "cluster": batch.cluster,
+            "results": results,
+        }
+
+    def get_dry_run_batches(self) -> list[dict[str, Any]]:
+        """Return all persisted dry-run batches."""
+        return self.store.get_dry_run_batches()
 
 
 def serve(config_path: Path, host: str = "0.0.0.0", port: int = 8080) -> None:
@@ -770,12 +982,21 @@ def main() -> None:
     import click
 
     @click.command()
-    @click.option("--config", "config_path", required=True, type=click.Path(path_type=Path, dir_okay=False))
+    @click.option(
+        "--config",
+        "config_path",
+        required=True,
+        type=click.Path(path_type=Path, dir_okay=False),
+    )
     @click.option("--host", default="0.0.0.0", help="Bind address")
     @click.option("--port", default=8080, type=int, help="Port to listen on")
     def ui(config_path: Path, host: str, port: int) -> None:
         """Run the confirmation UI HTTP server."""
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=sys.stderr)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+            stream=sys.stderr,
+        )
         serve(config_path, host, port)
 
     ui()

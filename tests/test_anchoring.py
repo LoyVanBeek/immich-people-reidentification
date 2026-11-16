@@ -13,15 +13,17 @@ photos another 5-appearance cluster; every distinct photo is a singleton
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from click.testing import Result
 
-import pytest
-
 from reid.clustering import capture_day
+from reid.enums import ProposalStatus
 from reid.store import Store
+
 from . import library
 from .conftest import run_batch
 from .stub_immich import StubImmich
@@ -59,7 +61,9 @@ def face_payload(
 def reid_stub() -> Iterator[StubImmich]:
     """Every fixture photo in one registry, late photos included."""
     server = StubImmich(
-        library.detection_registry() + library.late_photos() + library.detection_late_photos()
+        library.detection_registry()
+        + library.late_photos()
+        + library.detection_late_photos()
     )
     server.start()
     yield server
@@ -86,9 +90,11 @@ def proposals_by_asset(config_path: Path) -> dict[tuple[str, int], Any]:
 def test_unanimous_anchor_proposes_the_name_for_every_unlabeled_cluster_member(
     reid_stub: StubImmich, make_config: Any
 ) -> None:
-    reid_stub.faces[library.PHOTO_4_INDOOR_ID] = [face_payload(
-        library.PHOTO_4_INDOOR_ID, ("person-albert", "Albert"), INDOOR_FACE_BOX
-    )]
+    reid_stub.faces[library.PHOTO_4_INDOOR_ID] = [
+        face_payload(
+            library.PHOTO_4_INDOOR_ID, ("person-albert", "Albert"), INDOOR_FACE_BOX
+        )
+    ]
     config = make_config(reid_stub, clustering=CLUSTERING)
 
     result = run_batch(config)
@@ -98,7 +104,7 @@ def test_unanimous_anchor_proposes_the_name_for_every_unlabeled_cluster_member(
     # the indoor cluster proposes Albert; the anchor-less park cluster
     # (5 appearances >= minimum 2) enters the ask-for-name queue.
     rows = proposals_by_asset(config)
-    assert rows[(library.PHOTO_4_INDOOR_ID, 0)].status == "labeled"
+    assert rows[(library.PHOTO_4_INDOOR_ID, 0)].status == ProposalStatus.LABELED
     assert rows[(library.PHOTO_4_INDOOR_ID, 0)].proposed_name is None
     for asset_id in (
         library.PHOTO_5_INDOOR_ID,
@@ -106,7 +112,7 @@ def test_unanimous_anchor_proposes_the_name_for_every_unlabeled_cluster_member(
         library.PHOTO_7_INDOOR_ID,
         library.PHOTO_12_LATE_ID,
     ):
-        assert rows[(asset_id, 0)].status == "proposed", asset_id
+        assert rows[(asset_id, 0)].status == ProposalStatus.PROPOSED, asset_id
         assert rows[(asset_id, 0)].proposed_name == "Albert"
     for asset_id in (
         library.PHOTO_8_PARK_ID,
@@ -115,7 +121,7 @@ def test_unanimous_anchor_proposes_the_name_for_every_unlabeled_cluster_member(
         library.PHOTO_11_LATE_ID,
         library.PHOTO_13_LATE_ID,
     ):
-        assert rows[(asset_id, 0)].status == "ask_name", asset_id
+        assert rows[(asset_id, 0)].status == ProposalStatus.ASK_NAME, asset_id
         assert rows[(asset_id, 0)].proposed_name is None
 
     # 8 distinct photos stayed singletons: stored, never surfaced.
@@ -135,12 +141,14 @@ def test_unanimous_anchor_proposes_the_name_for_every_unlabeled_cluster_member(
 def test_conflicting_anchor_names_block_the_whole_cluster(
     reid_stub: StubImmich, make_config: Any
 ) -> None:
-    reid_stub.faces[library.PHOTO_4_INDOOR_ID] = [face_payload(
-        library.PHOTO_4_INDOOR_ID, ("person-albert", "Albert"), INDOOR_FACE_BOX
-    )]
-    reid_stub.faces[library.PHOTO_5_INDOOR_ID] = [face_payload(
-        library.PHOTO_5_INDOOR_ID, ("person-bea", "Bea"), INDOOR_FACE_BOX
-    )]
+    reid_stub.faces[library.PHOTO_4_INDOOR_ID] = [
+        face_payload(
+            library.PHOTO_4_INDOOR_ID, ("person-albert", "Albert"), INDOOR_FACE_BOX
+        )
+    ]
+    reid_stub.faces[library.PHOTO_5_INDOOR_ID] = [
+        face_payload(library.PHOTO_5_INDOOR_ID, ("person-bea", "Bea"), INDOOR_FACE_BOX)
+    ]
     config = make_config(reid_stub, clustering=CLUSTERING)
 
     result = run_batch(config)
@@ -154,10 +162,13 @@ def test_conflicting_anchor_names_block_the_whole_cluster(
         library.PHOTO_7_INDOOR_ID,
         library.PHOTO_12_LATE_ID,
     ):
-        assert rows[(asset_id, 0)].status in ("labeled", "conflicted"), asset_id
+        assert rows[(asset_id, 0)].status in (
+            ProposalStatus.LABELED,
+            ProposalStatus.CONFLICTED,
+        ), asset_id
         assert rows[(asset_id, 0)].proposed_name is None
-    assert rows[(library.PHOTO_4_INDOOR_ID, 0)].status == "labeled"
-    assert rows[(library.PHOTO_6_INDOOR_ID, 0)].status == "conflicted"
+    assert rows[(library.PHOTO_4_INDOOR_ID, 0)].status == ProposalStatus.LABELED
+    assert rows[(library.PHOTO_6_INDOOR_ID, 0)].status == ProposalStatus.CONFLICTED
     # Nothing was proposed anywhere in this run.
     assert window_line(result) == (
         "window 2026-11-10: appearances=18 clusters=2 anchored=0.0% "
@@ -168,26 +179,28 @@ def test_conflicting_anchor_names_block_the_whole_cluster(
 def test_appearances_immich_already_labeled_never_receive_proposals(
     reid_stub: StubImmich, make_config: Any
 ) -> None:
-    reid_stub.faces[library.PHOTO_4_INDOOR_ID] = [face_payload(
-        library.PHOTO_4_INDOOR_ID, ("person-albert", "Albert"), INDOOR_FACE_BOX
-    )]
+    reid_stub.faces[library.PHOTO_4_INDOOR_ID] = [
+        face_payload(
+            library.PHOTO_4_INDOOR_ID, ("person-albert", "Albert"), INDOOR_FACE_BOX
+        )
+    ]
     # Assigned but still unnamed: labels the appearance, anchors nothing.
-    reid_stub.faces[library.PHOTO_5_INDOOR_ID] = [face_payload(
-        library.PHOTO_5_INDOOR_ID, ("person-unnamed", ""), INDOOR_FACE_BOX
-    )]
+    reid_stub.faces[library.PHOTO_5_INDOOR_ID] = [
+        face_payload(library.PHOTO_5_INDOOR_ID, ("person-unnamed", ""), INDOOR_FACE_BOX)
+    ]
     config = make_config(reid_stub, clustering=CLUSTERING)
 
     result = run_batch(config)
     assert result.exit_code == 0, result.output
 
     rows = proposals_by_asset(config)
-    assert rows[(library.PHOTO_5_INDOOR_ID, 0)].status == "labeled"
+    assert rows[(library.PHOTO_5_INDOOR_ID, 0)].status == ProposalStatus.LABELED
     for asset_id in (
         library.PHOTO_6_INDOOR_ID,
         library.PHOTO_7_INDOOR_ID,
         library.PHOTO_12_LATE_ID,
     ):
-        assert rows[(asset_id, 0)].status == "proposed", asset_id
+        assert rows[(asset_id, 0)].status == ProposalStatus.PROPOSED, asset_id
         assert rows[(asset_id, 0)].proposed_name == "Albert"
     # One distinct name among the anchors: unanimous, not conflicted.
     assert "conflicted=0.0%" in window_line(result)
@@ -215,9 +228,11 @@ def test_anchor_less_clusters_below_the_minimum_never_surface(
 def test_clusters_are_rebuilt_from_scratch_every_run(
     reid_stub: StubImmich, make_config: Any
 ) -> None:
-    reid_stub.faces[library.PHOTO_4_INDOOR_ID] = [face_payload(
-        library.PHOTO_4_INDOOR_ID, ("person-albert", "Albert"), INDOOR_FACE_BOX
-    )]
+    reid_stub.faces[library.PHOTO_4_INDOOR_ID] = [
+        face_payload(
+            library.PHOTO_4_INDOOR_ID, ("person-albert", "Albert"), INDOOR_FACE_BOX
+        )
+    ]
     config = make_config(reid_stub, clustering=CLUSTERING)
 
     first = run_batch(config)
@@ -248,10 +263,14 @@ def test_window_membership_follows_the_capture_time(
     result = run_batch(config)
     assert result.exit_code == 0, result.output
 
-    day_one = capture_day("2026-11-10T08:00:00.000Z")
-    day_two = capture_day("2026-11-11T12:00:00.000Z")
+    day_one = capture_day(datetime.fromisoformat("2026-11-10T08:00:00.000Z"))
+    day_two = capture_day(datetime.fromisoformat("2026-11-11T12:00:00.000Z"))
     assert day_one is not None and day_two is not None and day_one != day_two
-    lines = {line.split(":")[0]: line for line in result.output.splitlines() if line.startswith("window ")}
+    lines = {
+        line.split(":")[0]: line
+        for line in result.output.splitlines()
+        if line.startswith("window ")
+    }
     assert len(lines) == 2, result.output
     # Window one: the 5-appearance indoor cluster and a 3-appearance park
     # cluster (both anchor-less -> queue), plus the 8 singletons.
@@ -286,9 +305,15 @@ def test_capture_time_prefers_exif_then_falls_back_to_upload(
     assert result.exit_code == 0, result.output
 
     by_asset = store_of(config).appearances_by_asset()
-    assert by_asset[library.PHOTO_11_LATE_ID][0].captured_at == "2026-11-09T10:00:00.000Z"
-    assert by_asset[library.PHOTO_13_LATE_ID][0].captured_at == library.PHOTO_13_CREATED_AT
-    assert by_asset[library.PHOTO_1_STANDING_ID][0].captured_at == library.PHOTO_1_CREATED_AT
+    assert by_asset[library.PHOTO_11_LATE_ID][0].captured_at == datetime.fromisoformat(
+        "2026-11-09T10:00:00.000Z"
+    )
+    assert by_asset[library.PHOTO_13_LATE_ID][0].captured_at == datetime.fromisoformat(
+        library.PHOTO_13_CREATED_AT
+    )
+    assert by_asset[library.PHOTO_1_STANDING_ID][
+        0
+    ].captured_at == datetime.fromisoformat(library.PHOTO_1_CREATED_AT)
 
 
 def test_window_days_merge_consecutive_capture_days_into_one_window(
@@ -300,12 +325,14 @@ def test_window_days_merge_consecutive_capture_days_into_one_window(
     for asset in reid_stub.assets:
         if asset["id"] in (library.PHOTO_11_LATE_ID, library.PHOTO_13_LATE_ID):
             asset["exifInfo"] = {"dateTimeOriginal": "2026-11-11T12:00:00.000Z"}
-    config = make_config(reid_stub, clustering={"distance_threshold": 0.01, "window_days": 2})
+    config = make_config(
+        reid_stub, clustering={"distance_threshold": 0.01, "window_days": 2}
+    )
 
     result = run_batch(config)
     assert result.exit_code == 0, result.output
 
-    day_one = capture_day("2026-11-10T08:00:00.000Z")
+    day_one = capture_day(datetime.fromisoformat("2026-11-10T08:00:00.000Z"))
     assert day_one is not None
     assert window_line(result) == (
         f"window {day_one.isoformat()}: appearances=18 clusters=2 anchored=0.0% "

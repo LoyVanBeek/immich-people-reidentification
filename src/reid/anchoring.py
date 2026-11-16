@@ -20,15 +20,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from .enums import ClusterOutcomeStatus, ProposalStatus
 from .immich import Face
-from .store import (
-    ASK_NAME,
-    CONFLICTED,
-    LABELED,
-    PROPOSED,
-    Appearance,
-    Proposal,
-)
+from .store import Appearance, Proposal
 
 
 @dataclass(frozen=True)
@@ -46,7 +40,7 @@ class ClusterOutcome:
     cluster_id: int
     members: tuple[int, ...]  # indices into the window's appearance list
     anchor_names: tuple[str, ...]  # distinct named anchors, sorted
-    status: str  # anchored | conflicted | anchor_less | singleton
+    status: ClusterOutcomeStatus
 
 
 @dataclass(frozen=True)
@@ -86,7 +80,9 @@ def face_person_overlap(appearance: Appearance, face: Face) -> float:
     return intersection / area if area > 0.0 else 0.0
 
 
-def claim_face(appearance: Appearance, faces: Sequence[Face], min_overlap: float) -> Face | None:
+def claim_face(
+    appearance: Appearance, faces: Sequence[Face], min_overlap: float
+) -> Face | None:
     """The best face whose overlap with the appearance's box reaches the minimum.
 
     Ties keep the earlier face in the list, so the claim is deterministic.
@@ -114,7 +110,9 @@ def build_window(
     row; singletons and anchor-less clusters below the minimum get none.
     """
     claims: list[Face | None] = [
-        claim_face(appearance, faces_by_asset.get(appearance.asset_id, ()), cfg.face_overlap)
+        claim_face(
+            appearance, faces_by_asset.get(appearance.asset_id, ()), cfg.face_overlap
+        )
         for appearance in appearances
     ]
 
@@ -129,28 +127,46 @@ def build_window(
             }
         )
         if len(members) == 1:
-            status = "singleton"
+            status = ClusterOutcomeStatus.SINGLETON
         elif len(anchor_names) >= 2:
-            status = "conflicted"
+            status = ClusterOutcomeStatus.CONFLICTED
         elif len(anchor_names) == 1:
-            status = "anchored"
+            status = ClusterOutcomeStatus.ANCHORED
         else:
-            status = "anchor_less"
-        outcomes.append(ClusterOutcome(cluster_id, tuple(members), tuple(anchor_names), status))
+            status = ClusterOutcomeStatus.ANCHOR_LESS
+        outcomes.append(
+            ClusterOutcome(cluster_id, tuple(members), tuple(anchor_names), status)
+        )
 
-        if status == "singleton":
+        if status == ClusterOutcomeStatus.SINGLETON:
             continue
         for index in members:
             appearance = appearances[index]
             face = claims[index]
             if face is not None and face.person_id is not None:
-                proposals.append(_row(appearance, window, cluster_id, LABELED, None))
-            elif status == "anchored":
-                proposals.append(_row(appearance, window, cluster_id, PROPOSED, anchor_names[0]))
-            elif status == "conflicted":
-                proposals.append(_row(appearance, window, cluster_id, CONFLICTED, None))
+                proposals.append(
+                    _row(appearance, window, cluster_id, ProposalStatus.LABELED, None)
+                )
+            elif status == ClusterOutcomeStatus.ANCHORED:
+                proposals.append(
+                    _row(
+                        appearance,
+                        window,
+                        cluster_id,
+                        ProposalStatus.PROPOSED,
+                        anchor_names[0],
+                    )
+                )
+            elif status == ClusterOutcomeStatus.CONFLICTED:
+                proposals.append(
+                    _row(
+                        appearance, window, cluster_id, ProposalStatus.CONFLICTED, None
+                    )
+                )
             elif len(members) >= cfg.min_cluster_size:
-                proposals.append(_row(appearance, window, cluster_id, ASK_NAME, None))
+                proposals.append(
+                    _row(appearance, window, cluster_id, ProposalStatus.ASK_NAME, None)
+                )
             # Anchor-less below the minimum: stored, never surfaced.
 
     surfaced = [outcome for outcome in outcomes if len(outcome.members) >= 2]
@@ -158,18 +174,40 @@ def build_window(
         window=window,
         appearances=len(appearances),
         clusters=len(surfaced),
-        anchored=sum(1 for outcome in surfaced if outcome.status == "anchored"),
-        conflicted=sum(1 for outcome in surfaced if outcome.status == "conflicted"),
-        anchor_less=sum(1 for outcome in surfaced if outcome.status == "anchor_less"),
-        singletons=sum(1 for outcome in outcomes if outcome.status == "singleton"),
-        proposals=sum(1 for proposal in proposals if proposal.status == PROPOSED),
-        ask_for_name=sum(1 for proposal in proposals if proposal.status == ASK_NAME),
+        anchored=sum(
+            1 for outcome in surfaced if outcome.status == ClusterOutcomeStatus.ANCHORED
+        ),
+        conflicted=sum(
+            1
+            for outcome in surfaced
+            if outcome.status == ClusterOutcomeStatus.CONFLICTED
+        ),
+        anchor_less=sum(
+            1
+            for outcome in surfaced
+            if outcome.status == ClusterOutcomeStatus.ANCHOR_LESS
+        ),
+        singletons=sum(
+            1
+            for outcome in outcomes
+            if outcome.status == ClusterOutcomeStatus.SINGLETON
+        ),
+        proposals=sum(
+            1 for proposal in proposals if proposal.status == ProposalStatus.PROPOSED
+        ),
+        ask_for_name=sum(
+            1 for proposal in proposals if proposal.status == ProposalStatus.ASK_NAME
+        ),
     )
     return WindowOutcome(window, tuple(outcomes), tuple(proposals), summary)
 
 
 def _row(
-    appearance: Appearance, window: str, cluster_id: int, status: str, name: str | None
+    appearance: Appearance,
+    window: str,
+    cluster_id: int,
+    status: ProposalStatus,
+    name: str | None,
 ) -> Proposal:
     return Proposal(
         asset_id=appearance.asset_id,
