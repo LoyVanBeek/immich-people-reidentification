@@ -1,7 +1,7 @@
 # 16-add-ground-truth-fixtures
 
 Type: task
-Status: needs-triage
+Status: ready-for-human
 Blocked by:
 
 ## Summary
