@@ -10,6 +10,7 @@ through the store's public API.
 from __future__ import annotations
 
 from click.testing import Result
+
 from reid.store import Store
 
 from . import library
@@ -138,6 +139,7 @@ def test_store_wipe_erases_embeddings_and_resets_the_feed(
 
 def wipe(config_path) -> Result:
     from click.testing import CliRunner
+
     from reid.wipe import main
 
     return CliRunner().invoke(

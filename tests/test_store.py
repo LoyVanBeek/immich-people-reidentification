@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+
 from reid.enums import ProposalStatus
 from reid.store import (
     Appearance,

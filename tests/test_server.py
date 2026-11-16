@@ -10,11 +10,11 @@ from pathlib import Path
 from urllib.request import urlopen
 
 import pytest
+
 from reid.config import load_config
 from reid.enums import ProposalStatus
 from reid.server import UIServer, serve
 from reid.store import Appearance, Proposal, Store
-
 from tests import library
 from tests.stub_immich import API_KEY, StubImmich
 

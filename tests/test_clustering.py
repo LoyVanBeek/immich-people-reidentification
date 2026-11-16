@@ -12,6 +12,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import numpy as np
+
 from reid.anchoring import AnchorConfig, build_window, claim_face, face_person_overlap
 from reid.clustering import (
     average_linkage_clusters,

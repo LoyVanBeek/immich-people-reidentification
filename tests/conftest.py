@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner, Result
+
 from reid.cli import batch
 
 from . import library
