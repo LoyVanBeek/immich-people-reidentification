@@ -100,8 +100,8 @@ def test_crashed_run_resumes_from_the_checkpoint(
 
         first = run_batch(config)
         assert first.exit_code == 0, first.output
-        # Check for base time without milliseconds (isoformat drops .000)
-        assert library.EXTENDED_PHOTO_MAX_CREATED_AT.replace(".000", "") in first.output
+        # Check for checkpoint with milliseconds (isoformat_z includes .000Z)
+        assert library.EXTENDED_PHOTO_MAX_CREATED_AT in first.output
 
         # Three new photos land after the first run; then the feed dies mid-run.
         server.assets.extend(library.late_photos())
