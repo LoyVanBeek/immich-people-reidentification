@@ -1020,15 +1020,15 @@ def main() -> None:
     """Entry point for `reid-ui`."""
     import click
 
-    @click.command()  # type: ignore[untyped-decorator]
-    @click.option(  # type: ignore[untyped-decorator]
+    @click.command()  # type: ignore
+    @click.option(  # type: ignore
         "--config",
         "config_path",
         required=True,
         type=click.Path(path_type=Path, dir_okay=False),
     )
-    @click.option("--host", default="0.0.0.0", help="Bind address")  # type: ignore[untyped-decorator]
-    @click.option("--port", default=8080, type=int, help="Port to listen on")  # type: ignore[untyped-decorator]
+    @click.option("--host", default="0.0.0.0", help="Bind address")  # type: ignore
+    @click.option("--port", default=8080, type=int, help="Port to listen on")  # type: ignore
     def ui(config_path: Path, host: str, port: int) -> None:
         """Run the confirmation UI HTTP server."""
         logging.basicConfig(
