@@ -160,7 +160,7 @@ class ImmichClient:
         )
         if response.status_code >= 400:
             raise ImmichError(response.status_code, _error_message(response))
-        return response.content
+        return response.content  # type: ignore[no-any-return]
 
     def fetch_faces(self, asset_id: str) -> list[Face]:
         """Fetch every face detection on one asset, assigned or not.
@@ -474,6 +474,10 @@ def _error_message(response: httpx.Response) -> str:
     try:
         payload: object = response.json()
     except ValueError:
-        return response.text[:500] or response.reason_phrase
+        return response.text[:500] or response.reason_phrase or "unknown error"
     message = payload.get("message") if isinstance(payload, dict) else None
-    return str(message) if message else response.text[:500] or response.reason_phrase
+    return (
+        str(message)
+        if message
+        else response.text[:500] or response.reason_phrase or "unknown error"
+    )

@@ -517,7 +517,9 @@ class Store:
         ]
         return batches
 
-    def mark_dry_run_batch_promoted(self, batch_id: str, timestamp: datetime, person_id: str) -> None:
+    def mark_dry_run_batch_promoted(
+        self, batch_id: str, timestamp: datetime, person_id: str
+    ) -> None:
         """Record that a dry-run batch has been promoted."""
         with self._conn:
             self._conn.execute(

@@ -319,7 +319,9 @@ class UIServer:
 
     def _make_write_client(self) -> ImmichClient:
         """Create a write-scoped Immich client with head detector for fallback."""
-        assert self.cfg.immich.write_api_key is not None, "write_api_key must be configured"
+        assert self.cfg.immich.write_api_key is not None, (
+            "write_api_key must be configured"
+        )
         head_cfg = HeadDetectorConfig(
             weights_path=self.cfg.head_detection.weights_path,
             input_size=self.cfg.head_detection.input_size,
@@ -783,9 +785,9 @@ class UIServer:
                 DryRunAction(
                     asset_id=prop.asset_id,
                     appearance=prop.appearance,
-                    head_box=result.get("head_box") if result.get("head_box") is not None else None,
+                    head_box=result.get("head_box"),  # type: ignore[arg-type]
                     status=DryRunActionStatus(result["status"]),
-                    message=result.get("message") if result.get("message") is not None else None,
+                    message=result.get("message"),  # type: ignore[arg-type]
                 )
             )
 
@@ -977,7 +979,9 @@ class UIServer:
                 "window": batch.window,
                 "cluster": batch.cluster,
                 "timestamp": batch.timestamp.isoformat(),
-                "promoted_at": batch.promoted_at.isoformat() if batch.promoted_at else None,
+                "promoted_at": batch.promoted_at.isoformat()
+                if batch.promoted_at
+                else None,
                 "actions": [
                     {
                         "asset_id": action.asset_id,
@@ -1016,15 +1020,15 @@ def main() -> None:
     """Entry point for `reid-ui`."""
     import click
 
-    @click.command()
-    @click.option(
+    @click.command()  # type: ignore[untyped-decorator]
+    @click.option(  # type: ignore[untyped-decorator]
         "--config",
         "config_path",
         required=True,
         type=click.Path(path_type=Path, dir_okay=False),
     )
-    @click.option("--host", default="0.0.0.0", help="Bind address")
-    @click.option("--port", default=8080, type=int, help="Port to listen on")
+    @click.option("--host", default="0.0.0.0", help="Bind address")  # type: ignore[untyped-decorator]
+    @click.option("--port", default=8080, type=int, help="Port to listen on")  # type: ignore[untyped-decorator]
     def ui(config_path: Path, host: str, port: int) -> None:
         """Run the confirmation UI HTTP server."""
         logging.basicConfig(

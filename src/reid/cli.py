@@ -17,14 +17,14 @@ from .store import StoreError
 _FATAL_ERRORS = (ImmichError, ConfigError, StoreError)
 
 
-@click.command()
+@click.command()  # type: ignore[untyped-decorator]
 @click.option(
     "--config",
     "config_path",
     required=True,
     type=click.Path(path_type=Path, dir_okay=False),
     help="Path to the reid.toml config file.",
-)
+)  # type: ignore[untyped-decorator]
 def batch(config_path: Path) -> None:
     """Run one batch: fetch new Immich photos and advance the checkpoint."""
     try:
