@@ -160,7 +160,7 @@ class ImmichClient:
         )
         if response.status_code >= 400:
             raise ImmichError(response.status_code, _error_message(response))
-        return response.content  # type: ignore[no-any-return]
+        return response.content  # type: ignore
 
     def fetch_faces(self, asset_id: str) -> list[Face]:
         """Fetch every face detection on one asset, assigned or not.
