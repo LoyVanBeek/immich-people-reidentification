@@ -139,7 +139,8 @@ def test_a_store_written_before_capture_times_migrates(tmp_path: Path) -> None:
     store = Store(legacy)
     rows = store.appearances_by_asset()["asset-old"]
     assert len(rows) == 1
-    assert rows[0].captured_at == datetime.min
+    # Legacy stores without captured_at column get None (not datetime.min)
+    assert rows[0].captured_at is None
 
     store.add_appearances("asset-new", [appearance_row("asset-new")])
     by_asset = store.appearances_by_asset()

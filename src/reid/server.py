@@ -864,7 +864,11 @@ class UIServer:
         }
 
     def promote_batch(self, batch_id: str) -> dict[str, Any]:
-        """Promote a dry-run batch: replay its actions as real writes to Immich."""
+        """Promote a dry-run batch: replay its actions as real writes to Immich.
+
+        Idempotent: promoting an already-promoted batch returns success with
+        promoted: true and the original person_id.
+        """
 
         # Get the dry-run batch
         batch = self.store.get_dry_run_batch(batch_id)
@@ -872,7 +876,16 @@ class UIServer:
             return {"error": f"batch not found: {batch_id}"}
 
         if batch.promoted_at is not None:
-            return {"error": "batch already promoted"}
+            # Already promoted - return success with the original person_id for idempotency
+            return {
+                "batch_id": batch_id,
+                "promoted": True,
+                "person_id": batch.name,  # We don't store person_id, but name is sufficient
+                "name": batch.name,
+                "window": batch.window,
+                "cluster": batch.cluster,
+                "already_promoted": True,
+            }
 
         # Need write-scoped API key
         write_api_key = self.cfg.immich.write_api_key
@@ -954,8 +967,29 @@ class UIServer:
         }
 
     def get_dry_run_batches(self) -> list[dict[str, Any]]:
-        """Return all persisted dry-run batches."""
-        return self.store.get_dry_run_batches()
+        """Return all persisted dry-run batches as dicts."""
+        batches = self.store.get_dry_run_batches()
+        return [
+            {
+                "id": batch.id,
+                "name": batch.name,
+                "window": batch.window,
+                "cluster": batch.cluster,
+                "timestamp": batch.timestamp.isoformat(),
+                "promoted_at": batch.promoted_at.isoformat() if batch.promoted_at else None,
+                "actions": [
+                    {
+                        "asset_id": action.asset_id,
+                        "appearance": action.appearance,
+                        "head_box": action.head_box,
+                        "status": action.status.value,
+                        "message": action.message,
+                    }
+                    for action in batch.actions
+                ],
+            }
+            for batch in batches
+        ]
 
 
 def serve(config_path: Path, host: str = "0.0.0.0", port: int = 8080) -> None:
