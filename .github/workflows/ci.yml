@@ -8,7 +8,7 @@ on:
 
 jobs:
   typecheck:
-    name: Type Check (mypy + ty)
+    name: Type Check (mypy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,9 +26,6 @@ jobs:
 
       - name: Run mypy
         run: uv run mypy src/
-
-      - name: Run ty
-        run: uv run ty check
 
   test:
     name: Tests

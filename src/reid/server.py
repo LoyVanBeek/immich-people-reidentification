@@ -136,26 +136,26 @@ class UIAPIHandler(BaseHTTPRequestHandler):
     """HTTP handler for the confirmation UI API."""
 
     # Class variable set by serve()
-    ui_server: UIServer = None  # type: ignore[assignment]
+    ui_server: UIServer | None = None
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
         if path == "/api/state":
-            self._send_json(self.ui_server.get_ui_state())
+            self._send_json(self.ui_server.get_ui_state())  # type: ignore[union-attr]
         elif path == "/api/evidence":
-            self._send_json(self.ui_server.get_evidence(parse_qs(parsed.query)))
+            self._send_json(self.ui_server.get_evidence(parse_qs(parsed.query)))  # type: ignore[union-attr]
         elif path == "/api/people":
-            self._send_json({"people": self.ui_server.get_people()})
+            self._send_json({"people": self.ui_server.get_people()})  # type: ignore[union-attr]
         elif path == "/api/config":
-            self._send_json(asdict(self.ui_server.get_config_knobs()))
+            self._send_json(asdict(self.ui_server.get_config_knobs()))  # type: ignore[union-attr]
         elif path == "/api/proposals":
-            self._send_json(self.ui_server.get_proposals())
+            self._send_json(self.ui_server.get_proposals())  # type: ignore[union-attr]
         elif path == "/api/summary":
-            self._send_json(self.ui_server.get_summary())
+            self._send_json(self.ui_server.get_summary())  # type: ignore[union-attr]
         elif path == "/api/dry-run-batches":
-            self._send_json(self.ui_server.get_dry_run_batches())
+            self._send_json(self.ui_server.get_dry_run_batches())  # type: ignore[union-attr]
         elif path == "/" or path == "/index.html":
             self._serve_static("index.html")
         else:
@@ -173,14 +173,14 @@ class UIAPIHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self.send_error(400, "Invalid JSON")
                 return
-            result = self.ui_server.confirm_cluster(body)
+            result = self.ui_server.confirm_cluster(body)  # type: ignore[union-attr]
             self._send_json(result)
         elif path.startswith("/api/promote/"):
             batch_id = path[len("/api/promote/") :]
             if not batch_id:
                 self.send_error(400, "Missing batch ID")
                 return
-            result = self.ui_server.promote_batch(batch_id)
+            result = self.ui_server.promote_batch(batch_id)  # type: ignore[union-attr]
             self._send_json(result)
         else:
             self.send_error(405, "Method not allowed")
