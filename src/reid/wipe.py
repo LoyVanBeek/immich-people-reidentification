@@ -16,14 +16,14 @@ from .config import ConfigError, load_config
 from .store import Store, StoreError
 
 
-@click.command()  # type: ignore
+@click.command()
 @click.option(
     "--config",
     "config_path",
     required=True,
     type=click.Path(path_type=Path, dir_okay=False),
     help="Path to the reid.toml config file.",
-)  # type: ignore
+)
 def main(config_path: Path) -> None:
     """Wipe the local store: embeddings and checkpoints."""
     try:
