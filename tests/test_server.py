@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from urllib.request import urlopen
@@ -20,7 +21,7 @@ from tests.stub_immich import API_KEY, StubImmich
 
 
 @pytest.fixture
-def ui_stub() -> StubImmich:
+def ui_stub() -> Iterator[StubImmich]:
     """A stub with people."""
     server = StubImmich(library.detection_registry())
     server.people = library.people_registry()
@@ -30,7 +31,7 @@ def ui_stub() -> StubImmich:
 
 
 @pytest.fixture
-def config_with_store(tmp_path: Path, ui_stub: StubImmich) -> Path:
+def config_with_store(tmp_path: Path, ui_stub: StubImmich) -> Iterator[Path]:
     """A config pointing to a store with some proposals."""
     weights_dir = Path(__file__).parent.parent / "src" / "reid" / "weights"
     config_path = tmp_path / "uitest.toml"
@@ -62,7 +63,7 @@ face_overlap = 0.5
 log_level = "info"
 """
     )
-    return config_path
+    yield config_path
 
 
 @pytest.fixture
@@ -264,7 +265,9 @@ class TestServerHTTP:
     """Integration tests running the actual HTTP server."""
 
     @pytest.fixture
-    def server_url(self, config_with_store: Path, populated_store: Store) -> str:
+    def server_url(
+        self, config_with_store: Path, populated_store: Store
+    ) -> Iterator[str]:
         """Start a server for this test."""
         # Find a free port
         import socket
@@ -470,6 +473,7 @@ log_level = "info"
         server = UIServer(cfg)
 
         # Spy on the head detector to verify it's NOT called when Immich face is available
+        assert server.immich._head_detector is not None
         detect_calls = {"count": 0}
         original_detect = server.immich._head_detector.detect
 
@@ -477,7 +481,7 @@ log_level = "info"
             detect_calls["count"] += 1
             return original_detect(crop)
 
-        server.immich._head_detector.detect = spy_detect
+        server.immich._head_detector.detect = spy_detect  # type: ignore[method-assign]
 
         # Dry-run confirm for cluster 0
         result = server.confirm_cluster(
