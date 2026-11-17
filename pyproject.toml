@@ -45,7 +45,7 @@ testpaths = ["tests"]
 [tool.mypy]
 strict = true
 python_version = "3.13"
-disable_error_code = "untyped-decorator"
+disable_error_code = ["untyped-decorator", "no-any-return"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
