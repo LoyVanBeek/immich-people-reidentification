@@ -461,7 +461,7 @@ class Store:
     def get_dry_run_batch(self, batch_id: str) -> DryRunBatch | None:
         """Get a dry-run batch by ID, or None if not found."""
         row = self._conn.execute(
-            "SELECT id, name, window, cluster, timestamp, promoted_at "
+            "SELECT id, name, window, cluster, timestamp, promoted_at, person_id "
             "FROM dry_run_batch WHERE id = ?",
             (batch_id,),
         ).fetchone()
