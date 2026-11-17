@@ -881,7 +881,7 @@ class UIServer:
             return {
                 "batch_id": batch_id,
                 "promoted": True,
-                "person_id": batch.name,  # We don't store person_id, but name is sufficient
+                "person_id": batch.person_id or batch.name,
                 "name": batch.name,
                 "window": batch.window,
                 "cluster": batch.cluster,
@@ -954,8 +954,8 @@ class UIServer:
             )
             results.append(result)
 
-        # Mark the batch as promoted
-        self.store.mark_dry_run_batch_promoted(batch_id, timestamp)
+        # Mark the batch as promoted with the person_id
+        self.store.mark_dry_run_batch_promoted(batch_id, timestamp, person_id)
 
         return {
             "batch_id": batch_id,

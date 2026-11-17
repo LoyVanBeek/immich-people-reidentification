@@ -96,6 +96,7 @@ class DryRunBatch:
     timestamp: datetime  # wall-clock UTC instant when the batch was recorded
     actions: list[DryRunAction]
     promoted_at: datetime | None = None  # set when the batch has been promoted
+    person_id: str | None = None  # set when the batch is promoted
 
 
 class Store:
@@ -168,7 +169,8 @@ class Store:
                     window TEXT NOT NULL,
                     cluster INTEGER NOT NULL,
                     timestamp TEXT NOT NULL,
-                    promoted_at TEXT
+                    promoted_at TEXT,
+                    person_id TEXT
                 )
                 """
             )
@@ -213,6 +215,8 @@ class Store:
         }
         if "promoted_at" not in batch_columns:
             self._conn.execute("ALTER TABLE dry_run_batch ADD COLUMN promoted_at TEXT")
+        if "person_id" not in batch_columns:
+            self._conn.execute("ALTER TABLE dry_run_batch ADD COLUMN person_id TEXT")
 
     def get_checkpoint(self, feed: str) -> str | None:
         row = self._conn.execute(
@@ -485,6 +489,7 @@ class Store:
             )
 
         promoted_at_str = row[5]
+        person_id_str = row[6] if len(row) > 6 else None
         return DryRunBatch(
             id=str(row[0]),
             name=str(row[1]),
@@ -497,6 +502,7 @@ class Store:
                 if promoted_at_str is not None
                 else None
             ),
+            person_id=person_id_str,
         )
 
     def get_dry_run_batches(self) -> list[DryRunBatch]:
@@ -511,12 +517,12 @@ class Store:
         ]
         return batches
 
-    def mark_dry_run_batch_promoted(self, batch_id: str, timestamp: datetime) -> None:
+    def mark_dry_run_batch_promoted(self, batch_id: str, timestamp: datetime, person_id: str) -> None:
         """Record that a dry-run batch has been promoted."""
         with self._conn:
             self._conn.execute(
-                "UPDATE dry_run_batch SET promoted_at = ? WHERE id = ?",
-                (timestamp.isoformat(), batch_id),
+                "UPDATE dry_run_batch SET promoted_at = ?, person_id = ? WHERE id = ?",
+                (timestamp.isoformat(), person_id, batch_id),
             )
 
     # -- wipe ----------------------------------------------------------------
