@@ -330,7 +330,7 @@ class UIServer:
         )
         return ImmichClient(
             self.cfg.immich.base_url,
-            self.cfg.immich.write_api_key,  # type: ignore[arg-type]  # asserted non-None above
+            self.cfg.immich.write_api_key,
             page_size=self.cfg.immich.page_size,
             timeout=self.cfg.immich.timeout_seconds,
             head_detector_cfg=head_cfg,
@@ -783,11 +783,11 @@ class UIServer:
                 DryRunAction(
                     asset_id=prop.asset_id,
                     appearance=prop.appearance,
-                    head_box=result.get("head_box"),
+                    head_box=result.get("head_box") if result.get("head_box") is not None else None,
                     status=DryRunActionStatus(result["status"]),
-                    message=result.get("message"),
+                    message=result.get("message") if result.get("message") is not None else None,
                 )
-            )  # type: ignore[arg-type]
+            )
 
         # Persist the dry-run batch
         batch_id = self.store.add_dry_run_batch(
