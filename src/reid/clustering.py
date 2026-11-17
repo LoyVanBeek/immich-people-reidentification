@@ -60,14 +60,14 @@ def average_linkage_clusters(
     return [tuple(sorted(members)) for members in clusters]
 
 
-def capture_day(captured_at: datetime, tz: tzinfo | None = None) -> date | None:
+def capture_day(captured_at: datetime | None, tz: tzinfo | None = None) -> date | None:
     """The local calendar day an asset was captured, or None if unusable.
 
     A timestamp with a timezone is converted into the given timezone (the
     Pi's local timezone when omitted); a naive timestamp is treated as
     already-local wall time.
     """
-    if captured_at == datetime.min:
+    if captured_at is None or captured_at == datetime.min:
         return None
     moment = captured_at
     if moment.tzinfo is None:

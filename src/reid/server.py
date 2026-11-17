@@ -319,6 +319,7 @@ class UIServer:
 
     def _make_write_client(self) -> ImmichClient:
         """Create a write-scoped Immich client with head detector for fallback."""
+        assert self.cfg.immich.write_api_key is not None, "write_api_key must be configured"
         head_cfg = HeadDetectorConfig(
             weights_path=self.cfg.head_detection.weights_path,
             input_size=self.cfg.head_detection.input_size,
@@ -329,7 +330,7 @@ class UIServer:
         )
         return ImmichClient(
             self.cfg.immich.base_url,
-            self.cfg.immich.write_api_key,
+            self.cfg.immich.write_api_key,  # type: ignore[arg-type]  # asserted non-None above
             page_size=self.cfg.immich.page_size,
             timeout=self.cfg.immich.timeout_seconds,
             head_detector_cfg=head_cfg,
@@ -657,7 +658,7 @@ class UIServer:
             )
             ask_for_name = sum(1 for p in props if p.status == ProposalStatus.ASK_NAME)
 
-            def pct(n: int, clusters=clusters) -> float:
+            def pct(n: int, clusters: int = clusters) -> float:
                 return 100.0 * n / clusters if clusters else 0.0
 
             stats.append(
@@ -786,7 +787,7 @@ class UIServer:
                     status=DryRunActionStatus(result["status"]),
                     message=result.get("message"),
                 )
-            )
+            )  # type: ignore[arg-type]
 
         # Persist the dry-run batch
         batch_id = self.store.add_dry_run_batch(
