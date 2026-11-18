@@ -28,7 +28,9 @@ RUN groupadd --system reid \
     && chown reid:reid /data /etc/reid
 COPY --from=builder --chown=reid:reid /app/.venv /app/.venv
 USER reid
-ENV PATH="/app/.venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH" \
+    YOLO_CONFIG_DIR=/tmp/Ultralytics \
+    MPLCONFIGDIR=/tmp/matplotlib
 VOLUME /data
 ENTRYPOINT ["reid-batch"]
 CMD ["--config", "/etc/reid/reid.toml"]

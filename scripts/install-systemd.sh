@@ -135,8 +135,10 @@ min_cluster_size = 2
 face_overlap = 0.5
 
 [head_detection]
-# SCRFD head detector (fallback when Immich has no unassigned face)
-weights_path = "scrfd_500m_kps.onnx"
+# SCRFD head detector (fallback when Immich has no unassigned face).
+# weights_path is optional: defaults to the weights vendored in the package.
+# Uncomment to use your own file:
+# weights_path = "/data/scrfd_500m.onnx"
 input_size = 320
 confidence_threshold = 0.4
 top_expansion_ratio = 0.4

@@ -19,6 +19,10 @@ MAX_PAGE_SIZE = 1000
 
 LOG_LEVELS = ("debug", "info", "warning", "error")
 
+# Head detector weights vendored into the package (same dir batch.py uses for
+# the detector and embedder weights).
+_PACKAGED_HEAD_WEIGHTS = str(Path(__file__).parent / "weights" / "scrfd_500m.onnx")
+
 
 class ConfigError(Exception):
     """The config file is missing, unreadable, or invalid."""
@@ -150,8 +154,11 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
     face_overlap = _unit_float(clustering_raw, "face_overlap", "[clustering]", 0.5)
 
     head_detection_raw = _table(raw, "head_detection")
-    head_weights_path = _required_str(
-        head_detection_raw, "weights_path", "[head_detection]"
+    head_weights_path = _optional_str(
+        head_detection_raw,
+        "weights_path",
+        "[head_detection]",
+        _PACKAGED_HEAD_WEIGHTS,
     )
     head_input_size = _minimum_int(
         head_detection_raw, "input_size", 1, "[head_detection]", 320
@@ -215,6 +222,14 @@ def _required_str(table: dict[str, Any], key: str, section: str) -> str:
     value = table.get(key)
     if value is None:
         raise ConfigError(f"{section} {key} is required")
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{section} {key} must be a non-empty string")
+    return value.strip()
+
+
+def _optional_str(table: dict[str, Any], key: str, section: str, default: str) -> str:
+    """Read a string config value with a default; empty/invalid values raise."""
+    value = table.get(key, default)
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{section} {key} must be a non-empty string")
     return value.strip()
