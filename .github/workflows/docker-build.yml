@@ -10,13 +10,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  attestations: write
-  id-token: write
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   lint-and-test:
@@ -44,73 +37,3 @@ jobs:
 
       - name: Unit tests
         run: uv run pytest tests -x -q --tb=short
-
-  docker-build:
-    name: Build Docker image (ARM64, no push on PR)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        run: |
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build ARM64 image (load only, no push)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/arm64
-          push: false
-          load: true
-          tags: reid-batch:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Quick container sanity check
-        run: |
-          docker run --rm --platform linux/arm64 reid-batch:ci --help
-          docker run --rm --platform linux/arm64 --entrypoint reid-ui reid-batch:ci --help
-
-  docker-push:
-    name: Build & push to ghcr.io (tags only)
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [lint-and-test, docker-build]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push ARM64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: true
-          sbom: true
