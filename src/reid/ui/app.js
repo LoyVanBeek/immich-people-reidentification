@@ -463,7 +463,7 @@ function renderCrops(crops, w, h) {
 }
 
 function esc(s) {
-  return String(s).replace(/[&<"]/g, m => ({ "&": "&", "<": "<", '"': """ }[m]));
+  return String(s).replace(/[&<"]/g, m => ({ "&": "&amp;", "<": "&lt;", '"': "&quot;" }[m]));
 }
 
 function toast(msg) {
