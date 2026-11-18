@@ -16,9 +16,10 @@ store. Nothing is written to Immich — proposals exist only locally.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -56,8 +57,56 @@ class RunSummary:
     windows: tuple[WindowSummary, ...] = ()
 
 
+def _apply_tuning_overrides(cfg: Config, overrides: dict[str, str]) -> Config:
+    """Apply operator tuning saved from the UI on top of the TOML config.
+
+    Detection knobs take effect for newly fetched assets; clustering knobs
+    apply when the run rebuilds clusters (always, from scratch).
+    """
+    if not overrides:
+        return cfg
+    detection = replace(
+        cfg.detection,
+        confidence_floor=_override(
+            overrides, "confidence_floor", cfg.detection.confidence_floor, float
+        ),
+        min_box_height=_override(
+            overrides, "min_box_height", cfg.detection.min_box_height, float
+        ),
+    )
+    clustering = replace(
+        cfg.clustering,
+        window_days=_override(
+            overrides, "window_days", cfg.clustering.window_days, int
+        ),
+        distance_threshold=_override(
+            overrides, "distance_threshold", cfg.clustering.distance_threshold, float
+        ),
+        face_overlap=_override(
+            overrides, "face_overlap", cfg.clustering.face_overlap, float
+        ),
+    )
+    _log.info(
+        "tuning overrides applied: %s",
+        ", ".join(f"{k}={v}" for k, v in sorted(overrides.items())) or "none",
+    )
+    return replace(cfg, detection=detection, clustering=clustering)
+
+
+def _override(overrides: dict[str, str], key: str, default: Any, cast: type) -> Any:
+    raw = overrides.get(key)
+    if raw is None:
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        _log.warning("ignoring malformed tuning override %s=%r", key, raw)
+        return default
+
+
 def run_batch(cfg: Config) -> RunSummary:
     store = Store(cfg.store_path)
+    cfg = _apply_tuning_overrides(cfg, store.tuning_values())
     client = ImmichClient(
         cfg.immich.base_url,
         cfg.immich.api_key,
@@ -275,6 +324,30 @@ def _cluster_and_anchor(
             outcome.summary.proposals,
             outcome.summary.ask_for_name,
         )
+    # Operator rejections survive batch runs: an appearance marked "not this
+    # person" for a name never becomes that proposal again. ASK_NAME rows
+    # carry no name yet, so they cannot match a rejection and stay askable.
+    rejected = set(store.appearance_rejections())
+    if rejected:
+        dropped = sum(
+            1
+            for p in proposals
+            if p.proposed_name
+            and (p.asset_id, p.appearance, p.proposed_name) in rejected
+        )
+        if dropped:
+            _log.info(
+                "anchoring: dropped %d proposal(s) rejected by the operator", dropped
+            )
+        proposals = [
+            p
+            for p in proposals
+            if not (
+                p.proposed_name
+                and (p.asset_id, p.appearance, p.proposed_name) in rejected
+            )
+        ]
+
     store.replace_proposals(proposals)
     return tuple(summaries)
 

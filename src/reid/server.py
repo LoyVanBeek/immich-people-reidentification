@@ -200,6 +200,31 @@ class UIAPIHandler(BaseHTTPRequestHandler):
                 return
             result = self.ui_server.confirm_cluster(body)  # type: ignore[union-attr]
             self._send_json(result)
+        elif path == "/api/skip":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.dismiss_cluster(  # type: ignore[union-attr]
+                str(body.get("window", "")),
+                int(body.get("cluster", -1)),
+                bool(body.get("dismissed", True)),
+            )
+            self._send_json(result)
+        elif path == "/api/reject":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.reject_appearance(  # type: ignore[union-attr]
+                str(body.get("asset_id", "")),
+                int(body.get("appearance", -1)),
+                str(body.get("name", "")).strip(),
+            )
+            self._send_json(result)
+        elif path == "/api/config":
+            body = self._read_json()
+            if body is None:
+                return
+            self._send_json(self.ui_server.save_config_knobs(body))  # type: ignore[union-attr]
         elif path.startswith("/api/promote/"):
             batch_id = path[len("/api/promote/") :]
             if not batch_id:
@@ -209,6 +234,20 @@ class UIAPIHandler(BaseHTTPRequestHandler):
             self._send_json(result)
         else:
             self.send_error(405, "Method not allowed")
+
+    def _read_json(self) -> dict[str, Any] | None:
+        """Read and parse the JSON request body; answers 400 on failure."""
+        content_length = int(self.headers.get("content-length", "0"))
+        body_bytes = self.rfile.read(content_length)
+        try:
+            body = json.loads(body_bytes)
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+            return None
+        if not isinstance(body, dict):
+            self.send_error(400, "JSON body must be an object")
+            return None
+        return body
 
     def log_message(self, fmt: str, *args: Any) -> None:
         _log.debug(fmt % args)
@@ -406,14 +445,85 @@ class UIServer:
             return []
 
     def get_config_knobs(self) -> UIConfigKnobs:
-        """Return the five tuning knobs exposed in the ⚙ dropdown."""
+        """Return the five tuning knobs: TOML values overridden by the store."""
+        overrides = self.store.tuning_values()
         return UIConfigKnobs(
-            window_days=self.cfg.clustering.window_days,
-            distance_threshold=self.cfg.clustering.distance_threshold,
-            confidence_floor=self.cfg.detection.confidence_floor,
-            min_box_height=self.cfg.detection.min_box_height,
-            face_overlap=self.cfg.clustering.face_overlap,
+            window_days=self._knob(
+                overrides, "window_days", self.cfg.clustering.window_days, int
+            ),
+            distance_threshold=self._knob(
+                overrides,
+                "distance_threshold",
+                self.cfg.clustering.distance_threshold,
+                float,
+            ),
+            confidence_floor=self._knob(
+                overrides,
+                "confidence_floor",
+                self.cfg.detection.confidence_floor,
+                float,
+            ),
+            min_box_height=self._knob(
+                overrides, "min_box_height", self.cfg.detection.min_box_height, float
+            ),
+            face_overlap=self._knob(
+                overrides, "face_overlap", self.cfg.clustering.face_overlap, float
+            ),
         )
+
+    @staticmethod
+    def _knob(overrides: dict[str, str], key: str, default: Any, cast: type) -> Any:
+        """One tuning value: store override wins, falls back to config."""
+        raw = overrides.get(key)
+        if raw is None:
+            return default
+        try:
+            return cast(raw)
+        except ValueError:
+            _log.warning("ignoring malformed tuning override %s=%r", key, raw)
+            return default
+
+    def save_config_knobs(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Persist operator tuning overrides; they apply to the next batch run."""
+        allowed = {
+            "window_days": (1, 30, int),
+            "distance_threshold": (0.05, 1.0, float),
+            "confidence_floor": (0.0, 1.0, float),
+            "min_box_height": (20, 500, float),
+            "face_overlap": (0.1, 1.0, float),
+        }
+        saved = []
+        for key, (low, high, cast) in allowed.items():
+            if key not in body:
+                continue
+            try:
+                value = cast(body[key])
+            except (TypeError, ValueError):
+                return {"error": f"{key} must be a number"}
+            if not low <= value <= high:
+                return {"error": f"{key} must be between {low} and {high}"}
+            self.store.set_tuning_value(key, repr(value))
+            saved.append(key)
+        if not saved:
+            return {"error": "no tuning keys in request"}
+        return {"saved": saved, "knobs": asdict(self.get_config_knobs())}
+
+    def dismiss_cluster(
+        self, window: str, cluster: int, dismissed: bool
+    ) -> dict[str, Any]:
+        """Persist 'I don't care about this cluster'."""
+        self.store.dismiss_cluster(window, cluster, dismissed)
+        return {"window": window, "cluster": cluster, "dismissed": dismissed}
+
+    def reject_appearance(
+        self, asset_id: str, appearance: int, proposed_name: str
+    ) -> dict[str, Any]:
+        """Record 'this appearance is not this person' and update the proposal."""
+        if not proposed_name:
+            return {"error": "a proposed name is required to reject an appearance"}
+        self.store.add_appearance_rejection(asset_id, appearance, proposed_name)
+        self.store.update_proposal_status(asset_id, appearance, ProposalStatus.REJECTED)
+        return {"asset_id": asset_id, "appearance": appearance, "status": "rejected"}
 
     def get_proposals(self) -> list[dict[str, Any]]:
         """Return all proposals as raw dicts."""
@@ -588,6 +698,7 @@ class UIServer:
         }
 
         rows: list[ClusterRow] = []
+        dismissed = self.store.dismissed_clusters()
         for (window, cluster_id), props in sorted(groups.items()):
             # Shared status counts
             writable, conflicted, no_head, labeled = self._status_counts(props)
@@ -611,7 +722,12 @@ class UIServer:
                     conflicted=conflicted,
                     ask_for_name=no_head,
                     labeled=labeled,
-                    status=ClusterRowStatus.OPEN,  # UI-only; not persisted
+                    # Operator dismissal persists; everything else is open.
+                    status=(
+                        ClusterRowStatus.SKIPPED
+                        if (window, cluster_id) in dismissed
+                        else ClusterRowStatus.OPEN
+                    ),
                     # First few appearance refs; the UI fetches each as a
                     # person crop via /api/crop.
                     crops=[
@@ -676,6 +792,7 @@ class UIServer:
                 ProposalStatus.LABELED: EvidenceCardStatus.ALREADY_LABELED,
                 ProposalStatus.CONFLICTED: EvidenceCardStatus.CONFLICT_SKIP,
                 ProposalStatus.ASK_NAME: EvidenceCardStatus.ASK_NAME,
+                ProposalStatus.REJECTED: EvidenceCardStatus.REJECTED,
             }
             status = status_map.get(prop.status, EvidenceCardStatus.WILL_WRITE)
             included = (
@@ -812,18 +929,29 @@ class UIServer:
         if not included:
             return {"error": "no appearances included"}
 
-        # Get the proposals for this cluster
+        # Get the proposals for this cluster. Anchored clusters propose
+        # (PROPOSED); ask-for-name clusters become writable once the operator
+        # supplies the name — that is the ask-for-name feature.
+        writable_statuses = {ProposalStatus.PROPOSED, ProposalStatus.ASK_NAME}
         proposals = self.store.proposals()
         target_props = [
             p
             for p in proposals
             if p.cluster == cluster
             and p.window == window
-            and p.status == ProposalStatus.PROPOSED
+            and p.status in writable_statuses
         ]
 
         if not target_props:
             return {"error": "no writable proposals found for this cluster"}
+
+        # Operator rejections: an appearance marked "not this person" for this
+        # name is never written, and the pair is skipped with a clear reason.
+        rejected = {
+            (asset_id, appearance)
+            for asset_id, appearance, rejected_name in self.store.appearance_rejections()
+            if rejected_name == name
+        }
 
         # Build a set of included (asset_id, appearance) for quick lookup
         included_set = {
@@ -834,7 +962,10 @@ class UIServer:
 
         # Filter to only included proposals
         write_props = [
-            p for p in target_props if (p.asset_id, p.appearance) in included_set
+            p
+            for p in target_props
+            if (p.asset_id, p.appearance) in included_set
+            and (p.asset_id, p.appearance) not in rejected
         ]
 
         if not write_props:

@@ -18,6 +18,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 14px/1.45 system-ui, sans-serif;
+  overflow-x: hidden;  /* nothing may stretch the page horizontally */
 }
 button {
   font: inherit;
@@ -231,6 +232,12 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .modal input { width: 100%; margin-bottom: 10px; }
 .modal .modal-hint { font-size: 11px; color: var(--dim); margin-bottom: 14px; }
 .modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* Rejected appearances + operator actions */
+.evcard.evrejected .crop { opacity: .45; }
+.b-reject { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
+.b-reject:hover { border-color: var(--bad); color: var(--bad); }
+.b-reopen { font-size: 13px; padding: 6px 10px; }
 
 /* Toast */
 .toast {

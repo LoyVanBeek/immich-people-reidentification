@@ -13,6 +13,7 @@ class ProposalStatus(str, Enum):
     ASK_NAME = "ask_name"
     CONFLICTED = "conflicted"
     LABELED = "labeled"
+    REJECTED = "rejected"  # operator: this appearance is not this person
 
 
 class DryRunActionStatus(str, Enum):
@@ -48,6 +49,7 @@ class EvidenceCardStatus(str, Enum):
     CONFLICT_SKIP = "conflict_skip"
     NO_HEAD_SKIP = "no_head_skip"
     ASK_NAME = "ask_for_name"
+    REJECTED = "rejected"  # operator: not part of this cluster
 
 
 class WriteResultStatus(str, Enum):

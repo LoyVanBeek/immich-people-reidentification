@@ -188,6 +188,33 @@ class Store:
                 )
                 """
             )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS appearance_rejection (
+                    asset_id TEXT NOT NULL,
+                    appearance INTEGER NOT NULL,
+                    proposed_name TEXT NOT NULL,
+                    PRIMARY KEY (asset_id, appearance, proposed_name)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cluster_dismissal (
+                    window TEXT NOT NULL,
+                    cluster INTEGER NOT NULL,
+                    PRIMARY KEY (window, cluster)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tuning (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
             self._conn.commit()
             self._migrate()
         except sqlite3.Error as exc:
@@ -321,6 +348,18 @@ class Store:
                     for row in rows
                 ],
             )
+
+    def update_proposal_status(
+        self, asset_id: str, appearance: int, status: ProposalStatus
+    ) -> None:
+        """Change one proposal's status (e.g. operator rejected it)."""
+        with self._conn:
+            cursor = self._conn.execute(
+                "UPDATE proposal SET status = ? WHERE asset_id = ? AND appearance = ?",
+                (status.value, asset_id, appearance),
+            )
+            if cursor.rowcount == 0:
+                raise StoreError(f"no proposal for {asset_id}#{appearance}")
 
     def proposals(self) -> list[Proposal]:
         """All proposal rows of the most recent run."""
@@ -535,6 +574,9 @@ class Store:
         A batch-run/config-level operation: the confirmation UI never
         triggers a wipe. Clearing the checkpoint restarts the feed, so the
         next run re-fetches and re-embeds every photo from scratch.
+
+        Review decisions survive a wipe: rejections, cluster dismissals and
+        tuning knobs are the operator's voice, not pipeline state.
         """
         with self._conn:
             removed = self._conn.execute("SELECT count(*) FROM appearance").fetchone()[
@@ -548,3 +590,71 @@ class Store:
             self._conn.execute("DELETE FROM dry_run_batch")
             self._conn.execute("DELETE FROM checkpoint")
         return int(removed)
+
+    # -- review decisions -----------------------------------------------------
+
+    def add_appearance_rejection(
+        self, asset_id: str, appearance: int, proposed_name: str
+    ) -> None:
+        """Record 'this appearance is not this person' for a proposal name.
+
+        Survives batch runs: matching proposals are never created again, and
+        confirmations skip the pair.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO appearance_rejection (asset_id, appearance, proposed_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(asset_id, appearance, proposed_name) DO NOTHING
+                """,
+                (asset_id, appearance, proposed_name),
+            )
+
+    def appearance_rejections(self) -> list[tuple[str, int, str]]:
+        """All (asset_id, appearance, proposed_name) rejections."""
+        rows = self._conn.execute(
+            "SELECT asset_id, appearance, proposed_name FROM appearance_rejection"
+        ).fetchall()
+        return [(str(r[0]), int(r[1]), str(r[2])) for r in rows]
+
+    def dismiss_cluster(self, window: str, cluster: int, dismissed: bool) -> None:
+        """Persist (or clear) 'I don't care about this cluster'."""
+        with self._conn:
+            if dismissed:
+                self._conn.execute(
+                    """
+                    INSERT INTO cluster_dismissal (window, cluster)
+                    VALUES (?, ?)
+                    ON CONFLICT(window, cluster) DO NOTHING
+                    """,
+                    (window, cluster),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM cluster_dismissal WHERE window = ? AND cluster = ?",
+                    (window, cluster),
+                )
+
+    def dismissed_clusters(self) -> set[tuple[str, int]]:
+        """All (window, cluster) pairs the operator dismissed."""
+        rows = self._conn.execute(
+            "SELECT window, cluster FROM cluster_dismissal"
+        ).fetchall()
+        return {(str(r[0]), int(r[1])) for r in rows}
+
+    def tuning_values(self) -> dict[str, str]:
+        """Operator tuning overrides (key → raw value)."""
+        rows = self._conn.execute("SELECT key, value FROM tuning").fetchall()
+        return {str(r[0]): str(r[1]) for r in rows}
+
+    def set_tuning_value(self, key: str, value: str) -> None:
+        """Persist one tuning override."""
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO tuning (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )

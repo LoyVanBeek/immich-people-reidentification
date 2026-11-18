@@ -42,6 +42,10 @@ async function loadPeople() {
 /* ---------- Rendering ---------- */
 function render() {
   const root = document.getElementById("app");
+  // Preserve sidebar scroll across re-renders: a full innerHTML swap
+  // otherwise resets it, losing your place in the review queue.
+  const side = document.querySelector(".side");
+  const sideScroll = side ? side.scrollTop : 0;
   root.innerHTML = `
     ${bannerHTML()}
     <div class="top">
@@ -59,6 +63,7 @@ function render() {
     <div class="main">${mainHTML()}</div>
     <div class="pane">${paneHTML()}</div>
   `;
+  if (side) side.scrollTop = sideScroll;
   wireEvents();
   renderEvidence();
   renderPane();
@@ -72,7 +77,9 @@ function bannerHTML() {
 
 function configPopoverHTML() {
   const k = state.configKnobs;
-  if (!k) return "";
+  if (!k) {
+    return `<div class="muted">knobs unavailable</div>`;
+  }
   const rows = [
     ["windowDays", "Timespan window (days)", k.window_days, 1, 30, 1],
     ["distanceThreshold", "Cluster distance threshold", k.distance_threshold, 0.2, 1, 0.01],
@@ -82,7 +89,9 @@ function configPopoverHTML() {
   ];
   return rows.map(([key, label, value, min, max, step]) =>
     `<label>${label} <input type="range" min="${min}" max="${max}" step="${step}" value="${value}" data-cfg="${key}"> <span class="mono" data-cfg-val="${key}">${value}</span></label>`
-  ).join("") + `<div class="muted">Store wipes live in batch runs, not here.</div>`;
+  ).join("")
+    + `<button class="primary" id="cfgSave" style="width:100%;margin-top:8px">Save tuning</button>`
+    + `<div class="muted">Saved values apply to the next batch run.</div>`;
 }
 
 function sidebarHTML() {
@@ -153,6 +162,9 @@ function paneHTML() {
         <button class="b-skip" data-cluster="${a.cluster}">Skip cluster</button>
       ` : `<div class="chip">Select a cluster</div>`}
     </div>
+    ${a.cluster_status === "skipped" && state.activeCluster !== null ? `
+      <button class="b-reopen" data-cluster="${a.cluster}" style="width:100%;margin-top:8px">Reopen dismissed cluster</button>
+    ` : ""}
     <hr>
     <div class="footer muted">⚙ Config (top right) holds the tuning knobs; store wipes stay out of this screen.</div>
   `;
@@ -161,11 +173,13 @@ function paneHTML() {
 function renderEvidence() {
   const grid = document.getElementById("evgrid");
   if (!grid) return;
+  const assignment = state.assignment;
   grid.innerHTML = state.evidence.map(e => {
     const [chipClass, chipText] = statusChip(e.status);
+    const rejectable = assignment?.proposed_name && e.status !== "rejected" && e.status !== "already_labeled";
     return `
-      <div class="evcard" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
-        <div class="crop">${cropImg(e, 150, 170, true)}</div>
+      <div class="evcard ${e.status === "rejected" ? "evrejected" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
+        <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected")}</div>
         <div class="asset-row">
           ${e.status === "will_write" ? `<input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>` : ""}
           <span class="asset-name mono">${esc(e.asset_id)}</span>
@@ -175,6 +189,7 @@ function renderEvidence() {
           <span class="chip ${chipClass}">${chipText}</span>
           ${e.immich_label ? `<span class="chip">immich: ${esc(e.immich_label)}</span>` : ""}
         </div>
+        ${rejectable ? `<button class="b-reject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Not this person</button>` : ""}
       </div>
     `;
   }).join("");
@@ -200,6 +215,7 @@ function wireEvents() {
       document.querySelector(`[data-cfg-val="${key}"]`).textContent = inp.value;
     });
   });
+  document.getElementById("cfgSave")?.addEventListener("click", saveConfig);
 
   // Dry-run toggle
   document.getElementById("dryToggle")?.addEventListener("change", e => {
@@ -262,6 +278,18 @@ function wireEvidenceEvents() {
       }
     });
   });
+  document.querySelectorAll(".b-reject[data-asset]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const name = state.assignment?.proposed_name;
+      rejectAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10), name);
+    });
+  });
+  document.querySelectorAll(".b-reopen[data-cluster]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const c = state.clusters.find(x => x.cluster === parseInt(btn.dataset.cluster, 10));
+      if (c) dismissCluster(c.cluster, c.window, false);
+    });
+  });
 }
 
 function wirePaneEvents() {
@@ -313,6 +341,81 @@ async function promoteBatch(id) {
 }
 
 /* ---------- Actions ---------- */
+async function saveConfig() {
+  const knobs = {};
+  document.querySelectorAll("#cfgPop input[data-cfg]").forEach(inp => {
+    const key = inp.dataset.cfg;
+    // window_days is an integer knob; the rest are floats
+    knobs[key] = key === "windowDays" ? parseInt(inp.value, 10) : parseFloat(inp.value);
+  });
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(knobs),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`tuning rejected: ${data.error}`);
+    } else {
+      state.configKnobs = data.knobs;
+      toast("tuning saved — applies to the next batch run");
+      render();
+    }
+  } catch (err) {
+    toast(`tuning save failed: ${err.message}`);
+  }
+}
+
+async function rejectAppearance(assetId, appearance, name) {
+  if (!name) {
+    toast("name the cluster first — then 'not this person' means something");
+    return;
+  }
+  try {
+    const res = await fetch("/api/reject", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_id: assetId, appearance, name }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`reject failed: ${data.error}`);
+      return;
+    }
+    // Update local state so the card flips to 'rejected' without a reload.
+    const card = state.evidence.find(
+      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
+    );
+    if (card) card.status = "rejected";
+    toast(`appearance ${appearance} of ${assetId.slice(0, 8)}… will not be proposed as “${name}”`);
+    renderEvidence();
+  } catch (err) {
+    toast(`reject failed: ${err.message}`);
+  }
+}
+
+async function dismissCluster(cluster, window, dismissed) {
+  try {
+    const res = await fetch("/api/skip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cluster, window, dismissed }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`skip failed: ${data.error}`);
+      return;
+    }
+    const row = state.clusters.find(c => c.cluster === cluster && c.window === window);
+    if (row) row.status = dismissed ? "skipped" : "open";
+    toast(dismissed ? "cluster dismissed — it stays out of the queue" : "cluster reopened");
+    render();
+  } catch (err) {
+    toast(`skip failed: ${err.message}`);
+  }
+}
+
 function buildAssignment(clusterRow) {
   // Build assignment pane from cluster row + evidence
   const w = state.evidence.filter(e => e.cluster === clusterRow.cluster && e.window === clusterRow.window);
@@ -323,6 +426,7 @@ function buildAssignment(clusterRow) {
   return {
     cluster: clusterRow.cluster,
     window: clusterRow.window,
+    cluster_status: clusterRow.status,
     proposed_name: clusterRow.proposed_name,
     anchor: clusterRow.anchor,
     total_appearances: w.length,
@@ -391,13 +495,29 @@ function doSkip(cluster) {
   if (cluster === null) return;
   const c = state.clusters.find(x => x.cluster === cluster);
   if (!c) return;
-  c.status = "skipped";
-  toast(`${c.window}/${c.cluster} skipped`);
-  render();
+  dismissCluster(cluster, c.window, true);
 }
 
 function namePrompt(cluster, onPick) {
   const host = document.getElementById("modalhost");
+  const finish = name => {
+    host.innerHTML = "";
+    if (name && typeof onPick === "function") {
+      onPick(name);
+    } else if (name) {
+      // Default (pane "Name this cluster" button): set the name in place,
+      // so the confirm button becomes usable without another round-trip.
+      const c = state.clusters.find(x => x.cluster === cluster);
+      if (c) {
+        c.proposed_name = name;
+        c.anchor = `named manually (${state.people.includes(name) ? "existing" : "new"})`;
+      }
+      if (state.assignment && state.assignment.cluster === cluster) {
+        state.assignment.proposed_name = name;
+      }
+      render();
+    }
+  };
   host.innerHTML = `<div class="modal"><div class="inner">
     <h3>Name this cluster <span class="mono muted">${cluster}</span></div>
     <div class="muted" style="margin-bottom:10px">${state.assignment?.total_appearances || 0} appearances · no Immich anchor found</div>
@@ -410,12 +530,18 @@ function namePrompt(cluster, onPick) {
   </div></div>`;
   const inp = host.querySelector("#np");
   inp.focus();
-  host.querySelector("#npc").onclick = () => (host.innerHTML = "");
-  host.querySelector("#npo").onclick = () => {
+  const submit = () => {
     const v = inp.value.trim();
-    if (v) onPick(v);
-    host.innerHTML = "";
+    if (v) finish(v);
   };
+  host.querySelector("#npc").onclick = () => (host.innerHTML = "");
+  host.querySelector("#npo").onclick = submit;
+  inp.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submit();
+    }
+  });
 }
 
 function statusChip(status) {
@@ -424,6 +550,8 @@ function statusChip(status) {
     already_labeled: ["acc", "already labeled"],
     conflict_skip: ["bad", "conflict — skip"],
     no_head_skip: ["warn", "no head — skip"],
+    ask_for_name: ["", "needs a name"],
+    rejected: ["bad", "not in this cluster"],
   };
   return map[status] || ["", status];
 }
