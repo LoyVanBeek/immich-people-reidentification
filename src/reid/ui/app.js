@@ -340,7 +340,7 @@ async function loadDryRunBatches() {
     state.dryBatches = batches;
     render();
   } catch (err) {
-    _log.warning("failed to load dry-run batches: %s", err);
+    console.warn("failed to load dry-run batches:", err);
   }
 }
 
