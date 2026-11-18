@@ -14,7 +14,8 @@
 #   docker compose --profile wipe run --rm reid-wipe      # wipe the store
 #
 # Config is read from ./reid.toml (mounted at /etc/reid/reid.toml).
-# Data persists in ./reid-data/ (mounted at /data).
+# Data persists in ${REID_DATA_DIR:-./reid-data} (mounted at /data).
+# Set REID_DATA_DIR in .env to use a shared location, e.g. /srv/reid-data.
 #
 # UID/GID default to 1000:1000; override via .env or the environment.
 
@@ -31,7 +32,7 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./reid.toml:/etc/reid/reid.toml:ro
-      - ./reid-data:/data
+      - ${REID_DATA_DIR:-./reid-data}:/data
     entrypoint: ["reid-ui"]
     command: ["--config", "/etc/reid/reid.toml"]
     restart: unless-stopped
@@ -44,7 +45,7 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./reid.toml:/etc/reid/reid.toml:ro
-      - ./reid-data:/data
+      - ${REID_DATA_DIR:-./reid-data}:/data
     entrypoint: ["reid-ui"]
     command: ["--config", "/etc/reid/reid.toml"]
     restart: unless-stopped
@@ -61,7 +62,7 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./reid.toml:/etc/reid/reid.toml:ro
-      - ./reid-data:/data
+      - ${REID_DATA_DIR:-./reid-data}:/data
     entrypoint: ["reid-batch"]
     command: ["--config", "/etc/reid/reid.toml"]
     restart: "no"
@@ -78,7 +79,7 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./reid.toml:/etc/reid/reid.toml:ro
-      - ./reid-data:/data
+      - ${REID_DATA_DIR:-./reid-data}:/data
     entrypoint: ["reid-wipe"]
     command: ["--config", "/etc/reid/reid.toml"]
     restart: "no"
