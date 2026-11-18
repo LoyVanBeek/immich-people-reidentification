@@ -83,3 +83,4 @@ uv sync            # Python 3.13 environment
 uv run pytest      # container-boundary tests
 uv run mypy src tests
 ```
+# CI trigger
