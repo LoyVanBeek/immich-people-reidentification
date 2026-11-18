@@ -1,48 +1,24 @@
 # docker-compose.yml — Immich Person Re-ID on Raspberry Pi 5
 #
-# Two profiles:
-#   - `local`  : build from source on the Pi (default, no ghcr.io auth needed)
-#   - `remote` : pull from ghcr.io (requires `docker login ghcr.io` or public image)
+# Profiles (deliberately separate, so `up` can never run a destructive or
+# one-shot service by accident):
+#   local  — run the confirmation UI, built from source on the Pi
+#   remote — run the confirmation UI, image pulled from ghcr.io
+#   batch  — one-shot nightly batch run (trigger explicitly)
+#   wipe   — one-shot store wipe (trigger explicitly; destructive)
 #
 # Usage:
-#   docker compose --profile local up -d         # build locally
-#   docker compose --profile remote pull         # pull from ghcr.io
-#   docker compose --profile remote up -d        # run pre-built image
+#   docker compose --profile local build        # build the image from source
+#   docker compose --profile local up -d        # start the confirmation UI
+#   docker compose --profile batch run --rm reid-batch    # run one batch
+#   docker compose --profile wipe run --rm reid-wipe      # wipe the store
 #
 # Config is read from ./reid.toml (mounted at /etc/reid/reid.toml).
 # Data persists in ./reid-data/ (mounted at /data).
+#
+# UID/GID default to 1000:1000; override via .env or the environment.
 
 services:
-  reid-batch:
-    profiles: ["local"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-      platforms: ["linux/arm64"]
-    image: reid-batch:local
-    container_name: reid-batch
-    network_mode: host
-    user: "${UID}:${GID}"
-    volumes:
-      - ./reid.toml:/etc/reid/reid.toml:ro
-      - ./reid-data:/data
-    entrypoint: ["reid-batch"]
-    command: ["--config", "/etc/reid/reid.toml"]
-    restart: "no"  # batch runs are triggered manually or via systemd timer
-
-  reid-batch-remote:
-    profiles: ["remote"]
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-loy}/immich-person-reidentification:latest
-    container_name: reid-batch
-    network_mode: host
-    user: "${UID}:${GID}"
-    volumes:
-      - ./reid.toml:/etc/reid/reid.toml:ro
-      - ./reid-data:/data
-    entrypoint: ["reid-batch"]
-    command: ["--config", "/etc/reid/reid.toml"]
-    restart: "no"
-
   reid-ui:
     profiles: ["local"]
     build:
@@ -52,29 +28,46 @@ services:
     image: reid-batch:local
     container_name: reid-ui
     network_mode: host
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./reid.toml:/etc/reid/reid.toml:ro
       - ./reid-data:/data
-    entrypoint: ["reid-batch"]
-    command: ["reid-ui", "--config", "/etc/reid/reid.toml"]
+    entrypoint: ["reid-ui"]
+    command: ["--config", "/etc/reid/reid.toml"]
     restart: unless-stopped
 
   reid-ui-remote:
     profiles: ["remote"]
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-loy}/immich-person-reidentification:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-LoyVanBeek}/immich-person-reidentification:latest
     container_name: reid-ui
     network_mode: host
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./reid.toml:/etc/reid/reid.toml:ro
+      - ./reid-data:/data
+    entrypoint: ["reid-ui"]
+    command: ["--config", "/etc/reid/reid.toml"]
+    restart: unless-stopped
+
+  reid-batch:
+    profiles: ["batch"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms: ["linux/arm64"]
+    image: reid-batch:local
+    container_name: reid-batch
+    network_mode: host
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./reid.toml:/etc/reid/reid.toml:ro
       - ./reid-data:/data
     entrypoint: ["reid-batch"]
-    command: ["reid-ui", "--config", "/etc/reid/reid.toml"]
-    restart: unless-stopped
+    command: ["--config", "/etc/reid/reid.toml"]
+    restart: "no"
 
   reid-wipe:
-    profiles: ["local", "remote"]
+    profiles: ["wipe"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -82,10 +75,10 @@ services:
     image: reid-batch:local
     container_name: reid-wipe
     network_mode: host
-    user: "${UID}:${GID}"
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./reid.toml:/etc/reid/reid.toml:ro
       - ./reid-data:/data
-    entrypoint: ["reid-batch"]
-    command: ["reid-wipe", "--config", "/etc/reid/reid.toml"]
+    entrypoint: ["reid-wipe"]
+    command: ["--config", "/etc/reid/reid.toml"]
     restart: "no"
