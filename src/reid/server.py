@@ -139,6 +139,15 @@ class UIAPIHandler(BaseHTTPRequestHandler):
     ui_server: UIServer | None = None
 
     def do_GET(self) -> None:
+        try:
+            self._do_get()
+        except Exception as exc:  # noqa: BLE001
+            # Never let a handler exception close the connection silently:
+            # the browser would show a blank page / network error with no clue.
+            _log.exception("GET %s failed", self.path)
+            self._send_json({"error": f"internal server error: {exc}"}, status=500)
+
+    def _do_get(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -162,6 +171,13 @@ class UIAPIHandler(BaseHTTPRequestHandler):
             self._serve_static(path.lstrip("/"))
 
     def do_POST(self) -> None:
+        try:
+            self._do_post()
+        except Exception as exc:  # noqa: BLE001
+            _log.exception("POST %s failed", self.path)
+            self._send_json({"error": f"internal server error: {exc}"}, status=500)
+
+    def _do_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -291,11 +307,15 @@ class UIServer:
         return [asdict(e) for e in evidence]
 
     def get_people(self) -> list[str]:
-        """Return sorted list of existing Immich person names for autocomplete."""
+        """Return sorted list of existing Immich person names for autocomplete.
+
+        Failures (Immich unreachable, bad key, parsing) degrade to an empty
+        list: the UI must still render the queue and evidence without names.
+        """
         try:
             people = self.immich.fetch_people()
             return sorted(p.name for p in people)
-        except ImmichError as exc:
+        except Exception as exc:  # noqa: BLE001
             _log.warning("failed to fetch people: %s", exc)
             return []
 
