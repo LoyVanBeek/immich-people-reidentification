@@ -665,6 +665,12 @@ class TestServerHTTP:
             assert "clusters" in data
             assert len(data["clusters"]) == 2
 
+    def test_http_static_no_store(self, server_url: str) -> None:
+        """app.js must never be served cacheable: a stale copy makes a
+        deploy look like it did nothing."""
+        with urlopen(f"{server_url}/app.js") as resp:
+            assert resp.headers["Cache-Control"] == "no-store"
+
     def test_http_evidence_endpoint(self, server_url: str) -> None:
         with urlopen(f"{server_url}/api/evidence?cluster=0&window=2026-11-10") as resp:
             assert resp.status == 200

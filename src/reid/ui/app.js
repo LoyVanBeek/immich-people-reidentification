@@ -280,9 +280,20 @@ function wireEvents() {
     el.addEventListener("click", () => {
       const day = el.dataset.day;
       const set = state.expandedDays ?? new Set();
-      if (set.has(day)) set.delete(day); else set.add(day);
+      const expanding = !set.has(day);
+      if (expanding) set.add(day); else set.delete(day);
       state.expandedDays = set;
-      render();
+      if (!expanding) {
+        render();
+        return;
+      }
+      // Expanding a day shows its clusters AND loads the day's first open
+      // one, so the main/right panes move with the click instead of only
+      // the sidebar list changing.
+      const rows = state.clusters.filter(c => c.window === day);
+      const first = rows.find(c => c.status === "open") || rows[0];
+      if (first) selectCluster(keyOf(first));
+      else render();
     });
   });
 

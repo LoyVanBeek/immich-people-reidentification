@@ -285,6 +285,10 @@ class UIAPIHandler(BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.send_header("Content-Type", mime)
+        # The UI ships as a handful of small files with no cache-busting in
+        # the URLs: letting the browser hold stale copies means a deploy
+        # looks like it did nothing. Always revalidate.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         with path.open("rb") as fh:
             self.wfile.write(fh.read())
