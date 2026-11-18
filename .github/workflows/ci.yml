@@ -35,5 +35,10 @@ jobs:
       - name: Type check (mypy)
         run: uvx mypy src/reid --ignore-missing-imports
 
+      - name: JS syntax check (node --check)
+        run: |
+          node --check src/reid/ui/app.js
+          echo "app.js parses cleanly"
+
       - name: Unit tests
         run: uv run pytest tests -x -q --tb=short
