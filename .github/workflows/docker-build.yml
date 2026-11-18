@@ -71,8 +71,8 @@ jobs:
 
       - name: Quick container sanity check
         run: |
-          docker run --rm reid-batch:ci --help
-          docker run --rm --entrypoint reid-ui reid-batch:ci --help
+          docker run --rm --platform linux/arm64 reid-batch:ci --help
+          docker run --rm --platform linux/arm64 --entrypoint reid-ui reid-batch:ci --help
 
   docker-push:
     name: Build & push to ghcr.io (tags only)
