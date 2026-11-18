@@ -75,17 +75,17 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .banner.dry { background: var(--warn); color: #000; }
 .banner.real { background: var(--bad); color: #fff; }
 
-/* Layout: 3-pane workspace */
+/* Layout: 4-pane Finder-column workspace: days · clusters · appearances · actions */
 #app {
   display: grid;
-  grid-template-columns: 250px 1fr 300px;
+  grid-template-columns: 170px 250px minmax(0, 1fr) 300px;
   grid-template-rows: 46px 1fr;
   height: 100vh;
 }
 
 /* Top bar */
 .top {
-  grid-column: 1/4;
+  grid-column: 1/5;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -119,66 +119,75 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .cfgpop input[type=range] { width: 140px; }
 .cfgpop .muted { font-size: 11px; margin-top: 8px; display: block; }
 
-/* Left sidebar — review queue */
-.side {
+/* Pane 1 — days */
+.days {
   border-right: 1px solid var(--line);
   overflow: auto;
   background: var(--panel);
 }
-.side .item {
+.days .dayrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background 0.1s;
+  font-weight: 600;
+  font-size: 13px;
+}
+.days .dayrow:hover { background: var(--panel2); }
+.days .dayrow.sel {
+  background: var(--panel2);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+.days .dayrow .chip { font-size: 10px; }
+.days .empty, .clusters .empty { padding: 14px 12px; font-size: 12px; }
+
+/* Pane 2 — clusters of the selected day */
+.clusters {
+  border-right: 1px solid var(--line);
+  overflow: auto;
+  background: var(--panel);
+}
+.clusters .item {
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
   transition: background 0.1s;
 }
-.side .item:hover { background: var(--panel2); }
-.side .item.sel {
+.clusters .item:hover { background: var(--panel2); }
+.clusters .item.sel {
   background: var(--panel2);
   border-left: 3px solid var(--accent);
+  padding-left: 9px;
 }
-.side .item.done { opacity: .45; }
-/* Day-first grouping: sticky day headers, collapsible cluster lists. */
-.side .daygroup { border-bottom: 1px solid var(--line); }
-.side .dayhead {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
-  background: var(--panel);
-  font-weight: 600;
-  font-size: 12px;
-  cursor: pointer;
-  user-select: none;
-}
-.side .dayhead:hover { background: var(--panel2); }
-.side .dayhead .chev { color: var(--dim); width: 11px; flex: none; }
-.side .dayhead .dayname { white-space: nowrap; }
-.side .dayhead .chip { margin-left: auto; font-size: 10px; }
-.side .daygroup.collapsed .item { display: none; }
-.side .item-row {
+.clusters .item.done { opacity: .45; }
+.clusters .item-row {
   display: flex;
   gap: 8px;
   align-items: center;
 }
-.side .strip { display: flex; gap: 3px; flex: none; }
-.side .strip .crop { width: 26px; height: 36px; }
-.side .item-info { min-width: 0; }
-.side .item-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.side .item-meta { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.side .dry-batches { padding: 10px 12px; border-top: 1px solid var(--line); }
-.side .dry-batch {
+.clusters .strip { display: flex; gap: 3px; flex: none; }
+.clusters .strip .crop { width: 26px; height: 36px; }
+.clusters .item-info { min-width: 0; }
+.clusters .item-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.clusters .item-meta { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Pane 4 — actions */
+.pane .dry-batches { padding: 10px 12px; border-top: 1px solid var(--line); }
+.pane .dry-batch {
   background: var(--panel2);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 8px;
 }
-.side .dry-batch .batch-id { font-weight: 600; margin-bottom: 4px; }
-.side .dry-batch .batch-entries { font-size: 12px; color: var(--dim); margin-bottom: 8px; }
-.side .dry-batch button { width: 100%; }
+.pane .dry-batch .batch-id { font-weight: 600; margin-bottom: 4px; }
+.pane .dry-batch .batch-entries { font-size: 12px; color: var(--dim); margin-bottom: 8px; }
+.pane .dry-batch button { width: 100%; }
 
 /* Center — evidence grid */
 .main { overflow: auto; padding: 16px; }

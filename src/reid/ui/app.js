@@ -5,8 +5,8 @@
 const API_BASE = "";
 let state = {
   clusters: [],
+  activeDay: null, // which day's clusters the second pane shows
   activeKey: null, // "window:cluster" — cluster numbers repeat across windows
-  expandedDays: null, // null until first render, then a Set of visible days
   evidence: [],
   assignment: null,
   stats: [],
@@ -43,6 +43,7 @@ async function loadInitialState() {
   // The server builds the initial evidence/assignment for clusters[0]'s
   // exact window; the key is derived from that same row.
   state.activeKey = state.clusters.length ? keyOf(state.clusters[0]) : null;
+  state.activeDay = state.clusters.length ? state.clusters[0].window : null;
   render();
 }
 
@@ -60,10 +61,12 @@ async function loadPeople() {
 /* ---------- Rendering ---------- */
 function render() {
   const root = document.getElementById("app");
-  // Preserve sidebar scroll across re-renders: a full innerHTML swap
-  // otherwise resets it, losing your place in the review queue.
-  const side = document.querySelector(".side");
-  const sideScroll = side ? side.scrollTop : 0;
+  // Preserve column scroll positions across re-renders: a full innerHTML
+  // swap otherwise resets them, losing your place in the review queue.
+  const scrolls = [".days", ".clusters"].map(sel => {
+    const el = document.querySelector(sel);
+    return [sel, el ? el.scrollTop : 0];
+  });
   root.innerHTML = `
     ${bannerHTML()}
     <div class="top">
@@ -77,11 +80,15 @@ function render() {
       <span class="muted"><kbd class="kbd">j</kbd>/<kbd class="kbd">k</kbd> move · <kbd class="kbd">c</kbd> confirm · <kbd class="kbd">s</kbd> skip</span>
       <div class="cfgpop" id="cfgPop">${configPopoverHTML()}</div>
     </div>
-    <div class="side">${sidebarHTML()}</div>
+    <div class="days">${daysHTML()}</div>
+    <div class="clusters">${clustersHTML()}</div>
     <div class="main">${mainHTML()}</div>
     <div class="pane">${paneHTML()}</div>
   `;
-  if (side) side.scrollTop = sideScroll;
+  for (const [sel, top] of scrolls) {
+    const el = document.querySelector(sel);
+    if (el) el.scrollTop = top;
+  }
   wireEvents();
   renderEvidence();
   renderPane();
@@ -112,49 +119,53 @@ function configPopoverHTML() {
     + `<div class="muted">Saved values apply to the next batch run.</div>`;
 }
 
-function sidebarHTML() {
-  // Days first: each window collapses into a group of clusters. Newest day
-  // on top; the active day starts expanded.
+function daysHTML() {
+  // Pane 1: one row per day (newest first), Finder column style.
   const groups = new Map();
   for (const c of state.clusters) {
     if (!groups.has(c.window)) groups.set(c.window, []);
     groups.get(c.window).push(c);
   }
   const days = [...groups.keys()].sort((a, b) => b.localeCompare(a));
-  if (state.expandedDays === null) {
-    const active = activeRow();
-    state.expandedDays = new Set(active ? [active.window] : days.slice(0, 1));
+  if (state.activeDay === null && days.length) {
+    state.activeDay = days[0];
   }
-
-  const items = days.map(day => {
-    const rows = groups.get(day);
-    const expanded = state.expandedDays.has(day);
-    const openCount = rows.filter(r => r.status === "open").length;
-    const rowsHTML = rows.map(c => `
-      <div class="item ${keyOf(c) === state.activeKey ? "sel" : ""} ${c.status !== "open" ? "done" : ""}" data-key="${keyOf(c)}">
-        <div class="item-row">
-          <div class="strip">${renderCrops(c.crops || [], 26, 36)}</div>
-          <div class="item-info">
-            <div class="item-name">${c.proposed_name ? esc(c.proposed_name) : '<span class="muted">unnamed</span>'}</div>
-            <div class="item-meta mono">cluster ${c.cluster} · ${(c.confidence * 100).toFixed(0)}% · ${c.appearances} ap</div>
-          </div>
-        </div>
-      </div>
-    `).join("");
+  const rows = days.map(day => {
+    const clusterRows = groups.get(day);
+    const openCount = clusterRows.filter(r => r.status === "open").length;
     return `
-      <div class="daygroup ${expanded ? "" : "collapsed"}">
-        <div class="dayhead" data-day="${day}" title="${expanded ? "Collapse" : "Expand"} ${day}">
-          <span class="chev">${expanded ? "▾" : "▸"}</span>
-          <span class="dayname">${day}</span>
-          <span class="chip ${openCount ? "acc" : ""}">${openCount}/${rows.length}</span>
-        </div>
-        ${rowsHTML}
+      <div class="dayrow ${day === state.activeDay ? "sel" : ""}" data-day="${day}">
+        <div class="dayname">${day}</div>
+        <span class="chip ${openCount ? "acc" : ""}">${openCount}/${clusterRows.length}</span>
       </div>
     `;
-  }).join("");
+  });
+  return rows.join("") || `<div class="empty muted">no clusters yet — run the batch</div>`;
+}
 
+function clustersHTML() {
+  // Pane 2: the clusters of the selected day.
+  const rows = state.clusters.filter(c => c.window === state.activeDay);
+  if (!rows.length) {
+    return `<div class="empty muted">select a day</div>`;
+  }
+  return rows.map(c => `
+    <div class="item ${keyOf(c) === state.activeKey ? "sel" : ""} ${c.status !== "open" ? "done" : ""}" data-key="${keyOf(c)}">
+      <div class="item-row">
+        <div class="strip">${renderCrops(c.crops || [], 26, 36)}</div>
+        <div class="item-info">
+          <div class="item-name">${c.proposed_name ? esc(c.proposed_name) : '<span class="muted">unnamed</span>'}</div>
+          <div class="item-meta mono">cluster ${c.cluster} · ${(c.confidence * 100).toFixed(0)}% · ${c.appearances} ap</div>
+        </div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function dryBatchesHTML() {
   const dryBatches = state.dryBatches || [];
-  const batchesHTML = dryBatches.length ? `
+  if (!dryBatches.length) return "";
+  return `
     <div class="dry-batches">
       ${dryBatches.map(b => `
         <div class="dry-batch">
@@ -164,9 +175,7 @@ function sidebarHTML() {
         </div>
       `).join("")}
     </div>
-  ` : "";
-
-  return items + batchesHTML;
+  `;
 }
 
 function mainHTML() {
@@ -213,6 +222,7 @@ function paneHTML() {
     ` : ""}
     <hr>
     <div class="footer muted">⚙ Config (top right) holds the tuning knobs; store wipes stay out of this screen.</div>
+    ${dryBatchesHTML()}
   `;
 }
 
@@ -272,29 +282,12 @@ function wireEvents() {
     render(); // re-render banner and button labels
   });
 
-  // Sidebar: day headers toggle, cluster rows select
-  document.querySelectorAll(".side .item[data-key]").forEach(el => {
-    el.addEventListener("click", () => selectCluster(el.dataset.key));
+  // Sidebar: day rows select a day, cluster rows select a cluster
+  document.querySelectorAll(".days .dayrow").forEach(el => {
+    el.addEventListener("click", () => selectDay(el.dataset.day));
   });
-  document.querySelectorAll(".side .dayhead").forEach(el => {
-    el.addEventListener("click", () => {
-      const day = el.dataset.day;
-      const set = state.expandedDays ?? new Set();
-      const expanding = !set.has(day);
-      if (expanding) set.add(day); else set.delete(day);
-      state.expandedDays = set;
-      if (!expanding) {
-        render();
-        return;
-      }
-      // Expanding a day shows its clusters AND loads the day's first open
-      // one, so the main/right panes move with the click instead of only
-      // the sidebar list changing.
-      const rows = state.clusters.filter(c => c.window === day);
-      const first = rows.find(c => c.status === "open") || rows[0];
-      if (first) selectCluster(keyOf(first));
-      else render();
-    });
+  document.querySelectorAll(".clusters .item[data-key]").forEach(el => {
+    el.addEventListener("click", () => selectCluster(el.dataset.key));
   });
 
   // Dry-batch promote
@@ -325,13 +318,21 @@ function wireEvents() {
   document.addEventListener("keydown", keyHandler);
 }
 
+function selectDay(day) {
+  state.activeDay = day;
+  // Show the day's clusters AND load its first open one, so the
+  // evidence/actions panes move with the click.
+  const rows = state.clusters.filter(c => c.window === day);
+  const first = rows.find(c => c.status === "open") || rows[0];
+  if (first) selectCluster(keyOf(first));
+  else render();
+}
+
 function selectCluster(key) {
   state.activeKey = key;
   const row = activeRow();
   if (row) {
-    // Navigating (j/k) can land on a cluster whose day is collapsed:
-    // expand it so the selection is visible.
-    state.expandedDays?.add(row.window);
+    state.activeDay = row.window;
     loadEvidence(row.cluster, row.window);
     state.assignment = buildAssignment(row);
   }
