@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.request import urlopen
 
+import numpy as np
 import pytest
 
 from reid.config import load_config
@@ -254,6 +255,46 @@ class TestServerAPI:
 
         assert ctype == "image/jpeg"
         assert len(data) > 100
+
+    def test_get_crop_with_context_expands_and_differs(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """expand+outline grows the crop and draws the box border."""
+        import cv2
+
+        from tests import library
+
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        server.store.add_appearances(
+            library.PHOTO_1_STANDING_ID,
+            [
+                Appearance(
+                    asset_id=library.PHOTO_1_STANDING_ID,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    # Small box: tight and expanded crops both stay under the
+                    # 320px max_side cap, so the expansion is measurable.
+                    box_left=300.0,
+                    box_top=300.0,
+                    box_right=400.0,
+                    box_bottom=400.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                )
+            ],
+        )
+
+        query = {"asset_id": [library.PHOTO_1_STANDING_ID], "appearance": ["0"]}
+        tight, _ = server.get_crop(query)
+        contextual, _ = server.get_crop({**query, "expand": ["0.6"], "outline": ["1"]})
+
+        assert len(contextual) > len(tight)
+        tight_img = cv2.imdecode(np.frombuffer(tight, np.uint8), cv2.IMREAD_COLOR)
+        wide_img = cv2.imdecode(np.frombuffer(contextual, np.uint8), cv2.IMREAD_COLOR)
+        assert wide_img is not None and tight_img is not None
+        assert max(wide_img.shape[:2]) > max(tight_img.shape[:2])
 
     def test_get_crop_missing_appearance_errors(
         self, config_with_store: Path, populated_store: Store

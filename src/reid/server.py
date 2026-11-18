@@ -315,6 +315,12 @@ class UIServer:
         Pixels come from the configured preview/original source — the same
         source detection ran on, so appearance boxes match without any
         coordinate mapping.
+
+        Optional params:
+        - ``expand``: fraction of the box size to grow on each side, for
+          context around the person (e.g. 0.6 = 60% margin).
+        - ``outline``: draw the person's box as a border inside the crop, so
+          the reviewer can tell the target apart from neighbours.
         """
         import cv2
 
@@ -323,6 +329,8 @@ class UIServer:
         if not asset_id or not appearance_raw:
             raise ValueError("asset_id and appearance are required")
         appearance_no = int(appearance_raw)
+        expand = float((query.get("expand") or ["0"])[0] or 0)
+        outline = (query.get("outline") or ["0"])[0].lower() not in ("0", "", "false")
 
         app_list = self.store.appearances_by_asset().get(asset_id, [])
         appearance = next((a for a in app_list if a.appearance == appearance_no), None)
@@ -338,11 +346,25 @@ class UIServer:
 
         left, top, right, bottom = (int(v) for v in appearance.box)
         height, width = image.shape[:2]
-        crop = image[
-            max(top, 0) : min(bottom, height), max(left, 0) : min(right, width)
-        ]
+        if expand > 0:
+            grow_x = int((right - left) * expand)
+            grow_y = int((bottom - top) * expand)
+            x0, y0 = max(left - grow_x, 0), max(top - grow_y, 0)
+            x1, y1 = min(right + grow_x, width), min(bottom + grow_y, height)
+        else:
+            x0, y0 = max(left, 0), max(top, 0)
+            x1, y1 = min(right, width), min(bottom, height)
+        crop = image[y0:y1, x0:x1]
         if crop.size == 0:
             raise ValueError("appearance box is outside the image")
+
+        if outline:
+            # The person's box, translated into crop coordinates.
+            bx0, by0 = max(left - x0, 0), max(top - y0, 0)
+            bx1 = min(right - x0, x1 - x0 - 1)
+            by1 = min(bottom - y0, y1 - y0 - 1)
+            thickness = max(2, min(crop.shape[0], crop.shape[1]) // 80)
+            cv2.rectangle(crop, (bx0, by0), (bx1, by1), (255, 140, 79), thickness)
 
         max_side = 320
         scale = min(1.0, max_side / max(crop.shape[:2]))

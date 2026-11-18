@@ -165,7 +165,7 @@ function renderEvidence() {
     const [chipClass, chipText] = statusChip(e.status);
     return `
       <div class="evcard" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
-        <div class="crop">${cropImg(e, 150, 170)}</div>
+        <div class="crop">${cropImg(e, 150, 170, true)}</div>
         <div class="asset-row">
           ${e.status === "will_write" ? `<input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>` : ""}
           <span class="asset-name mono">${esc(e.asset_id)}</span>
@@ -462,12 +462,15 @@ function renderCrops(crops, w, h) {
   return crops.map(c => cropImg(c, w, h)).join("");
 }
 
-function cropImg(e, w, h) {
+function cropImg(e, w, h, withContext) {
   // Real person crop from the container; cropSVG is the fallback for refs
   // that carry no asset (shouldn't happen, but keeps tiles from breaking).
+  // Evidence cards pass withContext: the crop grows context around the box
+  // and the target person is outlined, so neighbours stay distinguishable.
   if (!e.asset_id) return cropSVG(e, w, h);
+  const extra = withContext ? "&expand=0.6&outline=1" : "";
   return `<img class="crop" loading="lazy" width="${w}" height="${h}"
-    src="/api/crop?asset_id=${encodeURIComponent(e.asset_id)}&appearance=${e.appearance}"
+    src="/api/crop?asset_id=${encodeURIComponent(e.asset_id)}&appearance=${e.appearance}${extra}"
     alt="person crop">`;
 }
 
