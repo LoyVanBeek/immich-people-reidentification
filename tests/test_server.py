@@ -188,6 +188,78 @@ class TestServerAPI:
         assert "Dave" in state["people"]
         assert "Erin" in state["people"]
 
+    def test_initial_state_is_window_scoped(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """Cluster numbers repeat across windows: the initial panes must not
+        mix windows sharing an index."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # Another day, same cluster number 0, different person — on fresh
+        # appearance rows (proposals are keyed by asset+appearance, so each
+        # appearance lives in exactly one window).
+        server.store.add_appearances(
+            "asset1",
+            [
+                Appearance(
+                    asset_id="asset1",
+                    appearance=2,
+                    embedding=b"\x02" * 512,
+                    confidence=0.8,
+                    box_left=50,
+                    box_top=50,
+                    box_right=150,
+                    box_bottom=150,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2025-09-23T09:00:00"),
+                ),
+                Appearance(
+                    asset_id="asset1",
+                    appearance=3,
+                    embedding=b"\x03" * 512,
+                    confidence=0.8,
+                    box_left=160,
+                    box_top=50,
+                    box_right=260,
+                    box_bottom=150,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2025-09-23T09:00:00"),
+                ),
+            ],
+        )
+        other_day = [
+            Proposal(
+                asset_id="asset1",
+                appearance=2,
+                window="2025-09-23",
+                cluster=0,
+                status=ProposalStatus.PROPOSED,
+                proposed_name="Steffie",
+            ),
+            Proposal(
+                asset_id="asset1",
+                appearance=3,
+                window="2025-09-23",
+                cluster=0,
+                status=ProposalStatus.PROPOSED,
+                proposed_name="Steffie",
+            ),
+        ]
+        existing = list(server.store.proposals())
+        server.store.replace_proposals(existing + other_day)
+
+        state = server.get_ui_state()
+
+        # Sorted by (window, cluster): 2025-09-23 comes first, so it is the
+        # default selection — and its evidence carries ONLY that window.
+        active = state["clusters"][0]
+        assert (active["window"], active["cluster"]) == ("2025-09-23", 0)
+        assert state["assignment"]["window"] == "2025-09-23"
+        assert state["assignment"]["proposed_name"] == "Steffie"
+        assert state["assignment"]["total_appearances"] == 2
+        assert all(e["window"] == "2025-09-23" for e in state["evidence"])
+        assert all(e["asset_id"] == "asset1" for e in state["evidence"])
+
     def test_get_evidence(
         self, config_with_store: Path, populated_store: Store
     ) -> None:

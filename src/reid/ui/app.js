@@ -5,7 +5,8 @@
 const API_BASE = "";
 let state = {
   clusters: [],
-  activeCluster: null,
+  activeKey: null, // "window:cluster" — cluster numbers repeat across windows
+  expandedDays: null, // null until first render, then a Set of visible days
   evidence: [],
   assignment: null,
   stats: [],
@@ -14,6 +15,14 @@ let state = {
   dryRun: true,
 };
 let keyHandler = null;
+
+function keyOf(row) {
+  return `${row.window}:${row.cluster}`;
+}
+
+function activeRow() {
+  return state.clusters.find(c => keyOf(c) === state.activeKey) || null;
+}
 
 /* ---------- API ---------- */
 async function fetchJson(path) {
@@ -30,8 +39,10 @@ async function loadInitialState() {
     // Server serialises dataclasses snake_case; state uses camelCase.
     configKnobs: data.config_knobs ?? null,
     dryRun: data.dry_run ?? state.dryRun,
-    activeCluster: data.active_cluster ?? null,
   };
+  // The server builds the initial evidence/assignment for clusters[0]'s
+  // exact window; the key is derived from that same row.
+  state.activeKey = state.clusters.length ? keyOf(state.clusters[0]) : null;
   render();
 }
 
@@ -102,17 +113,45 @@ function configPopoverHTML() {
 }
 
 function sidebarHTML() {
-  const items = state.clusters.map(c => `
-    <div class="item ${c.cluster === state.activeCluster ? "sel" : ""} ${c.status !== "open" ? "done" : ""}" data-cluster="${c.cluster}" data-window="${c.window}">
-      <div class="item-row">
-        <div class="strip">${renderCrops(c.crops || [], 26, 36)}</div>
-        <div class="item-info">
-          <div class="item-name">${c.proposed_name ? esc(c.proposed_name) : '<span class="muted">unnamed</span>'}</div>
-          <div class="item-meta mono">${c.window} · ${c.cluster} · ${(c.confidence * 100).toFixed(0)}%</div>
+  // Days first: each window collapses into a group of clusters. Newest day
+  // on top; the active day starts expanded.
+  const groups = new Map();
+  for (const c of state.clusters) {
+    if (!groups.has(c.window)) groups.set(c.window, []);
+    groups.get(c.window).push(c);
+  }
+  const days = [...groups.keys()].sort((a, b) => b.localeCompare(a));
+  if (state.expandedDays === null) {
+    const active = activeRow();
+    state.expandedDays = new Set(active ? [active.window] : days.slice(0, 1));
+  }
+
+  const items = days.map(day => {
+    const rows = groups.get(day);
+    const expanded = state.expandedDays.has(day);
+    const openCount = rows.filter(r => r.status === "open").length;
+    const rowsHTML = rows.map(c => `
+      <div class="item ${keyOf(c) === state.activeKey ? "sel" : ""} ${c.status !== "open" ? "done" : ""}" data-key="${keyOf(c)}">
+        <div class="item-row">
+          <div class="strip">${renderCrops(c.crops || [], 26, 36)}</div>
+          <div class="item-info">
+            <div class="item-name">${c.proposed_name ? esc(c.proposed_name) : '<span class="muted">unnamed</span>'}</div>
+            <div class="item-meta mono">cluster ${c.cluster} · ${(c.confidence * 100).toFixed(0)}% · ${c.appearances} ap</div>
+          </div>
         </div>
       </div>
-    </div>
-  `).join("");
+    `).join("");
+    return `
+      <div class="daygroup ${expanded ? "" : "collapsed"}">
+        <div class="dayhead" data-day="${day}" title="${expanded ? "Collapse" : "Expand"} ${day}">
+          <span class="chev">${expanded ? "▾" : "▸"}</span>
+          <span class="dayname">${day}</span>
+          <span class="chip ${openCount ? "acc" : ""}">${openCount}/${rows.length}</span>
+        </div>
+        ${rowsHTML}
+      </div>
+    `;
+  }).join("");
 
   const dryBatches = state.dryBatches || [];
   const batchesHTML = dryBatches.length ? `
@@ -131,7 +170,7 @@ function sidebarHTML() {
 }
 
 function mainHTML() {
-  const c = state.clusters.find(x => x.cluster === state.activeCluster);
+  const c = activeRow();
   if (!c) {
     return `<div class="main-header"><span class="cluster-id mono">—</span><h2 class="muted">Select a cluster</h2></div><div class="evgrid"></div>`;
   }
@@ -154,23 +193,23 @@ function paneHTML() {
   return `
     <div class="name-display">${hasName ? esc(a.proposed_name) : '<span class="muted">—</span>'}</div>
     <div class="cluster-meta muted">${a.total_appearances} appearances · ${a.writable} writable · ${a.conflicted} conflict · ${a.no_head} no-head</div>
-    ${!hasName ? `<button class="b-name primary" data-cluster="${a.cluster}" style="width:100%;margin-bottom:10px">Name this cluster</button>` : ""}
+    ${!hasName ? `<button class="b-name primary" style="width:100%;margin-bottom:10px">Name this cluster</button>` : ""}
     <div class="name-prompt">
       <label class="muted">Assign to</label>
-      <input type="text" id="nameInput" list="peopleList" value="${hasName ? esc(a.proposed_name) : ""}" ${a.proposed_name ? "" : "placeholder=\"Type or pick an existing person…\""} ${state.activeCluster === null ? "disabled" : ""}>
+      <input type="text" id="nameInput" list="peopleList" value="${hasName ? esc(a.proposed_name) : ""}" ${a.proposed_name ? "" : "placeholder=\"Type or pick an existing person…\""} ${state.activeKey === null ? "disabled" : ""}>
       <datalist id="peopleList">${state.people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
       <div class="hint">existing person → attach · new name → creates person on write</div>
     </div>
     <div class="actions">
-      ${state.activeCluster !== null ? `
-        <button class="b-ok primary" data-cluster="${a.cluster}">
+      ${state.activeKey !== null ? `
+        <button class="b-ok primary">
           ${state.dryRun ? "Record (dry-run)" : `Write ${a.writable || 0} faces`}
         </button>
-        <button class="b-skip" data-cluster="${a.cluster}">Skip cluster</button>
+        <button class="b-skip">Skip cluster</button>
       ` : `<div class="chip">Select a cluster</div>`}
     </div>
-    ${a.cluster_status === "skipped" && state.activeCluster !== null ? `
-      <button class="b-reopen" data-cluster="${a.cluster}" style="width:100%;margin-top:8px">Reopen dismissed cluster</button>
+    ${a.cluster_status === "skipped" && state.activeKey !== null ? `
+      <button class="b-reopen" data-key="${a.window}:${a.cluster}" style="width:100%;margin-top:8px">Reopen dismissed cluster</button>
     ` : ""}
     <hr>
     <div class="footer muted">⚙ Config (top right) holds the tuning knobs; store wipes stay out of this screen.</div>
@@ -233,18 +272,16 @@ function wireEvents() {
     render(); // re-render banner and button labels
   });
 
-  // Sidebar cluster selection
-  document.querySelectorAll(".side .item[data-cluster]").forEach(el => {
+  // Sidebar: day headers toggle, cluster rows select
+  document.querySelectorAll(".side .item[data-key]").forEach(el => {
+    el.addEventListener("click", () => selectCluster(el.dataset.key));
+  });
+  document.querySelectorAll(".side .dayhead").forEach(el => {
     el.addEventListener("click", () => {
-      const cluster = parseInt(el.dataset.cluster, 10);
-      const window = el.dataset.window;
-      state.activeCluster = cluster;
-      loadEvidence(cluster, window);
-      // Update assignment pane
-      const assignment = state.clusters.find(c => c.cluster === cluster && c.window === window);
-      if (assignment) {
-        state.assignment = buildAssignment(assignment);
-      }
+      const day = el.dataset.day;
+      const set = state.expandedDays ?? new Set();
+      if (set.has(day)) set.delete(day); else set.add(day);
+      state.expandedDays = set;
       render();
     });
   });
@@ -262,19 +299,32 @@ function wireEvents() {
   keyHandler = e => {
     if (/input|textarea/i.test(e.target.tagName) || e.target.isContentEditable) return;
     const openClusters = state.clusters.filter(c => c.status === "open");
-    const idx = openClusters.findIndex(c => c.cluster === state.activeCluster);
+    const idx = openClusters.findIndex(c => keyOf(c) === state.activeKey);
     if (e.key === "j") {
       const next = openClusters[(idx + 1) % openClusters.length];
-      if (next) { state.activeCluster = next.cluster; loadEvidence(next.cluster, next.window); state.assignment = buildAssignment(next); render(); }
+      if (next) selectCluster(keyOf(next));
     }
     if (e.key === "k") {
       const prev = openClusters[(idx - 1 + openClusters.length) % openClusters.length];
-      if (prev) { state.activeCluster = prev.cluster; loadEvidence(prev.cluster, prev.window); state.assignment = buildAssignment(prev); render(); }
+      if (prev) selectCluster(keyOf(prev));
     }
-    if (e.key === "c") doConfirm(state.activeCluster);
-    if (e.key === "s") doSkip(state.activeCluster);
+    if (e.key === "c") doConfirm(state.activeKey);
+    if (e.key === "s") doSkip(state.activeKey);
   };
   document.addEventListener("keydown", keyHandler);
+}
+
+function selectCluster(key) {
+  state.activeKey = key;
+  const row = activeRow();
+  if (row) {
+    // Navigating (j/k) can land on a cluster whose day is collapsed:
+    // expand it so the selection is visible.
+    state.expandedDays?.add(row.window);
+    loadEvidence(row.cluster, row.window);
+    state.assignment = buildAssignment(row);
+  }
+  render();
 }
 
 function wireEvidenceEvents() {
@@ -303,9 +353,9 @@ function wireEvidenceEvents() {
       );
     });
   });
-  document.querySelectorAll(".b-reopen[data-cluster]").forEach(btn => {
+  document.querySelectorAll(".b-reopen[data-key]").forEach(btn => {
     btn.addEventListener("click", () => {
-      const c = state.clusters.find(x => x.cluster === parseInt(btn.dataset.cluster, 10));
+      const c = state.clusters.find(x => keyOf(x) === btn.dataset.key);
       if (c) dismissCluster(c.cluster, c.window, false);
     });
   });
@@ -319,17 +369,19 @@ function wirePaneEvents() {
       if (v && state.assignment && !state.assignment.proposed_name) {
         state.assignment.proposed_name = v;
         // Update cluster row too
-        const cluster = state.clusters.find(c => c.cluster === state.activeCluster);
-        if (cluster) cluster.proposed_name = v;
-        toast(`${state.activeCluster} → ${v} (${state.people.includes(v) ? "existing" : "new"})`);
+        const row = activeRow();
+        if (row) {
+          row.proposed_name = v;
+          toast(`${row.window} / ${row.cluster} → ${v} (${state.people.includes(v) ? "existing" : "new"})`);
+        }
         render();
       }
     });
   }
 
-  document.querySelector(".b-ok")?.addEventListener("click", () => doConfirm(state.activeCluster));
-  document.querySelector(".b-skip")?.addEventListener("click", () => doSkip(state.activeCluster));
-  document.querySelector(".b-name")?.addEventListener("click", () => namePrompt(state.activeCluster));
+  document.querySelector(".b-ok")?.addEventListener("click", () => doConfirm(state.activeKey));
+  document.querySelector(".b-skip")?.addEventListener("click", () => doSkip(state.activeKey));
+  document.querySelector(".b-name")?.addEventListener("click", () => namePrompt(state.activeKey));
 }
 
 /* ---------- Dry-run batch actions ---------- */
@@ -480,23 +532,23 @@ function buildAssignment(clusterRow) {
   };
 }
 
-async function doConfirm(cluster) {
-  if (cluster === null) return;
-  const c = state.clusters.find(x => x.cluster === cluster);
+async function doConfirm(key) {
+  if (key === null) return;
+  const c = state.clusters.find(x => keyOf(x) === key);
   if (!c || c.status !== "open") return;
 
   if (!c.proposed_name) {
-    namePrompt(cluster, name => {
+    namePrompt(key, name => {
       c.proposed_name = name;
       c.anchor = `named manually (${state.people.includes(name) ? "existing" : "new"})`;
-      doConfirm(cluster);
+      doConfirm(key);
     });
     return;
   }
 
   // For now just mark as confirmed locally
   c.status = "confirmed";
-  const w = state.evidence.filter(e => e.cluster === cluster && e.window === c.window);
+  const w = state.evidence.filter(e => e.cluster === c.cluster && e.window === c.window);
   const included = w.filter(e => e.status === "will_write" && e.included);
   const st = {
     writable: included.length,
@@ -536,14 +588,16 @@ async function doConfirm(cluster) {
   render();
 }
 
-function doSkip(cluster) {
-  if (cluster === null) return;
-  const c = state.clusters.find(x => x.cluster === cluster);
+function doSkip(key) {
+  if (key === null) return;
+  const c = state.clusters.find(x => keyOf(x) === key);
   if (!c) return;
-  dismissCluster(cluster, c.window, true);
+  dismissCluster(c.cluster, c.window, true);
 }
 
-function namePrompt(cluster, onPick) {
+function namePrompt(key, onPick) {
+  const row = state.clusters.find(x => keyOf(x) === key);
+  const label = row ? `${row.window} / ${row.cluster}` : key;
   const host = document.getElementById("modalhost");
   const finish = name => {
     host.innerHTML = "";
@@ -552,19 +606,22 @@ function namePrompt(cluster, onPick) {
     } else if (name) {
       // Default (pane "Name this cluster" button): set the name in place,
       // so the confirm button becomes usable without another round-trip.
-      const c = state.clusters.find(x => x.cluster === cluster);
+      const c = state.clusters.find(x => keyOf(x) === key);
       if (c) {
         c.proposed_name = name;
         c.anchor = `named manually (${state.people.includes(name) ? "existing" : "new"})`;
       }
-      if (state.assignment && state.assignment.cluster === cluster) {
+      if (
+        state.assignment &&
+        `${state.assignment.window}:${state.assignment.cluster}` === key
+      ) {
         state.assignment.proposed_name = name;
       }
       render();
     }
   };
   host.innerHTML = `<div class="modal"><div class="inner">
-    <h3>Name this cluster <span class="mono muted">${cluster}</span></div>
+    <h3>Name this cluster <span class="mono muted">${esc(label)}</span></div>
     <div class="muted" style="margin-bottom:10px">${state.assignment?.total_appearances || 0} appearances · no Immich anchor found</div>
     <input id="np" list="pl" placeholder="Type or pick an existing person…" style="width:100%">
     <datalist id="pl">${state.people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>

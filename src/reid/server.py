@@ -320,17 +320,22 @@ class UIServer:
 
         # Group proposals by window + cluster
         clusters = self._build_cluster_rows(proposals, appearances_by_asset)
-        active_cluster = clusters[0].cluster if clusters else None
+        # Cluster numbers repeat across windows, so the default selection is
+        # the first ROW — window included — and the panes are built for that
+        # exact window only.
+        active = clusters[0] if clusters else None
         evidence = (
             self._build_evidence_for_cluster(
-                active_cluster, proposals, appearances_by_asset
+                active.cluster, proposals, appearances_by_asset, window=active.window
             )
-            if active_cluster is not None
+            if active is not None
             else []
         )
         assignment = (
-            self._build_assignment(active_cluster, proposals, appearances_by_asset)
-            if active_cluster is not None
+            self._build_assignment(
+                active.cluster, proposals, appearances_by_asset, window=active.window
+            )
+            if active is not None
             else None
         )
         stats = self._build_stats()
@@ -339,7 +344,7 @@ class UIServer:
 
         state = UIState(
             clusters=clusters,
-            active_cluster=active_cluster,
+            active_cluster=active.cluster if active is not None else None,
             evidence=evidence,
             assignment=assignment,
             stats=stats,
@@ -877,12 +882,17 @@ class UIServer:
         cluster: int | None,
         proposals: list[Proposal],
         appearances_by_asset: dict[str, list[Appearance]],
+        window: str | None = None,
     ) -> AssignmentPane | None:
-        """Build the right assignment pane for a cluster."""
+        """Build the right assignment pane for one cluster in one window."""
         if cluster is None:
             return None
 
-        target_props = [p for p in proposals if p.cluster == cluster]
+        target_props = [
+            p
+            for p in proposals
+            if p.cluster == cluster and (window is None or p.window == window)
+        ]
         if not target_props:
             return None
 
