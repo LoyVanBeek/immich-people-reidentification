@@ -309,7 +309,14 @@ def _cluster_and_anchor(
                 cosine_distance_matrix(embeddings), cfg.clustering.distance_threshold
             )
         )
-        outcome = build_window(window, members, faces_by_asset, clusters, anchor_config)
+        outcome = build_window(
+            window,
+            members,
+            faces_by_asset,
+            clusters,
+            anchor_config,
+            rejected_faces=frozenset(store.appearance_rejections()),
+        )
         proposals.extend(outcome.proposals)
         summaries.append(outcome.summary)
         _log.info(

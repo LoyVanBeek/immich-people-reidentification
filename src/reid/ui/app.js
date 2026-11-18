@@ -24,7 +24,14 @@ async function fetchJson(path) {
 
 async function loadInitialState() {
   const data = await fetchJson("/api/state");
-  state = { ...state, ...data };
+  state = {
+    ...state,
+    ...data,
+    // Server serialises dataclasses snake_case; state uses camelCase.
+    configKnobs: data.config_knobs ?? null,
+    dryRun: data.dry_run ?? state.dryRun,
+    activeCluster: data.active_cluster ?? null,
+  };
   render();
 }
 
@@ -177,11 +184,13 @@ function renderEvidence() {
   grid.innerHTML = state.evidence.map(e => {
     const [chipClass, chipText] = statusChip(e.status);
     const rejectable = assignment?.proposed_name && e.status !== "rejected" && e.status !== "already_labeled";
+    const wrongLabelable = e.status === "already_labeled" && e.immich_label;
     return `
       <div class="evcard ${e.status === "rejected" ? "evrejected" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
         <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected")}</div>
         <div class="asset-row">
-          ${e.status === "will_write" ? `<input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>` : ""}
+          ${e.status === "will_write" ? `<label class="writemark" title="Checked: this appearance is written to Immich when you confirm. Uncheck to leave it out.">
+            <input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>write</label>` : ""}
           <span class="asset-name mono">${esc(e.asset_id)}</span>
         </div>
         <div class="date-conf">${esc(e.date)} · ${(e.confidence * 100).toFixed(0)}%</div>
@@ -190,6 +199,7 @@ function renderEvidence() {
           ${e.immich_label ? `<span class="chip">immich: ${esc(e.immich_label)}</span>` : ""}
         </div>
         ${rejectable ? `<button class="b-reject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Not this person</button>` : ""}
+        ${wrongLabelable ? `<button class="b-wronglabel" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(e.immich_label)}">Wrong label</button>` : ""}
       </div>
     `;
   }).join("");
@@ -282,6 +292,15 @@ function wireEvidenceEvents() {
     btn.addEventListener("click", () => {
       const name = state.assignment?.proposed_name;
       rejectAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10), name);
+    });
+  });
+  document.querySelectorAll(".b-wronglabel[data-asset]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      markWrongLabel(
+        btn.dataset.asset,
+        parseInt(btn.dataset.appearance, 10),
+        btn.dataset.name
+      );
     });
   });
   document.querySelectorAll(".b-reopen[data-cluster]").forEach(btn => {
@@ -392,6 +411,32 @@ async function rejectAppearance(assetId, appearance, name) {
     renderEvidence();
   } catch (err) {
     toast(`reject failed: ${err.message}`);
+  }
+}
+
+async function markWrongLabel(assetId, appearance, name) {
+  try {
+    const res = await fetch("/api/reject", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_id: assetId, appearance, name }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`failed to record: ${data.error}`);
+      return;
+    }
+    const card = state.evidence.find(
+      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
+    );
+    if (card) card.immich_label = null;
+    toast(
+      `recorded: “${name}” on this appearance is treated as wrong from the next batch run on. ` +
+        "The label stays in Immich until you remove it there — until then, writes here will report a conflict."
+    );
+    renderEvidence();
+  } catch (err) {
+    toast(`failed to record: ${err.message}`);
   }
 }
 

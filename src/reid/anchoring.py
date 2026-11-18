@@ -96,22 +96,47 @@ def claim_face(
     return best
 
 
+def _drop_rejected(
+    faces: Sequence[Face],
+    appearance: Appearance,
+    rejected_faces: frozenset[tuple[str, int, str]],
+) -> Sequence[Face]:
+    """Faces the operator flagged as wrong labels for this appearance."""
+    if not rejected_faces:
+        return faces
+    return [
+        face
+        for face in faces
+        if (appearance.asset_id, appearance.appearance, face.person_name)
+        not in rejected_faces
+    ]
+
+
 def build_window(
     window: str,
     appearances: Sequence[Appearance],
     faces_by_asset: Mapping[str, Sequence[Face]],
     clusters: Sequence[Sequence[int]],
     cfg: AnchorConfig,
+    rejected_faces: frozenset[tuple[str, int, str]] = frozenset(),
 ) -> WindowOutcome:
     """Anchor every cluster in one window and turn the results into proposals.
 
     The clusters partition the window's appearances (indices into
     `appearances`). Every appearance of a surfaced cluster gets a proposal
     row; singletons and anchor-less clusters below the minimum get none.
+
+    ``rejected_faces`` carries (asset_id, appearance, person_name) triples the
+    operator flagged as wrong labels: those faces never anchor or mark an
+    appearance as already-labeled.
     """
     claims: list[Face | None] = [
         claim_face(
-            appearance, faces_by_asset.get(appearance.asset_id, ()), cfg.face_overlap
+            appearance,
+            _drop_rejected(
+                faces_by_asset.get(appearance.asset_id, ()), appearance, rejected_faces
+            ),
+            cfg.face_overlap,
         )
         for appearance in appearances
     ]

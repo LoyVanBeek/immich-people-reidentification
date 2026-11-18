@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
+from .anchoring import face_person_overlap
 from .config import Config, load_config
 from .enums import (
     ClusterRowStatus,
@@ -29,7 +30,7 @@ from .enums import (
     WriteResultStatus,
 )
 from .head_detector import HeadDetectorConfig
-from .immich import ImmichClient, ImmichError, isoformat_z
+from .immich import Face, ImmichClient, ImmichError, isoformat_z
 from .store import (
     Appearance,
     DryRunAction,
@@ -426,8 +427,22 @@ class UIServer:
         cluster = int(cluster_q)
         proposals = self.store.proposals()
         appearances_by_asset = self.store.appearances_by_asset()
+        # Immich's own face labels for these assets: what the appearance is
+        # currently called in Immich, if anything.
+        faces_by_asset: dict[str, list[Face]] = {}
+        for asset_id in {p.asset_id for p in proposals}:
+            try:
+                faces_by_asset[asset_id] = self.immich.fetch_faces(asset_id)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("failed to fetch faces for %s: %s", asset_id, exc)
+                faces_by_asset[asset_id] = []
         evidence = self._build_evidence_for_cluster(
-            cluster, proposals, appearances_by_asset, window_q
+            cluster,
+            proposals,
+            appearances_by_asset,
+            window_q,
+            faces_by_asset=faces_by_asset,
+            rejected=set(self.store.appearance_rejections()),
         )
         return [asdict(e) for e in evidence]
 
@@ -764,10 +779,21 @@ class UIServer:
         proposals: list[Proposal],
         appearances_by_asset: dict[str, list[Appearance]],
         window: str | None = None,
+        *,
+        faces_by_asset: dict[str, list[Face]] | None = None,
+        rejected: set[tuple[str, int, str]] | None = None,
     ) -> list[EvidenceCard]:
-        """Build evidence cards for one cluster."""
+        """Build evidence cards for one cluster.
+
+        ``faces_by_asset`` carries Immich's face detections so cards can show
+        the appearance's current Immich label; ``rejected`` holds operator
+        wrong-label flags, which blank the label out.
+        """
         if cluster is None:
             return []
+
+        faces_by_asset = faces_by_asset or {}
+        rejected = rejected or set()
 
         target_props = [
             p
@@ -785,6 +811,30 @@ class UIServer:
             )
             if appearance is None:
                 continue
+
+            # The Immich face claiming this appearance, if any: the label the
+            # user sees. Same containment rule the anchoring uses.
+            immich_label: str | None = None
+            best_ratio = 0.0
+            for face in faces_by_asset.get(prop.asset_id, ()):
+                ratio = face_person_overlap(appearance, face)
+                if (
+                    ratio >= self.cfg.clustering.face_overlap
+                    and ratio > best_ratio
+                    and face.person_name
+                ):
+                    best_ratio = ratio
+                    immich_label = face.person_name
+            if (
+                immich_label
+                and (
+                    prop.asset_id,
+                    prop.appearance,
+                    immich_label,
+                )
+                in rejected
+            ):
+                immich_label = None  # operator flagged this label as wrong
 
             # Status chip mapping
             status_map = {
@@ -814,7 +864,7 @@ class UIServer:
                     cluster=prop.cluster,
                     date=date_str,
                     confidence=appearance.confidence,
-                    immich_label=None,  # would need to re-fetch faces to get this
+                    immich_label=immich_label,
                     status=status,
                     included=included,
                     pixel_source=appearance.pixel_source,

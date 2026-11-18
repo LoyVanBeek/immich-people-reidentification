@@ -13,6 +13,7 @@ from urllib.request import urlopen
 import numpy as np
 import pytest
 
+from reid.anchoring import AnchorConfig, build_window
 from reid.config import load_config
 from reid.enums import ProposalStatus
 from reid.server import UIServer, serve
@@ -304,6 +305,210 @@ class TestServerAPI:
 
         with pytest.raises(LookupError):
             server.get_crop({"asset_id": ["asset1"], "appearance": ["99"]})
+
+    def test_evidence_shows_immich_label(
+        self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
+    ) -> None:
+        """Cards show the appearance's current Immich label when one claims it."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # The stub 404s faces for unknown assets, so use a registry fixture id.
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                )
+            ],
+        )
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                )
+            ]
+        )
+        # An Immich face claiming that appearance, labeled "Bob".
+        ui_stub.faces[asset_id] = [
+            {
+                "id": "face-labeled",
+                "assetId": asset_id,
+                "person": {"id": "person-bob", "name": "Bob"},
+                "boundingBoxX1": 300.0,
+                "boundingBoxY1": 200.0,
+                "boundingBoxX2": 500.0,
+                "boundingBoxY2": 400.0,
+                "imageWidth": 1440,
+                "imageHeight": 1440,
+                "sourceType": "machine-learning",
+            }
+        ]
+
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+
+        card = next(e for e in evidence if e["asset_id"] == asset_id)
+        assert card["immich_label"] == "Bob"
+
+    def test_evidence_hides_rejected_label(
+        self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
+    ) -> None:
+        """A wrong-label rejection blanks the label on the card."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                )
+            ],
+        )
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.LABELED,
+                    proposed_name=None,
+                )
+            ]
+        )
+        ui_stub.faces[asset_id] = [
+            {
+                "id": "face-labeled",
+                "assetId": asset_id,
+                "person": {"id": "person-bob", "name": "Bob"},
+                "boundingBoxX1": 300.0,
+                "boundingBoxY1": 200.0,
+                "boundingBoxX2": 500.0,
+                "boundingBoxY2": 400.0,
+                "imageWidth": 1440,
+                "imageHeight": 1440,
+                "sourceType": "machine-learning",
+            }
+        ]
+        server.store.add_appearance_rejection(asset_id, 0, "Bob")
+
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+
+        card = next(e for e in evidence if e["asset_id"] == asset_id)
+        assert card["immich_label"] is None
+
+    def test_anchoring_ignores_rejected_label_faces(
+        self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
+    ) -> None:
+        """A wrong-label face never anchors or marks the appearance labeled."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # The stub 404s faces for unknown assets, so use a registry fixture id.
+        asset_id = library.PHOTO_1_STANDING_ID
+        ui_stub.faces[asset_id] = [
+            {
+                "id": "face-labeled",
+                "assetId": asset_id,
+                "person": {"id": "person-bob", "name": "Bob"},
+                "boundingBoxX1": 300.0,
+                "boundingBoxY1": 200.0,
+                "boundingBoxX2": 500.0,
+                "boundingBoxY2": 400.0,
+                "imageWidth": 1440,
+                "imageHeight": 1440,
+                "sourceType": "machine-learning",
+            }
+        ]
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=1,
+                    embedding=b"\x01" * 512,
+                    confidence=0.85,
+                    box_left=700.0,
+                    box_top=100.0,
+                    box_right=1100.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+            ],
+        )
+        faces = server.immich.fetch_faces(asset_id)
+        appearances = server.store.appearances_by_asset()[asset_id]
+        window = "2026-11-10"
+        anchor_cfg = AnchorConfig(face_overlap=0.5, min_cluster_size=2)
+
+        # Without the rejection, the Immich face claims appearance 0 and its
+        # label marks the row LABELED (and anchors appearance 1).
+        clean = build_window(
+            window, appearances, {asset_id: faces}, [[0, 1]], anchor_cfg
+        )
+        assert any(
+            p.status == ProposalStatus.LABELED
+            and p.asset_id == asset_id
+            and p.appearance == 0
+            for p in clean.proposals
+        )
+
+        # With the operator's wrong-label flag, that face is not even a
+        # candidate: no LABELED row for appearance 0, and no anchored proposal
+        # carrying the wrong name.
+        server.store.add_appearance_rejection(asset_id, 0, "Bob")
+        flagged = build_window(
+            window,
+            appearances,
+            {asset_id: faces},
+            [[0, 1]],
+            anchor_cfg,
+            rejected_faces=frozenset({(asset_id, 0, "Bob")}),
+        )
+        flagged_statuses = {
+            (p.asset_id, p.appearance): p.status for p in flagged.proposals
+        }
+        assert flagged_statuses.get((asset_id, 0)) != ProposalStatus.LABELED
+        assert not any(
+            p.proposed_name == "Bob" and p.status == ProposalStatus.PROPOSED
+            for p in flagged.proposals
+        )
 
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
