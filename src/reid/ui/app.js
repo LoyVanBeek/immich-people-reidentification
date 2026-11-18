@@ -165,7 +165,7 @@ function renderEvidence() {
     const [chipClass, chipText] = statusChip(e.status);
     return `
       <div class="evcard" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
-        <div class="crop">${cropSVG(e, 150, 170)}</div>
+        <div class="crop">${cropImg(e, 150, 170)}</div>
         <div class="asset-row">
           ${e.status === "will_write" ? `<input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>` : ""}
           <span class="asset-name mono">${esc(e.asset_id)}</span>
@@ -459,7 +459,16 @@ function cropSVG(e, w = 150, h = 170) {
 }
 
 function renderCrops(crops, w, h) {
-  return crops.map(c => cropSVG(c, w, h)).join("");
+  return crops.map(c => cropImg(c, w, h)).join("");
+}
+
+function cropImg(e, w, h) {
+  // Real person crop from the container; cropSVG is the fallback for refs
+  // that carry no asset (shouldn't happen, but keeps tiles from breaking).
+  if (!e.asset_id) return cropSVG(e, w, h);
+  return `<img class="crop" loading="lazy" width="${w}" height="${h}"
+    src="/api/crop?asset_id=${encodeURIComponent(e.asset_id)}&appearance=${e.appearance}"
+    alt="person crop">`;
 }
 
 function esc(s) {

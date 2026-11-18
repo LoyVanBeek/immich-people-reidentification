@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# local stores (contain proposals with real names — never commit)
+data/
+*.sqlite3

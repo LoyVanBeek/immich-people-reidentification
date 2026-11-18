@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import numpy as np
+
 from .config import Config, load_config
 from .enums import (
     ClusterRowStatus,
@@ -57,7 +59,7 @@ class ClusterRow:
     ask_for_name: int
     labeled: int
     status: ClusterRowStatus
-    crops: list[dict[str, Any]]  # placeholder crop data for sidebar strip
+    crops: list[dict[str, Any]]  # appearance refs; UI fetches each via /api/crop
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,13 @@ class UIAPIHandler(BaseHTTPRequestHandler):
             self._send_json(self.ui_server.get_summary())  # type: ignore[union-attr]
         elif path == "/api/dry-run-batches":
             self._send_json(self.ui_server.get_dry_run_batches())  # type: ignore[union-attr]
+        elif path == "/api/crop":
+            try:
+                data, ctype = self.ui_server.get_crop(parse_qs(parsed.query))  # type: ignore[union-attr]
+            except (ValueError, LookupError) as exc:
+                self.send_error(404, str(exc))
+                return
+            self._send_bytes(data, ctype)
         elif path == "/" or path == "/index.html":
             self._serve_static("index.html")
         else:
@@ -210,6 +219,14 @@ class UIAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
+
+    def _send_bytes(self, data: bytes, content_type: str, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _serve_static(self, name: str) -> None:
         # Prevent directory traversal
@@ -291,6 +308,53 @@ class UIServer:
             dry_run=self._dry_run,
         )
         return asdict(state)
+
+    def get_crop(self, query: dict[str, list[str]]) -> tuple[bytes, str]:
+        """Serve one appearance's person crop as JPEG, cropped from Immich pixels.
+
+        Pixels come from the configured preview/original source — the same
+        source detection ran on, so appearance boxes match without any
+        coordinate mapping.
+        """
+        import cv2
+
+        asset_id = (query.get("asset_id") or [""])[0]
+        appearance_raw = (query.get("appearance") or [""])[0]
+        if not asset_id or not appearance_raw:
+            raise ValueError("asset_id and appearance are required")
+        appearance_no = int(appearance_raw)
+
+        app_list = self.store.appearances_by_asset().get(asset_id, [])
+        appearance = next((a for a in app_list if a.appearance == appearance_no), None)
+        if appearance is None:
+            raise LookupError(f"appearance not found: {asset_id}#{appearance_no}")
+
+        pixels = self.immich.fetch_pixels(
+            asset_id, source=self.cfg.detection.pixel_source
+        )
+        image = cv2.imdecode(np.frombuffer(pixels, np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("pixels are not a decodable image")
+
+        left, top, right, bottom = (int(v) for v in appearance.box)
+        height, width = image.shape[:2]
+        crop = image[
+            max(top, 0) : min(bottom, height), max(left, 0) : min(right, width)
+        ]
+        if crop.size == 0:
+            raise ValueError("appearance box is outside the image")
+
+        max_side = 320
+        scale = min(1.0, max_side / max(crop.shape[:2]))
+        if scale < 1.0:
+            crop = cv2.resize(
+                crop,
+                (int(crop.shape[1] * scale), int(crop.shape[0] * scale)),
+            )
+        ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not ok:
+            raise ValueError("could not encode the crop as JPEG")
+        return buf.tobytes(), "image/jpeg"
 
     def get_evidence(self, query: dict[str, list[str]]) -> list[dict[str, Any]]:
         """Return evidence cards for a specific cluster."""
@@ -526,7 +590,12 @@ class UIServer:
                     ask_for_name=no_head,
                     labeled=labeled,
                     status=ClusterRowStatus.OPEN,  # UI-only; not persisted
-                    crops=[],  # placeholder; real crop thumbnails would need separate endpoint
+                    # First few appearance refs; the UI fetches each as a
+                    # person crop via /api/crop.
+                    crops=[
+                        {"asset_id": p.asset_id, "appearance": p.appearance}
+                        for p in props[:4]
+                    ],
                 )
             )
         return rows

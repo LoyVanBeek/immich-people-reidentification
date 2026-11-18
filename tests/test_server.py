@@ -218,6 +218,52 @@ class TestServerAPI:
         assert len(people) == 5
         assert people == ["Alice", "Bob", "Carol", "Dave", "Erin"]
 
+    def test_get_crop_returns_jpeg(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """The crop endpoint cuts the appearance box out of Immich's pixels."""
+        from tests import library
+
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # A real fixture asset the stub serves pixels for, with a box inside it
+        server.store.add_appearances(
+            library.PHOTO_1_STANDING_ID,
+            [
+                Appearance(
+                    asset_id=library.PHOTO_1_STANDING_ID,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                )
+            ],
+        )
+
+        data, ctype = server.get_crop(
+            {
+                "asset_id": [library.PHOTO_1_STANDING_ID],
+                "appearance": ["0"],
+            }
+        )
+
+        assert ctype == "image/jpeg"
+        assert len(data) > 100
+
+    def test_get_crop_missing_appearance_errors(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+
+        with pytest.raises(LookupError):
+            server.get_crop({"asset_id": ["asset1"], "appearance": ["99"]})
+
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
     ) -> None:
