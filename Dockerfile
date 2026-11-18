@@ -18,6 +18,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
 FROM python:3.13-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxcb1 libglib2.0-0 libsm6 libxext6 libxrender1 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system reid \
     && useradd --system --gid reid --create-home --shell /usr/sbin/nologin reid \
     && mkdir -p /data /etc/reid \
