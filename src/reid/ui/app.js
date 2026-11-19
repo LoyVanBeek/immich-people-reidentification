@@ -59,6 +59,18 @@ async function loadPeople() {
 }
 
 /* ---------- Rendering ---------- */
+// One pane's template throwing used to abort the whole render(): the page
+// kept stale DOM while async image loads kept working, which looked like
+// "clicks do nothing". Each pane now fails alone, visibly.
+function safePane(name, fn) {
+  try {
+    return fn();
+  } catch (err) {
+    console.error(`${name} failed to render:`, err);
+    return `<div class="panerr"><strong>${esc(name)} failed to render</strong><br>${esc(err.message)}</div>`;
+  }
+}
+
 function render() {
   const root = document.getElementById("app");
   // Preserve column scroll positions across re-renders: a full innerHTML
@@ -80,18 +92,26 @@ function render() {
       <span class="muted"><kbd class="kbd">j</kbd>/<kbd class="kbd">k</kbd> move · <kbd class="kbd">c</kbd> confirm · <kbd class="kbd">s</kbd> skip</span>
       <div class="cfgpop" id="cfgPop">${configPopoverHTML()}</div>
     </div>
-    <div class="days">${daysHTML()}</div>
-    <div class="clusters">${clustersHTML()}</div>
-    <div class="main">${mainHTML()}</div>
-    <div class="pane">${paneHTML()}</div>
+    <div class="days">${safePane("days pane", daysHTML)}</div>
+    <div class="clusters">${safePane("clusters pane", clustersHTML)}</div>
+    <div class="main">${safePane("evidence pane", mainHTML)}</div>
+    <div class="pane">${safePane("actions pane", paneHTML)}</div>
   `;
   for (const [sel, top] of scrolls) {
     const el = document.querySelector(sel);
     if (el) el.scrollTop = top;
   }
   wireEvents();
-  renderEvidence();
-  renderPane();
+  try {
+    renderEvidence();
+  } catch (err) {
+    console.error("evidence grid failed to render:", err);
+  }
+  try {
+    renderPane();
+  } catch (err) {
+    console.error("actions pane failed to render:", err);
+  }
 }
 
 function bannerHTML() {
@@ -167,13 +187,24 @@ function dryBatchesHTML() {
   if (!dryBatches.length) return "";
   return `
     <div class="dry-batches">
-      ${dryBatches.map(b => `
+      ${dryBatches.map(b => {
+        // Server shape: {id, name, window, cluster, timestamp, promoted_at,
+        // actions: [{asset_id, appearance, head_box, status, message}]}
+        const counts = {};
+        for (const a of b.actions || []) {
+          counts[a.status] = (counts[a.status] || 0) + 1;
+        }
+        const summary = Object.entries(counts)
+          .map(([status, n]) => `${status} ×${n}`)
+          .join(" · ");
+        return `
         <div class="dry-batch">
-          <div class="batch-id">Dry-run batch ${b.id}</div>
-          <div class="batch-entries">${b.entries.map(e => `${esc(e.name || e.clusterId)} ×${e.n}`).join(" · ")}</div>
-          ${b.promoted ? '<span class="chip ok">promoted</span>' : `<button class="primary" data-promote="${b.id}">Promote to real write</button>`}
+          <div class="batch-id">Dry-run batch ${b.id} — ${esc(b.window || "")} / ${b.cluster ?? "?"} → ${esc(b.name || "?")}</div>
+          <div class="batch-entries">${esc(summary || "no actions")}</div>
+          ${b.promoted_at ? '<span class="chip ok">promoted</span>' : `<button class="primary" data-promote="${b.id}">Promote to real write</button>`}
         </div>
-      `).join("")}
+      `;
+      }).join("")}
     </div>
   `;
 }

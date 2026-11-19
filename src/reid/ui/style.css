@@ -78,14 +78,19 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 /* Layout: 4-pane Finder-column workspace: days · clusters · appearances · actions */
 #app {
   display: grid;
+  /* Banner and top bar are grid children too: place them explicitly, or
+     the auto-placement pushes all four panes into one auto-height row at
+     the bottom of the screen. */
   grid-template-columns: 170px 250px minmax(0, 1fr) 300px;
-  grid-template-rows: 46px 1fr;
+  grid-template-rows: auto 46px minmax(0, 1fr);
   height: 100vh;
 }
+#app > .banner { grid-column: 1/5; grid-row: 1; }
 
 /* Top bar */
 .top {
   grid-column: 1/5;
+  grid-row: 2;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -118,6 +123,9 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .cfgpop label { display: flex; justify-content: space-between; gap: 14px; align-items: center; padding: 6px 0; color: var(--dim); white-space: nowrap; }
 .cfgpop input[type=range] { width: 140px; }
 .cfgpop .muted { font-size: 11px; margin-top: 8px; display: block; }
+
+/* Panes share the third row */
+.days, .clusters, .main, .pane { grid-row: 3; min-height: 0; }
 
 /* Pane 1 — days */
 .days {
@@ -236,6 +244,16 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .evcard .crop img.crop.loaded { opacity: 1; transition: opacity .25s; }
 .evcard .crop img.crop.loaded + .spinner { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* A pane whose template threw: visible, loud, and alone — the rest of the
+   UI keeps working. */
+.panerr {
+  margin: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--bad, #e05252);
+  border-radius: 8px;
+  color: var(--bad, #e05252);
+  font-size: 12px;
+}
 .evcard .asset-row { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
 .evcard .asset-name { font-family: ui-monospace, monospace; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .evcard .date-conf { color: var(--dim); margin-top: 4px; font-size: 11px; }

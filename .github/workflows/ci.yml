@@ -40,5 +40,11 @@ jobs:
           node --check src/reid/ui/app.js
           echo "app.js parses cleanly"
 
+      - name: UI smoke tests (jsdom)
+        run: |
+          cd tests/ui
+          npm ci --no-audit --no-fund
+          node app.test.mjs
+
       - name: Unit tests
         run: uv run pytest tests -x -q --tb=short

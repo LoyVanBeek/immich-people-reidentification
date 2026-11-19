@@ -1,0 +1,11 @@
+{
+  "name": "reid-ui-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node app.test.mjs"
+  },
+  "dependencies": {
+    "jsdom": "^24.1.0"
+  }
+}
