@@ -394,7 +394,6 @@ async function testRejectedCardWordingAndUndo() {
 
   const card = document.querySelector('.evcard[data-asset="asset-a"]');
   assert.match(card.textContent, /excluded — not “Alice”/, "excluded wording missing");
-
   window.eval(`unrejectAppearance("asset-a", 0, "Alice")`);
   await flush(window, 30);
   assert.ok(fetchLog.includes("/api/unreject"), "no /api/unreject request");
@@ -550,6 +549,32 @@ async function testResolveButtonsPinDirectly() {
   assert.ok(marked.classList.contains("resolved"), "chosen option not highlighted");
 }
 
+async function testChipsCarryNames() {
+  // Status chips say who: 'will write "X"' on writable cards, and
+  // 'already labeled "X"' replacing the separate immich chip.
+  const { window, document } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  window.eval('setView("review")');
+  await flush(window, 30);
+  window.eval('setReviewTab("Steffie");');
+  await flush(window, 10);
+
+  const writable = document.querySelector('.evcard[data-asset="asset-s1"] .chip');
+  assert.match(writable.textContent, /will write “Steffie”/, "writable chip lacks the name");
+
+  const labeled = document.querySelector('.evcard[data-asset="asset-s3"]');
+  const chips = [...labeled.querySelectorAll(".chip")].map(el => el.textContent);
+  assert.ok(
+    chips.some(t => t.includes('already labeled “Steffie”')),
+    "labeled chip lacks the name"
+  );
+  assert.ok(
+    !chips.some(t => t.startsWith("immich:")),
+    "redundant immich chip still shown on an already-labeled card"
+  );
+}
+
 const tests = [
   testBootRendersWithDryRunBatchPresent,
   testDayClickSelectsAndLoads,
@@ -566,6 +591,7 @@ const tests = [
   testReviewPageTogglesAndRenders,
   testReviewConfirmAllAndToggleAll,
   testResolveButtonsPinDirectly,
+  testChipsCarryNames,
 ];
 for (const test of tests) {
   await test();

@@ -294,6 +294,15 @@ function evidenceCardHTML(e, assignment) {
     e.status === "rejected" && assignment?.proposed_name
       ? ["bad", `excluded \u2014 not \u201c${assignment.proposed_name}\u201d`]
       : [chipClass, chipText];
+  // Name-bearing chips: the status says what, the chip says who.
+  const writeName = e.proposed_name ?? assignment?.proposed_name ?? null;
+  if (e.status === "will_write" && writeName) {
+    chip[1] = `will write \u201c${writeName}\u201d`;
+  }
+  if (e.status === "already_labeled" && e.immich_label) {
+    chip[1] = `already labeled \u201c${e.immich_label}\u201d`;
+    chip[0] = "ok";
+  }
   const chipTitle =
     e.status === "rejected"
       ? `You flagged this appearance as not being \u201c${assignment?.proposed_name ?? "?"}\u201d. It will not be written with that name; an existing label in Immich stays until you remove it there.`
@@ -327,7 +336,7 @@ function evidenceCardHTML(e, assignment) {
       <div class="chips">
         <span class="chip ${chip[0]}" ${chipTitle ? `title="${esc(chipTitle)}"` : ""}>${esc(chip[1])}</span>
         ${conflictLabel ? `<span class="chip warn" title="These Immich labels both appear in this cluster. Assign each appearance to the person it actually is.">conflict: ${esc(conflictLabel)}</span>` : ""}
-        ${e.immich_label ? `<span class="chip">immich: ${esc(e.immich_label)}</span>` : ""}
+        ${e.immich_label && e.status !== "already_labeled" ? `<span class="chip">immich: ${esc(e.immich_label)}</span>` : ""}
         ${e.pin ? `<span class="chip ok pinchip">pinned: ${esc(e.pin)}</span>` : ""}
         ${e.ignored ? `<span class="chip bad" title="You ignored this appearance. It is excluded from clustering and will never be labeled.">ignored \u2014 never labeled</span>` : ""}
       </div>
