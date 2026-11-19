@@ -312,8 +312,15 @@ function evidenceCardHTML(e, assignment) {
     <div class="evcard ${e.status === "rejected" ? "evrejected" : ""} ${e.ignored ? "evignored" : ""} ${alreadyLabeled ? "evlabeled" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
       <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected" && !e.ignored)}<div class="spinner" title="loading crop\u2026"></div></div>
       <div class="asset-row">
-        ${e.status === "will_write" && !e.ignored ? `<label class="writemark" title="Checked: this appearance is written to Immich when you confirm. Uncheck to leave it out. The choice persists until the next batch run.">
-          <input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>write</label>` : ""}
+        ${e.status === "will_write" && !e.ignored ? (() => {
+          const writeName = e.proposed_name ?? assignment?.proposed_name ?? null;
+          const label = writeName ? `write “${esc(writeName)}”` : "write";
+          const tip = writeName
+            ? `Checked: on confirm, Immich gets a face labeled “${esc(writeName)}” on this photo — a head box covering this person's head. Uncheck to leave this photo out. The choice persists until the next batch run.`
+            : "Checked: this appearance is written to Immich when you confirm. Uncheck to leave it out. The choice persists until the next batch run.";
+          return `<label class="writemark" title="${esc(tip)}">
+          <input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>${label}</label>`;
+        })() : ""}
         ${nameLine}
       </div>
       <div class="date-conf">${esc(e.date)} \u00b7 ${(e.confidence * 100).toFixed(0)}%</div>
@@ -324,6 +331,13 @@ function evidenceCardHTML(e, assignment) {
         ${e.pin ? `<span class="chip ok pinchip">pinned: ${esc(e.pin)}</span>` : ""}
         ${e.ignored ? `<span class="chip bad" title="You ignored this appearance. It is excluded from clustering and will never be labeled.">ignored \u2014 never labeled</span>` : ""}
       </div>
+      ${e.conflict_names?.length >= 2 && !e.ignored ? `
+        <div class="resolve-row" title="Pin this appearance to one of the conflicting people — the next batch run proposes your choice for review">
+          <span class="muted">resolve:</span>
+          ${e.conflict_names.map(
+            name => `<button class="b-resolve ${e.pin === name ? "resolved" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(name)}">${esc(name)}</button>`
+          ).join("")}
+        </div>` : ""}
       ${e.ignored
         ? `<button class="b-unignore" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Undo ignore</button>`
         : `<button class="b-ignore" data-asset="${e.asset_id}" data-appearance="${e.appearance}" title="Skip this appearance: not a person, or a person you're not interested in. It is excluded from clustering and never labeled.">Ignore</button>`}
@@ -466,7 +480,9 @@ function renderReviewBody() {
 }
 
 function renderPersonPane(tab) {
-  const writableCards = tab.writable_cards.filter(c => c.status === "will_write");
+  const writableCards = tab.writable_cards.filter(
+    c => c.status === "will_write" || c.status === "conflict_skip"
+  );
   const byWindow = new Map();
   for (const c of writableCards) {
     if (!byWindow.has(c.window)) byWindow.set(c.window, []);
@@ -730,6 +746,11 @@ function wireEvidenceEvents() {
       unpinAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
     });
   });
+  document.querySelectorAll(".b-resolve[data-asset]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      pinAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10), btn.dataset.name);
+    });
+  });
   document.querySelectorAll(".b-ignore[data-asset]").forEach(btn => {
     btn.addEventListener("click", () => {
       ignoreAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
@@ -931,11 +952,19 @@ async function pinAppearance(assetId, appearance, name) {
       e => e.asset_id === assetId && String(e.appearance) === String(appearance)
     );
     if (card) card.pin = name;
+    const reviewCard = state.review?.tabs
+      .flatMap(t => t.writable_cards)
+      .find(
+        e =>
+          e.asset_id === assetId && String(e.appearance) === String(appearance)
+      );
+    if (reviewCard) reviewCard.pin = name;
     toast(
       `pinned → “${name}”: it will be proposed as ${name} on the next batch run, ` +
         "then reviewed and written like any other label."
     );
-    renderEvidence();
+    if (state.view === "review") renderReviewBody();
+    else renderEvidence();
   } catch (err) {
     toast(`assign failed: ${err.message}`);
   }
@@ -957,8 +986,16 @@ async function unpinAppearance(assetId, appearance) {
       e => e.asset_id === assetId && String(e.appearance) === String(appearance)
     );
     if (card) card.pin = null;
+    const reviewCard = state.review?.tabs
+      .flatMap(t => t.writable_cards)
+      .find(
+        e =>
+          e.asset_id === assetId && String(e.appearance) === String(appearance)
+      );
+    if (reviewCard) reviewCard.pin = null;
     toast("pin removed — normal anchoring applies from the next batch run on");
-    renderEvidence();
+    if (state.view === "review") renderReviewBody();
+    else renderEvidence();
   } catch (err) {
     toast(`unpin failed: ${err.message}`);
   }

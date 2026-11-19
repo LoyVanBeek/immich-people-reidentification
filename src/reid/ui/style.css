@@ -336,6 +336,12 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .b-unreject:hover { border-color: var(--ok); color: var(--ok); }
 .b-ignore { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
 .b-ignore:hover { border-color: var(--bad); color: var(--bad); }
+/* Conflict shortcut buttons: one per fighting label. */
+.resolve-row { display: flex; gap: 4px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.resolve-row .muted { font-size: 11px; }
+.b-resolve { font-size: 12px; padding: 4px 10px; flex: 1; }
+.b-resolve:hover { border-color: var(--accent); color: var(--accent); }
+.b-resolve.resolved { background: var(--accent); border-color: var(--accent); color: #fff; }
 .b-unignore { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
 .b-unignore:hover { border-color: var(--dim); color: var(--dim); }
 .pinchip { border-color: var(--ok); }
@@ -402,6 +408,7 @@ a.asset-name:hover { color: var(--accent); border-bottom-color: var(--accent); }
 /* Already-labeled on the review page: informational, visibly done. */
 .evcard.evlabeled { border-color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
 .writemark { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--dim); cursor: pointer; }
+.writemark:hover { color: var(--accent); }
 .b-reopen { font-size: 13px; padding: 6px 10px; }
 
 /* Toast */

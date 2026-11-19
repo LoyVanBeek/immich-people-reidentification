@@ -58,6 +58,22 @@ const REVIEW = {
       writable_cards: [
         WRITABLE_CARD("asset-s1", "2026-11-17", 0),
         WRITABLE_CARD("asset-s2", "2025-09-23", 1),
+        {
+          asset_id: "asset-cx",
+          appearance: 0,
+          window: "2026-11-17",
+          cluster: 3,
+          date: "2026-11-17",
+          confidence: 0.9,
+          status: "conflict_skip",
+          included: false,
+          immich_label: null,
+          pin: null,
+          asset_name: "IMG_cx.jpg",
+          ignored: false,
+          conflict_names: ["Steffie", "Bob"],
+          proposed_name: null,
+        },
       ],
       labeled_cards: [
         {
@@ -509,6 +525,31 @@ async function testReviewConfirmAllAndToggleAll() {
   assert.equal(fetchLog.filter(p => p === "/api/confirm-all").length, 1, "confirm-all not posted once");
 }
 
+async function testResolveButtonsPinDirectly() {
+  // A conflicted card offers one button per fighting label; clicking pins
+  // the appearance to that person without opening the modal — and the card
+  // updates in place (review page included).
+  const { window, document, fetchLog } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  window.eval('setView("review")');
+  await flush(window, 30);
+  window.eval('setReviewTab("Steffie");');
+  await flush(window, 10);
+
+  const buttons = [...document.querySelectorAll(".b-resolve")].map(b => b.dataset.name);
+  assert.deepEqual(buttons, ["Steffie", "Bob"], "resolve buttons per fighting label missing");
+
+  document.querySelector('.b-resolve[data-name="Bob"]').click();
+  await flush(window, 30);
+
+  assert.ok(fetchLog.includes("/api/pin"), "resolve did not post /api/pin");
+  const card = document.querySelector('.evcard[data-asset="asset-cx"]');
+  assert.match(card.textContent, /pinned: Bob/, "pinned chip not updated");
+  const marked = document.querySelector('.b-resolve[data-name="Bob"]');
+  assert.ok(marked.classList.contains("resolved"), "chosen option not highlighted");
+}
+
 const tests = [
   testBootRendersWithDryRunBatchPresent,
   testDayClickSelectsAndLoads,
@@ -524,6 +565,7 @@ const tests = [
   testIgnoreButtonIgnoresAndUndoRestores,
   testReviewPageTogglesAndRenders,
   testReviewConfirmAllAndToggleAll,
+  testResolveButtonsPinDirectly,
 ];
 for (const test of tests) {
   await test();
