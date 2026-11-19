@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from .anchoring import face_person_overlap
+from .anchoring import claim_face, face_person_overlap
 from .config import Config, load_config
 from .enums import (
     ClusterRowStatus,
@@ -44,6 +44,11 @@ _log = logging.getLogger("reid.server")
 
 # Static file directory (served at /)
 STATIC_DIR = Path(__file__).parent / "ui"
+
+# Crop outline colours, a colourblind-safe blue/orange pair, in BGR as cv2
+# expects: the target's box in blue, every other appearance's box in orange.
+TARGET_OUTLINE_COLOR: tuple[int, int, int] = (255, 140, 79)
+NEIGHBOUR_OUTLINE_COLOR: tuple[int, int, int] = (0, 165, 255)
 
 _UI_VERSION: str | None = None
 
@@ -92,6 +97,7 @@ class EvidenceCard:
     included: bool  # checkbox state for writable appearances
     pixel_source: str  # "preview" | "original"
     pin: str | None = None  # operator's pinned person, if any
+    conflict_names: list[str] | None = None  # labels fighting in a conflicted cluster
 
 
 @dataclass(frozen=True)
@@ -253,6 +259,16 @@ class UIAPIHandler(BaseHTTPRequestHandler):
             result = self.ui_server.unpin_appearance(  # type: ignore[union-attr]
                 str(body.get("asset_id", "")),
                 int(body.get("appearance", -1)),
+            )
+            self._send_json(result)
+        elif path == "/api/unreject":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.unreject_appearance(  # type: ignore[union-attr]
+                str(body.get("asset_id", "")),
+                int(body.get("appearance", -1)),
+                str(body.get("name", "")).strip(),
             )
             self._send_json(result)
         elif path == "/api/config":
@@ -419,6 +435,9 @@ class UIServer:
           context around the person (e.g. 0.6 = 60% margin).
         - ``outline``: draw the person's box as a border inside the crop, so
           the reviewer can tell the target apart from neighbours.
+        - ``neighbours``: draw every other appearance's box on the same
+          asset, in a contrasting colour, wherever that box reaches into
+          the card. Off by default so mini crops stay clean.
         """
         import cv2
 
@@ -429,6 +448,11 @@ class UIServer:
         appearance_no = int(appearance_raw)
         expand = float((query.get("expand") or ["0"])[0] or 0)
         outline = (query.get("outline") or ["0"])[0].lower() not in ("0", "", "false")
+        neighbours = (query.get("neighbours") or ["0"])[0].lower() not in (
+            "0",
+            "",
+            "false",
+        )
 
         app_list = self.store.appearances_by_asset().get(asset_id, [])
         appearance = next((a for a in app_list if a.appearance == appearance_no), None)
@@ -456,13 +480,32 @@ class UIServer:
         if crop.size == 0:
             raise ValueError("appearance box is outside the image")
 
+        thickness = max(2, min(crop.shape[0], crop.shape[1]) // 80)
+        if neighbours:
+            # Every other appearance's box that reaches into the card, in a
+            # contrasting colour. The reviewer's question is "which person do
+            # these pixels belong to", and any neighbour visible in the card
+            # can be mistaken for the target — not just neighbours whose box
+            # intersects the target's box. Drawn before the target's own
+            # outline, which stays on top where the boxes overlap.
+            for other in app_list:
+                if other.appearance == appearance_no:
+                    continue
+                nl, nt, nr, nb = other.box
+                if nl < x1 and nr > x0 and nt < y1 and nb > y0:
+                    cv2.rectangle(
+                        crop,
+                        (int(nl - x0), int(nt - y0)),
+                        (int(nr - x0), int(nb - y0)),
+                        NEIGHBOUR_OUTLINE_COLOR,
+                        thickness,
+                    )
         if outline:
             # The person's box, translated into crop coordinates.
             bx0, by0 = max(left - x0, 0), max(top - y0, 0)
             bx1 = min(right - x0, x1 - x0 - 1)
             by1 = min(bottom - y0, y1 - y0 - 1)
-            thickness = max(2, min(crop.shape[0], crop.shape[1]) // 80)
-            cv2.rectangle(crop, (bx0, by0), (bx1, by1), (255, 140, 79), thickness)
+            cv2.rectangle(crop, (bx0, by0), (bx1, by1), TARGET_OUTLINE_COLOR, thickness)
 
         max_side = 320
         scale = min(1.0, max_side / max(crop.shape[:2]))
@@ -617,6 +660,67 @@ class UIServer:
         """Remove the operator's pin; normal anchoring applies again."""
         self.store.delete_pin(asset_id, appearance)
         return {"asset_id": asset_id, "appearance": appearance, "pin": None}
+
+    def unreject_appearance(
+        self, asset_id: str, appearance: int, proposed_name: str
+    ) -> dict[str, Any]:
+        """Undo a rejection: the pair may be proposed again.
+
+        The proposal's status is re-derived the way anchoring would (own
+        Immich label, else the cluster's anchor name, else ask-for-name);
+        the next batch run re-derives everything wholesale anyway.
+        """
+        if not proposed_name:
+            return {"error": "the rejected name is required to undo a rejection"}
+        self.store.remove_appearance_rejection(asset_id, appearance, proposed_name)
+        status = self._rederive_status(asset_id, appearance)
+        self.store.update_proposal_status(asset_id, appearance, status)
+        return {
+            "asset_id": asset_id,
+            "appearance": appearance,
+            "status": status.value,
+        }
+
+    def _rederive_status(self, asset_id: str, appearance: int) -> ProposalStatus:
+        """Recompute one appearance's status the way anchoring would."""
+        proposals = self.store.proposals()
+        proposal = next(
+            (
+                p
+                for p in proposals
+                if p.asset_id == asset_id and p.appearance == appearance
+            ),
+            None,
+        )
+        if proposal is None:
+            return ProposalStatus.PROPOSED
+        appearance_row = next(
+            (
+                a
+                for a in self.store.appearances_by_asset().get(asset_id, ())
+                if a.appearance == appearance
+            ),
+            None,
+        )
+        if appearance_row is not None:
+            try:
+                faces = self.immich.fetch_faces(asset_id)
+            except Exception:  # noqa: BLE001
+                faces = []
+            face = claim_face(appearance_row, faces, self.cfg.clustering.face_overlap)
+            if face is not None and face.person_name:
+                return ProposalStatus.LABELED
+        cluster_props = [
+            p
+            for p in proposals
+            if p.cluster == proposal.cluster and p.window == proposal.window
+        ]
+        proposed_name = next(
+            (p.proposed_name for p in cluster_props if p.proposed_name), None
+        )
+        if proposed_name:
+            return ProposalStatus.PROPOSED
+        return ProposalStatus.ASK_NAME
 
     def get_proposals(self) -> list[dict[str, Any]]:
         """Return all proposals as raw dicts."""
@@ -883,6 +987,34 @@ class UIServer:
         if not target_props:
             return []
 
+        # The cluster's distinct claimed names (anchoring's rule: best claim
+        # per appearance, rejected faces excluded). Two or more mean the
+        # cluster is conflicted; the cards say which labels are fighting.
+        cluster_names: set[str] = set()
+        for prop in target_props:
+            appearance = next(
+                (
+                    a
+                    for a in appearances_by_asset.get(prop.asset_id, [])
+                    if a.appearance == prop.appearance
+                ),
+                None,
+            )
+            if appearance is None:
+                continue
+            faces = [
+                f
+                for f in faces_by_asset.get(prop.asset_id, ())
+                if not (
+                    f.person_name
+                    and (prop.asset_id, prop.appearance, f.person_name) in rejected
+                )
+            ]
+            face = claim_face(appearance, faces, self.cfg.clustering.face_overlap)
+            if face is not None and face.person_name:
+                cluster_names.add(face.person_name)
+        conflict_names = sorted(cluster_names) if len(cluster_names) >= 2 else None
+
         cards: list[EvidenceCard] = []
         for prop in target_props:
             app_list = appearances_by_asset.get(prop.asset_id, [])
@@ -949,6 +1081,11 @@ class UIServer:
                     included=included,
                     pixel_source=appearance.pixel_source,
                     pin=pins.get((prop.asset_id, prop.appearance)),
+                    conflict_names=(
+                        conflict_names
+                        if status == EvidenceCardStatus.CONFLICT_SKIP
+                        else None
+                    ),
                 )
             )
         return cards

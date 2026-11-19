@@ -187,7 +187,7 @@ function clustersHTML() {
     return `<div class="empty muted">select a day</div>`;
   }
   return rows.map(c => `
-    <div class="item ${keyOf(c) === state.activeKey ? "sel" : ""} ${c.status !== "open" ? "done" : ""}" data-key="${keyOf(c)}">
+    <div class="item ${keyOf(c) === state.activeKey ? "sel" : ""} ${c.status !== "open" ? "done" : ""}" data-key="${keyOf(c)}" title="${keyOf(c) === state.activeKey ? "viewing this cluster" : "open this cluster"}">
       <div class="item-row">
         <div class="strip">${renderCrops(c.crops || [], 26, 36)}</div>
         <div class="item-info">
@@ -286,8 +286,18 @@ function renderEvidence() {
   const assignment = state.assignment;
   grid.innerHTML = state.evidence.map(e => {
     const [chipClass, chipText] = statusChip(e.status);
+    // A rejected card says what it refuses, in the operator's words.
+    const chip =
+      e.status === "rejected" && assignment?.proposed_name
+        ? ["bad", `excluded — not “${assignment.proposed_name}”`]
+        : [chipClass, chipText];
+    const chipTitle =
+      e.status === "rejected"
+        ? `You flagged this appearance as not being “${assignment?.proposed_name ?? "?"}”. It will not be written with that name; an existing label in Immich stays until you remove it there.`
+        : null;
     const rejectable = assignment?.proposed_name && e.status !== "rejected" && e.status !== "already_labeled";
     const wrongLabelable = e.status === "already_labeled" && e.immich_label;
+    const conflictLabel = e.conflict_names?.length >= 2 ? e.conflict_names.join(" / ") : null;
     return `
       <div class="evcard ${e.status === "rejected" ? "evrejected" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
         <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected")}<div class="spinner" title="loading crop…"></div></div>
@@ -298,13 +308,15 @@ function renderEvidence() {
         </div>
         <div class="date-conf">${esc(e.date)} · ${(e.confidence * 100).toFixed(0)}%</div>
         <div class="chips">
-          <span class="chip ${chipClass}">${chipText}</span>
+          <span class="chip ${chip[0]}" ${chipTitle ? `title="${esc(chipTitle)}"` : ""}>${esc(chip[1])}</span>
+          ${conflictLabel ? `<span class="chip warn" title="These Immich labels both appear in this cluster. Assign each appearance to the person it actually is.">conflict: ${esc(conflictLabel)}</span>` : ""}
           ${e.immich_label ? `<span class="chip">immich: ${esc(e.immich_label)}</span>` : ""}
           ${e.pin ? `<span class="chip ok pinchip">pinned: ${esc(e.pin)}</span>` : ""}
         </div>
         ${e.pin ? `<button class="b-unpin" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Unpin</button>` : ""}
         <button class="b-assign" data-asset="${e.asset_id}" data-appearance="${e.appearance}">${e.pin ? "Reassign person" : "Assign to person…"}</button>
         ${rejectable ? `<button class="b-reject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Not this person</button>` : ""}
+        ${e.status === "rejected" ? `<button class="b-unreject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Undo exclusion</button>` : ""}
         ${wrongLabelable ? `<button class="b-wronglabel" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(e.immich_label)}">Wrong label</button>` : ""}
       </div>
     `;
@@ -445,6 +457,12 @@ function wireEvidenceEvents() {
   document.querySelectorAll(".b-unpin[data-asset]").forEach(btn => {
     btn.addEventListener("click", () => {
       unpinAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
+    });
+  });
+  document.querySelectorAll(".b-unreject[data-asset]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const name = state.assignment?.proposed_name;
+      unrejectAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10), name);
     });
   });
   document.querySelectorAll(".b-reopen[data-key]").forEach(btn => {
@@ -643,6 +661,41 @@ async function unpinAppearance(assetId, appearance) {
     renderEvidence();
   } catch (err) {
     toast(`unpin failed: ${err.message}`);
+  }
+}
+
+const STATUS_KEY_BY_ENUM = {
+  proposed: "will_write",
+  labeled: "already_labeled",
+  conflicted: "conflict_skip",
+  ask_name: "ask_for_name",
+  rejected: "rejected",
+};
+
+async function unrejectAppearance(assetId, appearance, name) {
+  if (!name) {
+    toast("the excluded name is unknown here — undo it from the cluster that excluded it");
+    return;
+  }
+  try {
+    const res = await fetch("/api/unreject", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_id: assetId, appearance, name }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`undo failed: ${data.error}`);
+      return;
+    }
+    const card = state.evidence.find(
+      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
+    );
+    if (card) card.status = STATUS_KEY_BY_ENUM[data.status] ?? "will_write";
+    toast(`exclusion removed — the appearance is re-evaluated on the next batch run`);
+    renderEvidence();
+  } catch (err) {
+    toast(`undo failed: ${err.message}`);
   }
 }
 
@@ -854,7 +907,7 @@ function statusChip(status) {
     conflict_skip: ["bad", "conflict — skip"],
     no_head_skip: ["warn", "no head — skip"],
     ask_for_name: ["", "needs a name"],
-    rejected: ["bad", "not in this cluster"],
+    rejected: ["bad", "excluded"],
   };
   return map[status] || ["", status];
 }
@@ -896,10 +949,12 @@ function renderCrops(crops, w, h) {
 function cropImg(e, w, h, withContext) {
   // Real person crop from the container; cropSVG is the fallback for refs
   // that carry no asset (shouldn't happen, but keeps tiles from breaking).
-  // Evidence cards pass withContext: the crop grows context around the box
-  // and the target person is outlined, so neighbours stay distinguishable.
+  // Evidence cards pass withContext: the crop grows context around the box,
+  // the target person is outlined in blue and every neighbour whose box
+  // reaches into the card is outlined in orange, so neighbours stay
+  // distinguishable.
   if (!e.asset_id) return cropSVG(e, w, h);
-  const extra = withContext ? "&expand=0.6&outline=1" : "";
+  const extra = withContext ? "&expand=0.6&outline=1&neighbours=1" : "";
   return `<img class="crop" loading="lazy" width="${w}" height="${h}"
     src="/api/crop?asset_id=${encodeURIComponent(e.asset_id)}&appearance=${e.appearance}${extra}"
     alt="person crop">`;

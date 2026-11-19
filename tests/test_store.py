@@ -171,3 +171,23 @@ def test_pins_round_trip_and_survive_a_wipe(store: Store) -> None:
     store.add_appearances("asset-c", [appearance_row("asset-c")])
     store.wipe()
     assert store.appearance_pins() == {("asset-b", 2): "Bob"}
+
+
+def test_rejection_can_be_removed(store: Store) -> None:
+    """Undoing an exclusion deletes exactly that (asset, appearance, name)."""
+    store.add_appearance_rejection("asset-a", 0, "Alice")
+    store.add_appearance_rejection("asset-a", 1, "Alice")
+    store.add_appearance_rejection("asset-a", 0, "Bob")
+
+    store.remove_appearance_rejection("asset-a", 0, "Alice")
+
+    assert store.appearance_rejections() == [
+        ("asset-a", 1, "Alice"),
+        ("asset-a", 0, "Bob"),
+    ]
+    # Removing a missing pair is a no-op.
+    store.remove_appearance_rejection("asset-a", 0, "Alice")
+    assert store.appearance_rejections() == [
+        ("asset-a", 1, "Alice"),
+        ("asset-a", 0, "Bob"),
+    ]

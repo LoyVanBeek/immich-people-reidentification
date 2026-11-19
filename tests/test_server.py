@@ -16,10 +16,42 @@ import pytest
 from reid.anchoring import AnchorConfig, build_window
 from reid.config import load_config
 from reid.enums import ProposalStatus
-from reid.server import UIServer, serve
+from reid.server import (
+    NEIGHBOUR_OUTLINE_COLOR,
+    TARGET_OUTLINE_COLOR,
+    UIServer,
+    serve,
+)
 from reid.store import Appearance, Proposal, Store
 from tests import library
 from tests.stub_immich import API_KEY, StubImmich
+
+
+def _appearance(
+    asset_id: str, appearance: int, box: tuple[float, float, float, float]
+) -> Appearance:
+    """One stored appearance with a placeholder embedding at `box`."""
+    return Appearance(
+        asset_id=asset_id,
+        appearance=appearance,
+        embedding=b"\x00" * 512,
+        confidence=0.9,
+        box_left=box[0],
+        box_top=box[1],
+        box_right=box[2],
+        box_bottom=box[3],
+        pixel_source="preview",
+        captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+    )
+
+
+def _count_close(img: np.ndarray, colour: tuple[int, int, int], tol: int = 40) -> int:
+    """Pixels in a BGR image within `tol` per channel of `colour`.
+
+    JPEG artefacts smear outline edges, so count near-matches rather than
+    exact pixels to keep the assertion stable.
+    """
+    return int((np.abs(img.astype(int) - np.array(colour)).max(axis=2) < tol).sum())
 
 
 @pytest.fixture
@@ -369,6 +401,89 @@ class TestServerAPI:
         assert wide_img is not None and tight_img is not None
         assert max(wide_img.shape[:2]) > max(tight_img.shape[:2])
 
+    def test_get_crop_neighbours_marks_visible_neighbours_on_the_card(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """neighbours=1 outlines other appearances whose box reaches the card.
+
+        The neighbour's box sits inside the expanded card but clear of the
+        target's box: visible in the card, yet not intersecting the target.
+        """
+        import cv2
+
+        from tests import library
+
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        server.store.add_appearances(
+            library.PHOTO_1_STANDING_ID,
+            [
+                # Tight target box; expand=0.6 grows the card to 240..460.
+                _appearance(
+                    library.PHOTO_1_STANDING_ID, 0, (300.0, 300.0, 400.0, 400.0)
+                ),
+                # Inside the card (420 < 460) but clear of the target box.
+                _appearance(
+                    library.PHOTO_1_STANDING_ID, 1, (420.0, 300.0, 450.0, 400.0)
+                ),
+            ],
+        )
+
+        query = {"asset_id": [library.PHOTO_1_STANDING_ID], "appearance": ["0"]}
+        card, _ = server.get_crop(
+            {**query, "expand": ["0.6"], "outline": ["1"], "neighbours": ["1"]}
+        )
+        bare, _ = server.get_crop({**query, "expand": ["0.6"], "outline": ["1"]})
+
+        card_img = cv2.imdecode(np.frombuffer(card, np.uint8), cv2.IMREAD_COLOR)
+        bare_img = cv2.imdecode(np.frombuffer(bare, np.uint8), cv2.IMREAD_COLOR)
+        assert card_img is not None and bare_img is not None
+        # The neighbour's outline lands around crop coordinates (180, 60).
+        neighbour_band = card_img[55:165, 175:220]
+        assert _count_close(neighbour_band, NEIGHBOUR_OUTLINE_COLOR) > 50
+        # Without the param the identical card is clean — and mini crops,
+        # which never send the param, get exactly those pixels.
+        bare_band = bare_img[55:165, 175:220]
+        assert _count_close(bare_band, NEIGHBOUR_OUTLINE_COLOR) == 0
+        # The target's own outline is unaffected — drawn last, so it stays
+        # on top where the boxes overlap.
+        target_band = card_img[55:165, 55:165]
+        assert _count_close(target_band, TARGET_OUTLINE_COLOR) > 50
+
+    def test_get_crop_neighbours_skip_boxes_outside_the_card(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """A neighbour whose box never reaches into the card is not drawn."""
+        import cv2
+
+        from tests import library
+
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        server.store.add_appearances(
+            library.PHOTO_1_STANDING_ID,
+            [
+                _appearance(
+                    library.PHOTO_1_STANDING_ID, 0, (300.0, 300.0, 400.0, 400.0)
+                ),
+                # Starts at 480, past the card's right edge at 460.
+                _appearance(
+                    library.PHOTO_1_STANDING_ID, 1, (480.0, 300.0, 520.0, 400.0)
+                ),
+            ],
+        )
+
+        query = {"asset_id": [library.PHOTO_1_STANDING_ID], "appearance": ["0"]}
+        card, _ = server.get_crop(
+            {**query, "expand": ["0.6"], "outline": ["1"], "neighbours": ["1"]}
+        )
+
+        card_img = cv2.imdecode(np.frombuffer(card, np.uint8), cv2.IMREAD_COLOR)
+        assert card_img is not None
+        # Nowhere in the card is there neighbour-orange; the fixture photo
+        # carries no orange-like pixels of its own.
+        assert _count_close(card_img, NEIGHBOUR_OUTLINE_COLOR) == 0
+
     def test_get_crop_missing_appearance_errors(
         self, config_with_store: Path, populated_store: Store
     ) -> None:
@@ -617,6 +732,250 @@ class TestServerAPI:
 
         assert "error" in result
         assert server.store.appearance_pins() == {}
+
+    def test_unreject_removes_the_exclusion_and_rederives_the_status(
+        self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
+    ) -> None:
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        server.reject_appearance("asset1", 0, "Alice")
+        assert server.store.appearance_rejections() == [("asset1", 0, "Alice")]
+
+        # No face claims asset1 here, and the cluster anchors "Alice": the
+        # status re-derives to PROPOSED.
+        result = server.unreject_appearance("asset1", 0, "Alice")
+
+        assert result["status"] == "proposed"
+        assert server.store.appearance_rejections() == []
+        proposal = next(
+            p
+            for p in server.store.proposals()
+            if p.asset_id == "asset1" and p.appearance == 0
+        )
+        assert proposal.status == ProposalStatus.PROPOSED
+
+    def test_unreject_rederives_labeled_when_immich_agrees(
+        self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
+    ) -> None:
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # The stub 404s faces for unknown assets, so use a registry fixture
+        # id with an appearance the face can claim.
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+            ],
+        )
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                )
+            ]
+        )
+        # Immich labels the appearance itself; the operator's exclusion
+        # undoes, and the row returns to informational.
+        ui_stub.faces[asset_id] = [
+            {
+                "id": "face-labeled",
+                "assetId": asset_id,
+                "person": {"id": "person-alice", "name": "Alice"},
+                "boundingBoxX1": 300.0,
+                "boundingBoxY1": 200.0,
+                "boundingBoxX2": 500.0,
+                "boundingBoxY2": 400.0,
+                "imageWidth": 1440,
+                "imageHeight": 1440,
+                "sourceType": "machine-learning",
+            }
+        ]
+        server.reject_appearance(asset_id, 0, "Alice")
+
+        result = server.unreject_appearance(asset_id, 0, "Alice")
+
+        assert result["status"] == "labeled"
+
+    def test_conflicted_cards_name_the_fighting_labels(
+        self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
+    ) -> None:
+        """Two different Immich labels claim two appearances of one cluster:
+        the cards say which labels conflict."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=1,
+                    embedding=b"\x01" * 512,
+                    confidence=0.85,
+                    box_left=700.0,
+                    box_top=100.0,
+                    box_right=1100.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+            ],
+        )
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.CONFLICTED,
+                    proposed_name=None,
+                ),
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=1,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.CONFLICTED,
+                    proposed_name=None,
+                ),
+            ]
+        )
+        ui_stub.faces[asset_id] = [
+            {
+                "id": "face-alice",
+                "assetId": asset_id,
+                "person": {"id": "person-alice", "name": "Alice"},
+                "boundingBoxX1": 300.0,
+                "boundingBoxY1": 200.0,
+                "boundingBoxX2": 500.0,
+                "boundingBoxY2": 400.0,
+                "imageWidth": 1440,
+                "imageHeight": 1440,
+                "sourceType": "machine-learning",
+            },
+            {
+                "id": "face-bob",
+                "assetId": asset_id,
+                "person": {"id": "person-bob", "name": "Bob"},
+                "boundingBoxX1": 800.0,
+                "boundingBoxY1": 200.0,
+                "boundingBoxX2": 1000.0,
+                "boundingBoxY2": 400.0,
+                "imageWidth": 1440,
+                "imageHeight": 1440,
+                "sourceType": "machine-learning",
+            },
+        ]
+
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+
+        assert all(e["conflict_names"] == ["Alice", "Bob"] for e in evidence), [
+            e["conflict_names"] for e in evidence
+        ]
+
+    def test_unconflicted_cards_carry_no_conflict_names(
+        self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
+    ) -> None:
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=1,
+                    embedding=b"\x01" * 512,
+                    confidence=0.85,
+                    box_left=700.0,
+                    box_top=100.0,
+                    box_right=1100.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+            ],
+        )
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=1,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+            ]
+        )
+        ui_stub.faces[asset_id] = [
+            {
+                "id": "face-alice",
+                "assetId": asset_id,
+                "person": {"id": "person-alice", "name": "Alice"},
+                "boundingBoxX1": 300.0,
+                "boundingBoxY1": 200.0,
+                "boundingBoxX2": 500.0,
+                "boundingBoxY2": 400.0,
+                "imageWidth": 1440,
+                "imageHeight": 1440,
+                "sourceType": "machine-learning",
+            }
+        ]
+
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+
+        assert all(e["conflict_names"] is None for e in evidence)
 
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store

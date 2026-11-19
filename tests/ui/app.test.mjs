@@ -90,6 +90,9 @@ function makeDom(opts = {}) {
         status: "will_write",
         included: true,
         immich_label: null,
+        pin: null,
+        conflict_names: null,
+        ...(opts.evidenceOverride || {}),
       }];
       const delay = opts.evidenceDelayFor ? opts.evidenceDelayFor(cluster) : 0;
       if (delay) await new Promise(r => setTimeout(r, delay));
@@ -276,6 +279,54 @@ async function testUnpinRemovesThePin() {
   assert.ok(!/pinned: Steffie/.test(card.textContent), "pin chip lingered after unpin");
 }
 
+async function testRejectedCardWordingAndUndo() {
+  // The excluded chip names what it refuses, and Undo removes the exclusion.
+  const { window, document, fetchLog } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  // Name the cluster through the app's own name-input handler, then reject
+  // the card the way the button does.
+  const nameInput = document.getElementById("nameInput");
+  nameInput.value = "Alice";
+  nameInput.dispatchEvent(new window.Event("change", { bubbles: true }));
+  await flush(window, 20);
+  window.eval(`rejectAppearance("asset-a", 0, "Alice")`);
+  await flush(window, 30);
+
+  const card = document.querySelector('.evcard[data-asset="asset-a"]');
+  assert.match(card.textContent, /excluded — not “Alice”/, "excluded wording missing");
+
+  window.eval(`unrejectAppearance("asset-a", 0, "Alice")`);
+  await flush(window, 30);
+  assert.ok(fetchLog.includes("/api/unreject"), "no /api/unreject request");
+}
+
+async function testConflictedCardShowsFightingLabels() {
+  const { window, document } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  // Flip the card to conflicted with fighting labels the way the server
+  // sends them: via the public evidence update path... state is
+  // module-lexical, so render a card through the fake API instead: the
+  // /api/evidence fake returns status per requested cluster; simplest is to
+  // check the real server behavior in the Python suite and here assert the
+  // chip renders when the field arrives — drive it through renderEvidence's
+  // input by re-fetching with a conflicted payload.
+  const { window: w2, document: d2 } = makeDom({
+    evidenceOverride: {
+      status: "conflict_skip",
+      conflict_names: ["Steffie", "Bob"],
+    },
+  });
+  await w2.eval("boot()");
+  await flush(w2);
+  // Click the cluster so loadEvidence fetches and renders the card.
+  d2.querySelector('.clusters .item[data-key="2026-11-17:0"]').click();
+  await flush(w2, 30);
+  const card = d2.querySelector('.evcard[data-asset="asset-c0"]');
+  assert.match(card.textContent, /conflict: Steffie \/ Bob/, "conflict chip missing");
+}
+
 const tests = [
   testBootRendersWithDryRunBatchPresent,
   testDayClickSelectsAndLoads,
@@ -285,6 +336,8 @@ const tests = [
   testStaleEvidenceFetchIsDiscarded,
   testAssignButtonPinsThroughTheApi,
   testUnpinRemovesThePin,
+  testRejectedCardWordingAndUndo,
+  testConflictedCardShowsFightingLabels,
 ];
 for (const test of tests) {
   await test();

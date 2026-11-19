@@ -628,6 +628,19 @@ class Store:
         ).fetchall()
         return [(str(r[0]), int(r[1]), str(r[2])) for r in rows]
 
+    def remove_appearance_rejection(
+        self, asset_id: str, appearance: int, proposed_name: str
+    ) -> None:
+        """Undo a rejection: the pair may be proposed again."""
+        with self._conn:
+            self._conn.execute(
+                """
+                DELETE FROM appearance_rejection
+                WHERE asset_id = ? AND appearance = ? AND proposed_name = ?
+                """,
+                (asset_id, appearance, proposed_name),
+            )
+
     def set_pin(self, asset_id: str, appearance: int, person_name: str) -> None:
         """Record 'this appearance is this person' as an operator decision.
 
