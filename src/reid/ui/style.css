@@ -328,6 +328,11 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .b-reject:hover { border-color: var(--bad); color: var(--bad); }
 .b-wronglabel { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
 .b-wronglabel:hover { border-color: #e0a33a; color: #e0a33a; }
+.b-assign { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
+.b-assign:hover { border-color: var(--accent); color: var(--accent); }
+.b-unpin { width: 100%; margin-top: 6px; font-size: 11px; padding: 3px 8px; }
+.b-unpin:hover { border-color: var(--dim); color: var(--dim); }
+.pinchip { border-color: var(--ok); }
 .writemark { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--dim); cursor: pointer; }
 .b-reopen { font-size: 13px; padding: 6px 10px; }
 

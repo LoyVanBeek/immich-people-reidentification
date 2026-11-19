@@ -316,6 +316,7 @@ def _cluster_and_anchor(
             clusters,
             anchor_config,
             rejected_faces=frozenset(store.appearance_rejections()),
+            pins=store.appearance_pins(),
         )
         proposals.extend(outcome.proposals)
         summaries.append(outcome.summary)

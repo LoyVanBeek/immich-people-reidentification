@@ -20,9 +20,11 @@ from typing import Any
 import pytest
 from click.testing import Result
 
+from reid.anchoring import AnchorConfig, build_window
 from reid.clustering import capture_day
 from reid.enums import ProposalStatus
-from reid.store import Store
+from reid.immich import Face
+from reid.store import Appearance, Store
 
 from . import library
 from .conftest import run_batch
@@ -367,3 +369,139 @@ def test_a_run_without_any_appearance_fetches_no_faces(
 
     assert "window " not in result.output
     assert reid_stub.faces_requests() == []
+
+
+# -- operator pins (direct unit tests of build_window) -----------------------
+
+
+def _pin_appearance(asset_id: str, index: int = 0) -> Appearance:
+    return Appearance(
+        asset_id=asset_id,
+        appearance=index,
+        embedding=b"\x00" * 8,
+        confidence=0.9,
+        box_left=100.0,
+        box_top=100.0,
+        box_right=500.0,
+        box_bottom=500.0,
+        pixel_source="preview",
+        captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+    )
+
+
+def _pin_face(asset_id: str, person: tuple[str, str] | None) -> Face:
+    return Face(
+        asset_id=asset_id,
+        left=200.0,
+        top=200.0,
+        right=400.0,
+        bottom=400.0,
+        person_id=person[0] if person else None,
+        person_name=person[1] if person else None,
+    )
+
+
+ANCHOR_CFG = AnchorConfig(face_overlap=0.5, min_cluster_size=2)
+
+
+def test_a_pin_moves_the_appearance_to_its_persons_group() -> None:
+    """A pinned appearance joins the group claiming that name, even though
+    the embeddings clustered it elsewhere."""
+    alice, bob = _pin_appearance("asset-alice"), _pin_appearance("asset-bob")
+    faces = {
+        "asset-alice": [_pin_face("asset-alice", ("person-alice", "Alice"))],
+    }
+
+    outcome = build_window(
+        "2026-11-10",
+        [alice, bob],
+        faces,
+        [[0], [1]],  # embeddings put them apart
+        ANCHOR_CFG,
+        pins={("asset-bob", 0): "Alice"},
+    )
+
+    statuses = {
+        (p.asset_id, p.appearance): (p.status, p.proposed_name)
+        for p in outcome.proposals
+    }
+    # Both now surface in one Alice-anchored group: the anchor is labeled,
+    # the pinned appearance proposes Alice for review.
+    assert statuses[("asset-alice", 0)] == (ProposalStatus.LABELED, None)
+    assert statuses[("asset-bob", 0)] == (ProposalStatus.PROPOSED, "Alice")
+
+
+def test_a_pinned_standalone_appearance_surfaces_and_proposes() -> None:
+    """No group claims the pinned name here: the pin surfaces the appearance
+    on its own, anchored to the pinned name — an exception to the
+    singletons-never-surface rule, justified by the operator's decision."""
+    bob = _pin_appearance("asset-bob")
+
+    outcome = build_window(
+        "2026-11-10",
+        [bob],
+        {},
+        [[0]],
+        ANCHOR_CFG,
+        pins={("asset-bob", 0): "Alice"},
+    )
+
+    assert len(outcome.proposals) == 1
+    proposal = outcome.proposals[0]
+    assert proposal.status == ProposalStatus.PROPOSED
+    assert proposal.proposed_name == "Alice"
+
+
+def test_a_pin_overrides_a_wrong_own_face_claim() -> None:
+    """Pinned to Alice but Immich's face says Bob: the operator's decision
+    wins — the proposal is Alice (writes report the conflict at confirm
+    time), and the Bob claim anchors nothing."""
+    bob = _pin_appearance("asset-bob")
+    faces = {"asset-bob": [_pin_face("asset-bob", ("person-bob", "Bob"))]}
+
+    outcome = build_window(
+        "2026-11-10",
+        [bob],
+        faces,
+        [[0]],
+        ANCHOR_CFG,
+        pins={("asset-bob", 0): "Alice"},
+    )
+
+    statuses = {
+        (p.asset_id, p.appearance): (p.status, p.proposed_name)
+        for p in outcome.proposals
+    }
+    assert statuses[("asset-bob", 0)] == (ProposalStatus.PROPOSED, "Alice")
+
+
+def test_a_pin_already_agreed_by_immich_stays_labeled() -> None:
+    """Pinned to Alice and Immich's own face already says Alice: nothing to
+    write, the row is informational."""
+    alice = _pin_appearance("asset-alice")
+    faces = {"asset-alice": [_pin_face("asset-alice", ("person-alice", "Alice"))]}
+
+    outcome = build_window(
+        "2026-11-10",
+        [alice],
+        faces,
+        [[0]],
+        ANCHOR_CFG,
+        pins={("asset-alice", 0): "Alice"},
+    )
+
+    statuses = {
+        (p.asset_id, p.appearance): (p.status, p.proposed_name)
+        for p in outcome.proposals
+    }
+    assert statuses[("asset-alice", 0)] == (ProposalStatus.LABELED, None)
+
+
+def test_unpinning_restores_normal_anchoring() -> None:
+    """Without the pin, a lone appearance is a singleton again: stored,
+    never surfaced."""
+    bob = _pin_appearance("asset-bob")
+
+    outcome = build_window("2026-11-10", [bob], {}, [[0]], ANCHOR_CFG)
+
+    assert outcome.proposals == ()

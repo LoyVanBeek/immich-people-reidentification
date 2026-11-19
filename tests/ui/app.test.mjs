@@ -46,7 +46,20 @@ function makeDom(opts = {}) {
       json = {
         clusters: CLUSTERS,
         active_cluster: 0,
-        evidence: [],
+        evidence: [
+          {
+            asset_id: "asset-a",
+            appearance: 0,
+            window: "2026-11-17",
+            cluster: 0,
+            date: "2026-11-17",
+            confidence: 0.9,
+            status: "conflict_skip",
+            included: false,
+            immich_label: null,
+            pin: null,
+          },
+        ],
         assignment: {
           cluster: 0,
           window: "2026-11-17",
@@ -221,6 +234,48 @@ async function testStaleEvidenceFetchIsDiscarded() {
   assert.ok(!document.querySelector(".evloading"), "loading state stuck after race");
 }
 
+async function testAssignButtonPinsThroughTheApi() {
+  // "Assign to person…" posts the pin and the card flips to pinned —
+  // nothing writes to Immich; the next batch run proposes the name.
+  const { window, document, fetchLog } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+
+  // Conflicted-style card: assign must be available without a cluster name.
+  window.eval(
+    `assignPrompt("asset-a", 0);
+     document.getElementById("ap").value = "Steffie";
+     document.getElementById("apo").onclick();`
+  );
+  await flush(window, 30);
+
+  assert.ok(
+    fetchLog.includes("/api/pin"),
+    "no /api/pin request made"
+  );
+  const card = document.querySelector('.evcard[data-asset="asset-a"]');
+  assert.ok(card, "card missing after assign");
+  assert.match(card.textContent, /pinned: Steffie/, "pinned chip not shown");
+  assert.match(card.textContent, /Unpin/, "unpin control not shown");
+  assert.ok(!document.querySelector("#ap"), "modal did not close");
+}
+
+async function testUnpinRemovesThePin() {
+  const { window, document, fetchLog } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  // Pin first, then unpin via the card button.
+  window.eval(`pinAppearance("asset-a", 0, "Steffie")`);
+  await flush(window, 30);
+  window.eval(`unpinAppearance("asset-a", 0)`);
+  await flush(window, 30);
+
+  const unpinCall = fetchLog[fetchLog.length - 1];
+  assert.equal(unpinCall, "/api/unpin");
+  const card = document.querySelector('.evcard[data-asset="asset-a"]');
+  assert.ok(!/pinned: Steffie/.test(card.textContent), "pin chip lingered after unpin");
+}
+
 const tests = [
   testBootRendersWithDryRunBatchPresent,
   testDayClickSelectsAndLoads,
@@ -228,6 +283,8 @@ const tests = [
   testPaneErrorDoesNotFreezeTheWorkspace,
   testInstantSwitchShowsLoadingState,
   testStaleEvidenceFetchIsDiscarded,
+  testAssignButtonPinsThroughTheApi,
+  testUnpinRemovesThePin,
 ];
 for (const test of tests) {
   await test();

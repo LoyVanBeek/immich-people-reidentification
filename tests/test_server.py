@@ -582,6 +582,42 @@ class TestServerAPI:
             for p in flagged.proposals
         )
 
+    def test_pin_and_unpin_round_trip(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """Assign records the operator's pin; unpin deletes it; evidence
+        cards carry the pinned name."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+
+        result = server.pin_appearance("asset1", 0, "Alice")
+        assert result == {"asset_id": "asset1", "appearance": 0, "pin": "Alice"}
+        assert server.store.appearance_pins() == {("asset1", 0): "Alice"}
+
+        # Cards show the pin so the operator sees what the next run proposes.
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+        card = next(e for e in evidence if e["asset_id"] == "asset1")
+        assert card["pin"] == "Alice"
+
+        result = server.unpin_appearance("asset1", 0)
+        assert result == {"asset_id": "asset1", "appearance": 0, "pin": None}
+        assert server.store.appearance_pins() == {}
+
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+        card = next(e for e in evidence if e["asset_id"] == "asset1")
+        assert card["pin"] is None
+
+    def test_pin_requires_a_name(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+
+        result = server.pin_appearance("asset1", 0, "  ")
+
+        assert "error" in result
+        assert server.store.appearance_pins() == {}
+
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
     ) -> None:

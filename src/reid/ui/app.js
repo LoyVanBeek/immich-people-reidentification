@@ -300,7 +300,10 @@ function renderEvidence() {
         <div class="chips">
           <span class="chip ${chipClass}">${chipText}</span>
           ${e.immich_label ? `<span class="chip">immich: ${esc(e.immich_label)}</span>` : ""}
+          ${e.pin ? `<span class="chip ok pinchip">pinned: ${esc(e.pin)}</span>` : ""}
         </div>
+        ${e.pin ? `<button class="b-unpin" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Unpin</button>` : ""}
+        <button class="b-assign" data-asset="${e.asset_id}" data-appearance="${e.appearance}">${e.pin ? "Reassign person" : "Assign to person…"}</button>
         ${rejectable ? `<button class="b-reject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Not this person</button>` : ""}
         ${wrongLabelable ? `<button class="b-wronglabel" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(e.immich_label)}">Wrong label</button>` : ""}
       </div>
@@ -434,6 +437,16 @@ function wireEvidenceEvents() {
       );
     });
   });
+  document.querySelectorAll(".b-assign[data-asset]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      assignPrompt(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
+    });
+  });
+  document.querySelectorAll(".b-unpin[data-asset]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      unpinAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
+    });
+  });
   document.querySelectorAll(".b-reopen[data-key]").forEach(btn => {
     btn.addEventListener("click", () => {
       const c = state.clusters.find(x => keyOf(x) === btn.dataset.key);
@@ -547,8 +560,93 @@ async function rejectAppearance(assetId, appearance, name) {
   }
 }
 
-async function markWrongLabel(assetId, appearance, name) {
+/* Operator assignment: pin an appearance to a person. Nothing writes to
+ * Immich here — the next batch run proposes the pinned name through the
+ * normal review path, so it is reviewed like every other label. */
+function assignPrompt(assetId, appearance) {
+  const host = document.getElementById("modalhost");
+  const current = state.evidence.find(
+    e => e.asset_id === assetId && String(e.appearance) === String(appearance)
+  )?.pin;
+  host.innerHTML = `<div class="modal"><div class="inner">
+    <h3>Assign to person <span class="mono muted">${esc(assetId.slice(0, 12))}… · ${appearance}</span></h3>
+    <div class="muted" style="margin-bottom:10px">${current ? `currently pinned to “${esc(current)}”` : "The pinned name is proposed on the next batch run — reviewed like any other label before anything writes."}</div>
+    <input id="ap" list="apl" placeholder="Type or pick an existing person…" style="width:100%">
+    <datalist id="apl">${state.people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
+    <div class="modal-hint">Existing name → attaches to that person. New name → creates the person when confirmed.</div>
+    <div class="modal-actions">
+      <button id="apc">Cancel</button><button id="apo" class="primary">Assign</button>
+    </div>
+  </div></div>`;
+  const inp = host.querySelector("#ap");
+  inp.focus();
+  const submit = () => {
+    const v = inp.value.trim();
+    if (v) {
+      host.innerHTML = "";
+      pinAppearance(assetId, appearance, v);
+    }
+  };
+  host.querySelector("#apc").onclick = () => (host.innerHTML = "");
+  host.querySelector("#apo").onclick = submit;
+  inp.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submit();
+    }
+  });
+}
+
+async function pinAppearance(assetId, appearance, name) {
   try {
+    const res = await fetch("/api/pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_id: assetId, appearance, name }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`assign failed: ${data.error}`);
+      return;
+    }
+    const card = state.evidence.find(
+      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
+    );
+    if (card) card.pin = name;
+    toast(
+      `pinned → “${name}”: it will be proposed as ${name} on the next batch run, ` +
+        "then reviewed and written like any other label."
+    );
+    renderEvidence();
+  } catch (err) {
+    toast(`assign failed: ${err.message}`);
+  }
+}
+
+async function unpinAppearance(assetId, appearance) {
+  try {
+    const res = await fetch("/api/unpin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_id: assetId, appearance }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`unpin failed: ${data.error}`);
+      return;
+    }
+    const card = state.evidence.find(
+      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
+    );
+    if (card) card.pin = null;
+    toast("pin removed — normal anchoring applies from the next batch run on");
+    renderEvidence();
+  } catch (err) {
+    toast(`unpin failed: ${err.message}`);
+  }
+}
+
+async function markWrongLabel(assetId, appearance, name) {  try {
     const res = await fetch("/api/reject", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

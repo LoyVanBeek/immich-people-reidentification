@@ -13,6 +13,11 @@ cluster:
   queue. Lone appearances are singletons: stored, never surfaced.
 - Appearances Immich has already labeled (any assigned person, named or
   not) never receive proposals.
+
+Operator pins override all of the above for their appearance: a pin moves
+the appearance to its person's group (or surfaces it as its own group
+anchored to them), the pin name counts as the anchor, and the proposal is
+the pinned name — through the normal proposal path, never a direct write.
 """
 
 from __future__ import annotations
@@ -112,6 +117,54 @@ def _drop_rejected(
     ]
 
 
+def _apply_pins(
+    clusters: Sequence[Sequence[int]],
+    appearances: Sequence[Appearance],
+    claims: Sequence[Face | None],
+    pins: Mapping[tuple[str, int], str],
+) -> tuple[list[list[int]], dict[int, str]]:
+    """Move pinned appearances to their person's group, or their own.
+
+    Returns the modified partition and, per appearance index, the pinned
+    name. A pin removes the appearance from its current group and joins the
+    group where someone's face claim carries the pinned name; when no such
+    group exists in this window, the appearance gets a standalone group.
+    Pins for appearances outside this window are ignored (they persist for
+    future runs).
+    """
+    groups = [list(c) for c in clusters]
+    if not pins:
+        return groups, {}
+
+    index_by_key = {(a.asset_id, a.appearance): i for i, a in enumerate(appearances)}
+    pinned_names: dict[int, str] = {}
+    for key, name in pins.items():
+        index = index_by_key.get(key)
+        if index is None:
+            continue
+        pinned_names[index] = name
+        for group in groups:
+            if index in group:
+                group.remove(index)
+                break
+        target = next(
+            (
+                g
+                for g in groups
+                if any(
+                    (face := claims[i]) is not None and face.person_name == name
+                    for i in g
+                )
+            ),
+            None,
+        )
+        if target is None:
+            target = []
+            groups.append(target)
+        target.append(index)
+    return [g for g in groups if g], pinned_names
+
+
 def build_window(
     window: str,
     appearances: Sequence[Appearance],
@@ -119,6 +172,7 @@ def build_window(
     clusters: Sequence[Sequence[int]],
     cfg: AnchorConfig,
     rejected_faces: frozenset[tuple[str, int, str]] = frozenset(),
+    pins: Mapping[tuple[str, int], str] | None = None,
 ) -> WindowOutcome:
     """Anchor every cluster in one window and turn the results into proposals.
 
@@ -129,6 +183,10 @@ def build_window(
     ``rejected_faces`` carries (asset_id, appearance, person_name) triples the
     operator flagged as wrong labels: those faces never anchor or mark an
     appearance as already-labeled.
+
+    ``pins`` carries (asset_id, appearance) -> person_name operator
+    assignments: the appearance is moved to its person's group (or its own
+    group), the pinned name anchors it, and the proposal is the pinned name.
     """
     claims: list[Face | None] = [
         claim_face(
@@ -141,17 +199,24 @@ def build_window(
         for appearance in appearances
     ]
 
+    groups, pinned_names = _apply_pins(clusters, appearances, claims, pins or {})
+
     outcomes: list[ClusterOutcome] = []
     proposals: list[Proposal] = []
-    for cluster_id, members in enumerate(clusters):
+    for cluster_id, members in enumerate(groups):
+        # The operator's pin outranks any face claim: a pinned member
+        # contributes only its pinned name to the anchors.
         anchor_names = sorted(
             {
                 face.person_name
                 for index in members
-                if (face := claims[index]) is not None and face.person_name is not None
+                if index not in pinned_names
+                and (face := claims[index]) is not None
+                and face.person_name is not None
             }
+            | {pinned_names[index] for index in members if index in pinned_names}
         )
-        if len(members) == 1:
+        if len(members) == 1 and members[0] not in pinned_names:
             status = ClusterOutcomeStatus.SINGLETON
         elif len(anchor_names) >= 2:
             status = ClusterOutcomeStatus.CONFLICTED
@@ -168,7 +233,28 @@ def build_window(
         for index in members:
             appearance = appearances[index]
             face = claims[index]
-            if face is not None and face.person_id is not None:
+            pin_name = pinned_names.get(index)
+            if pin_name is not None:
+                if face is not None and face.person_name == pin_name:
+                    # Immich already agrees with the operator: nothing to write.
+                    proposals.append(
+                        _row(
+                            appearance, window, cluster_id, ProposalStatus.LABELED, None
+                        )
+                    )
+                else:
+                    # Operator decision wins: propose the pinned name through
+                    # the normal review path.
+                    proposals.append(
+                        _row(
+                            appearance,
+                            window,
+                            cluster_id,
+                            ProposalStatus.PROPOSED,
+                            pin_name,
+                        )
+                    )
+            elif face is not None and face.person_id is not None:
                 proposals.append(
                     _row(appearance, window, cluster_id, ProposalStatus.LABELED, None)
                 )
@@ -194,7 +280,12 @@ def build_window(
                 )
             # Anchor-less below the minimum: stored, never surfaced.
 
-    surfaced = [outcome for outcome in outcomes if len(outcome.members) >= 2]
+    surfaced = [
+        outcome
+        for outcome in outcomes
+        if len(outcome.members) >= 2
+        or any(index in pinned_names for index in outcome.members)
+    ]
     summary = WindowSummary(
         window=window,
         appearances=len(appearances),

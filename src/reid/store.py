@@ -209,6 +209,16 @@ class Store:
             )
             self._conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS appearance_pin (
+                    asset_id TEXT NOT NULL,
+                    appearance INTEGER NOT NULL,
+                    person_name TEXT NOT NULL,
+                    PRIMARY KEY (asset_id, appearance)
+                )
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS tuning (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -617,6 +627,40 @@ class Store:
             "SELECT asset_id, appearance, proposed_name FROM appearance_rejection"
         ).fetchall()
         return [(str(r[0]), int(r[1]), str(r[2])) for r in rows]
+
+    def set_pin(self, asset_id: str, appearance: int, person_name: str) -> None:
+        """Record 'this appearance is this person' as an operator decision.
+
+        Survives batch runs: anchoring always groups the appearance with the
+        pinned person (or surfaces it anchored to them), whatever the
+        embeddings say. Assignments flow through the normal proposal path —
+        nothing writes to Immich here.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO appearance_pin (asset_id, appearance, person_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(asset_id, appearance) DO UPDATE
+                SET person_name = excluded.person_name
+                """,
+                (asset_id, appearance, person_name),
+            )
+
+    def delete_pin(self, asset_id: str, appearance: int) -> None:
+        """Remove the operator's pin; normal anchoring applies again."""
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM appearance_pin WHERE asset_id = ? AND appearance = ?",
+                (asset_id, appearance),
+            )
+
+    def appearance_pins(self) -> dict[tuple[str, int], str]:
+        """All pins as (asset_id, appearance) -> person_name."""
+        rows = self._conn.execute(
+            "SELECT asset_id, appearance, person_name FROM appearance_pin"
+        ).fetchall()
+        return {(str(r[0]), int(r[1])): str(r[2]) for r in rows}
 
     def dismiss_cluster(self, window: str, cluster: int, dismissed: bool) -> None:
         """Persist (or clear) 'I don't care about this cluster'."""

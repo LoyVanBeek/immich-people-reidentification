@@ -91,6 +91,7 @@ class EvidenceCard:
     status: EvidenceCardStatus
     included: bool  # checkbox state for writable appearances
     pixel_source: str  # "preview" | "original"
+    pin: str | None = None  # operator's pinned person, if any
 
 
 @dataclass(frozen=True)
@@ -233,6 +234,25 @@ class UIAPIHandler(BaseHTTPRequestHandler):
                 str(body.get("asset_id", "")),
                 int(body.get("appearance", -1)),
                 str(body.get("name", "")).strip(),
+            )
+            self._send_json(result)
+        elif path == "/api/pin":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.pin_appearance(  # type: ignore[union-attr]
+                str(body.get("asset_id", "")),
+                int(body.get("appearance", -1)),
+                str(body.get("name", "")).strip(),
+            )
+            self._send_json(result)
+        elif path == "/api/unpin":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.unpin_appearance(  # type: ignore[union-attr]
+                str(body.get("asset_id", "")),
+                int(body.get("appearance", -1)),
             )
             self._send_json(result)
         elif path == "/api/config":
@@ -578,6 +598,26 @@ class UIServer:
         self.store.update_proposal_status(asset_id, appearance, ProposalStatus.REJECTED)
         return {"asset_id": asset_id, "appearance": appearance, "status": "rejected"}
 
+    def pin_appearance(
+        self, asset_id: str, appearance: int, name: str
+    ) -> dict[str, Any]:
+        """Record 'this appearance is this person' as an operator decision.
+
+        The pin survives batch runs: anchoring proposes the pinned name for
+        the appearance through the normal review path — nothing writes to
+        Immich here.
+        """
+        name = name.strip()
+        if not name:
+            return {"error": "a person name is required to assign an appearance"}
+        self.store.set_pin(asset_id, appearance, name)
+        return {"asset_id": asset_id, "appearance": appearance, "pin": name}
+
+    def unpin_appearance(self, asset_id: str, appearance: int) -> dict[str, Any]:
+        """Remove the operator's pin; normal anchoring applies again."""
+        self.store.delete_pin(asset_id, appearance)
+        return {"asset_id": asset_id, "appearance": appearance, "pin": None}
+
     def get_proposals(self) -> list[dict[str, Any]]:
         """Return all proposals as raw dicts."""
         return [asdict(p) for p in self.store.proposals()]
@@ -832,6 +872,8 @@ class UIServer:
 
         faces_by_asset = faces_by_asset or {}
         rejected = rejected or set()
+        # Operator pins: shown on the card; the batch run applies them.
+        pins = self.store.appearance_pins()
 
         target_props = [
             p
@@ -906,6 +948,7 @@ class UIServer:
                     status=status,
                     included=included,
                     pixel_source=appearance.pixel_source,
+                    pin=pins.get((prop.asset_id, prop.appearance)),
                 )
             )
         return cards

@@ -147,3 +147,27 @@ def test_a_store_written_before_capture_times_migrates(tmp_path: Path) -> None:
     assert by_asset["asset-new"][0].captured_at == datetime.fromisoformat(
         "2026-11-10T08:00:00.000Z"
     )
+
+
+def test_pins_round_trip_and_survive_a_wipe(store: Store) -> None:
+    """Pins are operator decisions: set, re-set, delete — and a wipe keeps them."""
+    store.set_pin("asset-a", 0, "Alice")
+    store.set_pin("asset-b", 2, "Bob")
+
+    assert store.appearance_pins() == {("asset-a", 0): "Alice", ("asset-b", 2): "Bob"}
+
+    # Re-assigning the same appearance replaces the pin.
+    store.set_pin("asset-a", 0, "Carol")
+    assert store.appearance_pins() == {("asset-a", 0): "Carol", ("asset-b", 2): "Bob"}
+
+    # Unpinning removes exactly the one appearance's pin.
+    store.delete_pin("asset-a", 0)
+    assert store.appearance_pins() == {("asset-b", 2): "Bob"}
+    # Deleting a missing pin is a no-op.
+    store.delete_pin("asset-a", 0)
+    assert store.appearance_pins() == {("asset-b", 2): "Bob"}
+
+    # A wipe clears pipeline state but pins are the operator's voice.
+    store.add_appearances("asset-c", [appearance_row("asset-c")])
+    store.wipe()
+    assert store.appearance_pins() == {("asset-b", 2): "Bob"}
