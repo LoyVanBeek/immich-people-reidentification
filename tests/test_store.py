@@ -191,3 +191,27 @@ def test_rejection_can_be_removed(store: Store) -> None:
         ("asset-a", 1, "Alice"),
         ("asset-a", 0, "Bob"),
     ]
+
+
+def test_ignores_round_trip_and_survive_a_wipe(store: Store) -> None:
+    """Ignored detections are operator decisions: set, delete — and a wipe
+    keeps them."""
+    store.ignore_appearance("asset-a", 0)
+    store.ignore_appearance("asset-b", 3)
+
+    assert store.appearance_ignores() == {("asset-a", 0), ("asset-b", 3)}
+
+    # Re-ignoring the same pair is a no-op.
+    store.ignore_appearance("asset-a", 0)
+    assert store.appearance_ignores() == {("asset-a", 0), ("asset-b", 3)}
+
+    store.unignore_appearance("asset-a", 0)
+    assert store.appearance_ignores() == {("asset-b", 3)}
+    # Deleting a missing ignore is a no-op.
+    store.unignore_appearance("asset-a", 0)
+    assert store.appearance_ignores() == {("asset-b", 3)}
+
+    # A wipe clears pipeline state but ignores are the operator's voice.
+    store.add_appearances("asset-c", [appearance_row("asset-c")])
+    store.wipe()
+    assert store.appearance_ignores() == {("asset-b", 3)}

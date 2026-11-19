@@ -334,7 +334,16 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .b-unpin:hover { border-color: var(--dim); color: var(--dim); }
 .b-unreject { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
 .b-unreject:hover { border-color: var(--ok); color: var(--ok); }
+.b-ignore { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
+.b-ignore:hover { border-color: var(--bad); color: var(--bad); }
+.b-unignore { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
+.b-unignore:hover { border-color: var(--dim); color: var(--dim); }
 .pinchip { border-color: var(--ok); }
+/* Ignored detections: dimmed, out of the labeling game entirely. */
+.evcard.evignored { opacity: .5; }
+.evcard.evignored .crop { border-color: var(--bad); }
+a.asset-name { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--dim); }
+a.asset-name:hover { color: var(--accent); border-bottom-color: var(--accent); }
 .writemark { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--dim); cursor: pointer; }
 .b-reopen { font-size: 13px; padding: 6px 10px; }
 

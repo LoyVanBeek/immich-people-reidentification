@@ -977,6 +977,137 @@ class TestServerAPI:
 
         assert all(e["conflict_names"] is None for e in evidence)
 
+    def test_ignore_and_unignore_round_trip(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """Ignore records the operator's decision; cards carry it and the
+        original file name; unignore clears both."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # The stub 404s unknown assets, so use a registry fixture id.
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+            ],
+        )
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                )
+            ]
+        )
+
+        result = server.ignore_appearance_request(asset_id, 0)
+        assert result == {"asset_id": asset_id, "appearance": 0, "ignored": True}
+
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+        card = next(e for e in evidence if e["asset_id"] == asset_id)
+        assert card["ignored"] is True
+        # The human-readable file name comes from Immich's asset info.
+        assert card["asset_name"] == "reid-fixture-standing.jpg"
+
+        result = server.unignore_appearance_request(asset_id, 0)
+        assert result["ignored"] is False
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+        card = next(e for e in evidence if e["asset_id"] == asset_id)
+        assert card["ignored"] is False
+
+    def test_confirm_skips_ignored_appearances(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """A confirm in the same session cannot write something just ignored."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=1,
+                    embedding=b"\x01" * 512,
+                    confidence=0.85,
+                    box_left=700.0,
+                    box_top=100.0,
+                    box_right=1100.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+            ],
+        )
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=1,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+            ]
+        )
+        server.ignore_appearance_request(asset_id, 0)
+
+        result = server.confirm_cluster(
+            {
+                "cluster": 0,
+                "window": "2026-11-10",
+                "name": "Alice",
+                "included": [
+                    {"asset_id": asset_id, "appearance": 0},
+                    {"asset_id": asset_id, "appearance": 1},
+                ],
+                "dry_run": True,
+            }
+        )
+
+        # Only the non-ignored appearance is part of the batch.
+        assert "error" not in result
+        actions = server.store.get_dry_run_batches()[0].actions
+        assert all(a.appearance != 0 for a in actions)
+        assert [a.appearance for a in actions] == [1]
+
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
     ) -> None:

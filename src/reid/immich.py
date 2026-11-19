@@ -162,6 +162,18 @@ class ImmichClient:
             raise ImmichError(response.status_code, _error_message(response))
         return response.content
 
+    def fetch_asset_name(self, asset_id: str) -> str | None:
+        """The asset's original file name, for human-readable review UIs."""
+        response = httpx.get(
+            f"{self._base_url}/api/assets/{asset_id}",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if response.status_code >= 400:
+            raise ImmichError(response.status_code, _error_message(response))
+        name = response.json().get("originalFileName")
+        return name if isinstance(name, str) and name else None
+
     def fetch_faces(self, asset_id: str) -> list[Face]:
         """Fetch every face detection on one asset, assigned or not.
 

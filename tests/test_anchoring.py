@@ -505,3 +505,29 @@ def test_unpinning_restores_normal_anchoring() -> None:
     outcome = build_window("2026-11-10", [bob], {}, [[0]], ANCHOR_CFG)
 
     assert outcome.proposals == ()
+
+
+def test_an_ignored_appearance_is_excluded_from_clustering(
+    reid_stub: StubImmich, make_config: Any
+) -> None:
+    """Operator-ignored detections are noise: dropped before clustering, so
+    they are never proposed and never drag the clusters they'd land in."""
+    reid_stub.faces[library.PHOTO_4_INDOOR_ID] = [
+        face_payload(
+            library.PHOTO_4_INDOOR_ID, ("person-albert", "Albert"), INDOOR_FACE_BOX
+        )
+    ]
+    config = make_config(reid_stub, clustering=CLUSTERING)
+    store_of(config).ignore_appearance(library.PHOTO_5_INDOOR_ID, 0)
+
+    result = run_batch(config)
+    assert result.exit_code == 0, result.output
+
+    rows = proposals_by_asset(config)
+    assert (library.PHOTO_5_INDOOR_ID, 0) not in rows
+    # The anchor's own appearance stays informational; the rest of the
+    # indoor cluster still proposes Albert as usual.
+    assert rows[(library.PHOTO_4_INDOOR_ID, 0)].status == ProposalStatus.LABELED
+    assert rows[(library.PHOTO_6_INDOOR_ID, 0)].proposed_name == "Albert"
+    assert rows[(library.PHOTO_7_INDOOR_ID, 0)].proposed_name == "Albert"
+    assert rows[(library.PHOTO_12_LATE_ID, 0)].proposed_name == "Albert"

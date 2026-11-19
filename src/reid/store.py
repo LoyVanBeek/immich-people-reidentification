@@ -219,6 +219,15 @@ class Store:
             )
             self._conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS appearance_ignore (
+                    asset_id TEXT NOT NULL,
+                    appearance INTEGER NOT NULL,
+                    PRIMARY KEY (asset_id, appearance)
+                )
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS tuning (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -674,6 +683,38 @@ class Store:
             "SELECT asset_id, appearance, person_name FROM appearance_pin"
         ).fetchall()
         return {(str(r[0]), int(r[1])): str(r[2]) for r in rows}
+
+    def ignore_appearance(self, asset_id: str, appearance: int) -> None:
+        """Record 'this detection is wrong — never label it'.
+
+        Survives batch runs and wipes: the appearance is excluded from
+        clustering entirely (never proposed, never ask-for-name) and
+        confirmations skip it.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO appearance_ignore (asset_id, appearance)
+                VALUES (?, ?)
+                ON CONFLICT(asset_id, appearance) DO NOTHING
+                """,
+                (asset_id, appearance),
+            )
+
+    def unignore_appearance(self, asset_id: str, appearance: int) -> None:
+        """Remove the ignore; normal clustering applies again."""
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM appearance_ignore WHERE asset_id = ? AND appearance = ?",
+                (asset_id, appearance),
+            )
+
+    def appearance_ignores(self) -> set[tuple[str, int]]:
+        """All ignored (asset_id, appearance) pairs."""
+        rows = self._conn.execute(
+            "SELECT asset_id, appearance FROM appearance_ignore"
+        ).fetchall()
+        return {(str(r[0]), int(r[1])) for r in rows}
 
     def dismiss_cluster(self, window: str, cluster: int, dismissed: bool) -> None:
         """Persist (or clear) 'I don't care about this cluster'."""

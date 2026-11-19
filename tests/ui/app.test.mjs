@@ -58,6 +58,8 @@ function makeDom(opts = {}) {
             included: false,
             immich_label: null,
             pin: null,
+            asset_name: "IMG_4127.jpg",
+            ignored: false,
           },
         ],
         assignment: {
@@ -76,6 +78,7 @@ function makeDom(opts = {}) {
         config_knobs: { window_days: 1 },
         people: ["Alice", "Steffie"],
         dry_run: true,
+        immich_url: "http://immich.test",
       };
     } else if (path.startsWith("/api/evidence")) {
       // Evidence is per-cluster so tests can tell stale fetches apart.
@@ -327,6 +330,45 @@ async function testConflictedCardShowsFightingLabels() {
   assert.match(card.textContent, /conflict: Steffie \/ Bob/, "conflict chip missing");
 }
 
+async function testCardsLinkToImmichAndShowFileNames() {
+  // The name line links into Immich's viewer; the visible name is the
+  // original file name, the UUID demoted to the tooltip.
+  const { window, document } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+
+  const card = document.querySelector('.evcard[data-asset="asset-a"]');
+  const link = card.querySelector("a.asset-name");
+  assert.ok(link, "no viewer link on the card");
+  assert.equal(
+    link.getAttribute("href"),
+    "http://immich.test/photos/asset-a",
+    "wrong viewer link"
+  );
+  assert.ok(!/asset-a/.test(link.textContent), "UUID still visible");
+}
+
+async function testIgnoreButtonIgnoresAndUndoRestores() {
+  const { window, document, fetchLog } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+
+  window.eval(`ignoreAppearance("asset-a", 0)`);
+  await flush(window, 30);
+  assert.ok(fetchLog.includes("/api/ignore"), "no /api/ignore request");
+  const card = document.querySelector('.evcard[data-asset="asset-a"]');
+  assert.match(card.textContent, /ignored — never labeled/, "ignored chip missing");
+  assert.ok(card.querySelector(".b-unignore"), "no undo-ignore control");
+  assert.ok(!card.querySelector(".b-assign"), "ignored card still offers assign");
+
+  window.eval(`unignoreAppearance("asset-a", 0)`);
+  await flush(window, 30);
+  assert.ok(fetchLog.includes("/api/unignore"), "no /api/unignore request");
+  const restored = document.querySelector('.evcard[data-asset="asset-a"]');
+  assert.ok(!/ignored — never labeled/.test(restored.textContent), "ignored chip lingered");
+  assert.ok(restored.querySelector(".b-assign"), "assign button not restored");
+}
+
 const tests = [
   testBootRendersWithDryRunBatchPresent,
   testDayClickSelectsAndLoads,
@@ -338,6 +380,8 @@ const tests = [
   testUnpinRemovesThePin,
   testRejectedCardWordingAndUndo,
   testConflictedCardShowsFightingLabels,
+  testCardsLinkToImmichAndShowFileNames,
+  testIgnoreButtonIgnoresAndUndoRestores,
 ];
 for (const test of tests) {
   await test();

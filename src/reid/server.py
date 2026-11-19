@@ -98,6 +98,8 @@ class EvidenceCard:
     pixel_source: str  # "preview" | "original"
     pin: str | None = None  # operator's pinned person, if any
     conflict_names: list[str] | None = None  # labels fighting in a conflicted cluster
+    asset_name: str = ""  # original file name, for human-readable review
+    ignored: bool = False  # operator flagged this detection as wrong
 
 
 @dataclass(frozen=True)
@@ -154,6 +156,7 @@ class UIState:
     config_knobs: UIConfigKnobs
     people: list[str]  # existing Immich people for autocomplete
     dry_run: bool
+    immich_url: str  # base URL for "open in Immich" viewer links
 
 
 class UIAPIHandler(BaseHTTPRequestHandler):
@@ -271,6 +274,24 @@ class UIAPIHandler(BaseHTTPRequestHandler):
                 str(body.get("name", "")).strip(),
             )
             self._send_json(result)
+        elif path == "/api/ignore":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.ignore_appearance_request(  # type: ignore[union-attr]
+                str(body.get("asset_id", "")),
+                int(body.get("appearance", -1)),
+            )
+            self._send_json(result)
+        elif path == "/api/unignore":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.unignore_appearance_request(  # type: ignore[union-attr]
+                str(body.get("asset_id", "")),
+                int(body.get("appearance", -1)),
+            )
+            self._send_json(result)
         elif path == "/api/config":
             body = self._read_json()
             if body is None:
@@ -365,6 +386,9 @@ class UIServer:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.store = Store(cfg.store_path)
+        # Original file names, fetched once per asset and cached for the
+        # process lifetime: the review UI shows file names, not UUIDs.
+        self._asset_names: dict[str, str] = {}
         head_cfg = HeadDetectorConfig(
             weights_path=cfg.head_detection.weights_path,
             input_size=cfg.head_detection.input_size,
@@ -420,6 +444,7 @@ class UIServer:
             config_knobs=config_knobs,
             people=people,
             dry_run=self._dry_run,
+            immich_url=self.cfg.immich.base_url.rstrip("/"),
         )
         return asdict(state)
 
@@ -660,6 +685,24 @@ class UIServer:
         """Remove the operator's pin; normal anchoring applies again."""
         self.store.delete_pin(asset_id, appearance)
         return {"asset_id": asset_id, "appearance": appearance, "pin": None}
+
+    def ignore_appearance_request(
+        self, asset_id: str, appearance: int
+    ) -> dict[str, Any]:
+        """Record 'this detection is wrong — never label it'.
+
+        The ignore survives batch runs: the appearance is excluded from
+        clustering entirely. Nothing writes to Immich here.
+        """
+        self.store.ignore_appearance(asset_id, appearance)
+        return {"asset_id": asset_id, "appearance": appearance, "ignored": True}
+
+    def unignore_appearance_request(
+        self, asset_id: str, appearance: int
+    ) -> dict[str, Any]:
+        """Remove the ignore; normal clustering applies again."""
+        self.store.unignore_appearance(asset_id, appearance)
+        return {"asset_id": asset_id, "appearance": appearance, "ignored": False}
 
     def unreject_appearance(
         self, asset_id: str, appearance: int, proposed_name: str
@@ -955,6 +998,16 @@ class UIServer:
             return None, "ask for name"
         return None, None
 
+    def _asset_name(self, asset_id: str) -> str:
+        """Human-readable file name, fetched once and cached per process."""
+        if asset_id not in self._asset_names:
+            try:
+                name = self.immich.fetch_asset_name(asset_id)
+            except Exception:  # noqa: BLE001
+                name = None
+            self._asset_names[asset_id] = name or f"{asset_id[:8]}…"
+        return self._asset_names[asset_id]
+
     def _build_evidence_for_cluster(
         self,
         cluster: int | None,
@@ -978,6 +1031,8 @@ class UIServer:
         rejected = rejected or set()
         # Operator pins: shown on the card; the batch run applies them.
         pins = self.store.appearance_pins()
+        # Operator ignores: "this detection is wrong"; the batch run drops them.
+        ignored = self.store.appearance_ignores()
 
         target_props = [
             p
@@ -1086,6 +1141,8 @@ class UIServer:
                         if status == EvidenceCardStatus.CONFLICT_SKIP
                         else None
                     ),
+                    asset_name=self._asset_name(prop.asset_id),
+                    ignored=(prop.asset_id, prop.appearance) in ignored,
                 )
             )
         return cards
@@ -1225,6 +1282,9 @@ class UIServer:
             for asset_id, appearance, rejected_name in self.store.appearance_rejections()
             if rejected_name == name
         }
+        # Operator ignores: "this detection is wrong" skips the write even in
+        # the same session, before the next run drops it from the queue.
+        ignored = self.store.appearance_ignores()
 
         # Build a set of included (asset_id, appearance) for quick lookup
         included_set = {
@@ -1239,6 +1299,7 @@ class UIServer:
             for p in target_props
             if (p.asset_id, p.appearance) in included_set
             and (p.asset_id, p.appearance) not in rejected
+            and (p.asset_id, p.appearance) not in ignored
         ]
 
         if not write_props:

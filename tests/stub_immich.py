@@ -131,6 +131,15 @@ class StubImmich:
                 if parsed.path == PEOPLE_PATH:
                     self._people(parsed)
                     return
+                # Asset info (GET /api/assets/<id>): the JSON metadata.
+                info_parts = parsed.path.rstrip("/").split("/")
+                if len(info_parts) == 4 and info_parts[2] == "assets":
+                    info_asset = stub._asset_for_path(parsed.path)
+                    if info_asset is None:
+                        self._json(404, {"message": "not found"})
+                        return
+                    self._json(200, info_asset)
+                    return
                 asset = stub._asset_for_path(self.path)
                 if asset is None:
                     self._json(404, {"message": "not found"})
@@ -307,8 +316,12 @@ class StubImmich:
             )
 
     def _asset_for_path(self, path: str) -> dict[str, Any] | None:
-        # /api/assets/<id>/original and /api/assets/<id>/thumbnail
+        # /api/assets/<id>, /api/assets/<id>/original and /api/assets/<id>/thumbnail
         parts = path.split("?")[0].rstrip("/").split("/")
+        if len(parts) == 4 and parts[1] == "api" and parts[2] == "assets":
+            for asset in self.assets:
+                if asset["id"] == parts[3] and asset["type"] == "IMAGE":
+                    return asset
         if (
             len(parts) == 5
             and parts[1] == "api"

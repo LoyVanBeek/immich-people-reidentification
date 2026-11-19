@@ -234,6 +234,22 @@ def _cluster_and_anchor(
     appearances_by_asset = store.appearances_by_asset()
     if not appearances_by_asset:
         return ()
+    # Operator-ignored detections are noise: excluded before clustering so
+    # they are never proposed and never pollute the clusters they'd land in.
+    ignores = store.appearance_ignores()
+    if ignores:
+        before = sum(len(apps) for apps in appearances_by_asset.values())
+        appearances_by_asset = {
+            asset_id: [a for a in apps if (a.asset_id, a.appearance) not in ignores]
+            for asset_id, apps in appearances_by_asset.items()
+        }
+        after = sum(len(apps) for apps in appearances_by_asset.values())
+        _log.info("ignoring %d operator-flagged appearance(s)", before - after)
+    appearances_by_asset = {
+        asset_id: apps for asset_id, apps in appearances_by_asset.items() if apps
+    }
+    if not appearances_by_asset:
+        return ()
     asset_ids = sorted(appearances_by_asset)
     faces_by_asset = {asset_id: client.fetch_faces(asset_id) for asset_id in asset_ids}
     _log.info("anchoring: fetched face detections for %d asset(s)", len(asset_ids))

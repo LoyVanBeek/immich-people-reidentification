@@ -41,6 +41,7 @@ async function loadInitialState() {
     // Server serialises dataclasses snake_case; state uses camelCase.
     configKnobs: data.config_knobs ?? null,
     dryRun: data.dry_run ?? state.dryRun,
+    immichUrl: (data.immich_url ?? "").replace(/\/$/, ""),
   };
   // The server builds the initial evidence/assignment for clusters[0]'s
   // exact window; the key is derived from that same row.
@@ -284,6 +285,8 @@ function renderEvidence() {
     return;
   }
   const assignment = state.assignment;
+  const assetLink = assetId =>
+    state.immichUrl ? `${state.immichUrl}/photos/${encodeURIComponent(assetId)}` : null;
   grid.innerHTML = state.evidence.map(e => {
     const [chipClass, chipText] = statusChip(e.status);
     // A rejected card says what it refuses, in the operator's words.
@@ -295,16 +298,20 @@ function renderEvidence() {
       e.status === "rejected"
         ? `You flagged this appearance as not being “${assignment?.proposed_name ?? "?"}”. It will not be written with that name; an existing label in Immich stays until you remove it there.`
         : null;
-    const rejectable = assignment?.proposed_name && e.status !== "rejected" && e.status !== "already_labeled";
-    const wrongLabelable = e.status === "already_labeled" && e.immich_label;
+    const rejectable = assignment?.proposed_name && e.status !== "rejected" && !e.ignored && e.status !== "already_labeled";
+    const wrongLabelable = e.status === "already_labeled" && e.immich_label && !e.ignored;
     const conflictLabel = e.conflict_names?.length >= 2 ? e.conflict_names.join(" / ") : null;
+    const link = assetLink(e.asset_id);
+    const nameLine = link
+      ? `<a class="asset-name mono" href="${link}" target="_blank" rel="noopener" title="open ${esc(e.asset_id)} in Immich">${esc(e.asset_name || e.asset_id)}</a>`
+      : `<span class="asset-name mono" title="${esc(e.asset_id)}">${esc(e.asset_name || e.asset_id)}</span>`;
     return `
-      <div class="evcard ${e.status === "rejected" ? "evrejected" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
-        <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected")}<div class="spinner" title="loading crop…"></div></div>
+      <div class="evcard ${e.status === "rejected" ? "evrejected" : ""} ${e.ignored ? "evignored" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
+        <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected" && !e.ignored)}<div class="spinner" title="loading crop…"></div></div>
         <div class="asset-row">
-          ${e.status === "will_write" ? `<label class="writemark" title="Checked: this appearance is written to Immich when you confirm. Uncheck to leave it out.">
+          ${e.status === "will_write" && !e.ignored ? `<label class="writemark" title="Checked: this appearance is written to Immich when you confirm. Uncheck to leave it out.">
             <input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>write</label>` : ""}
-          <span class="asset-name mono">${esc(e.asset_id)}</span>
+          ${nameLine}
         </div>
         <div class="date-conf">${esc(e.date)} · ${(e.confidence * 100).toFixed(0)}%</div>
         <div class="chips">
@@ -312,12 +319,18 @@ function renderEvidence() {
           ${conflictLabel ? `<span class="chip warn" title="These Immich labels both appear in this cluster. Assign each appearance to the person it actually is.">conflict: ${esc(conflictLabel)}</span>` : ""}
           ${e.immich_label ? `<span class="chip">immich: ${esc(e.immich_label)}</span>` : ""}
           ${e.pin ? `<span class="chip ok pinchip">pinned: ${esc(e.pin)}</span>` : ""}
+          ${e.ignored ? `<span class="chip bad" title="You flagged this detection as wrong. It is excluded from clustering and will never be labeled.">ignored — never labeled</span>` : ""}
         </div>
+        ${e.ignored
+          ? `<button class="b-unignore" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Undo ignore</button>`
+          : `<button class="b-ignore" data-asset="${e.asset_id}" data-appearance="${e.appearance}" title="This detection is wrong (not a person / not someone you track). It is excluded from clustering and never labeled.">Ignore — not a person</button>`}
+        ${e.ignored ? "" : `
         ${e.pin ? `<button class="b-unpin" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Unpin</button>` : ""}
         <button class="b-assign" data-asset="${e.asset_id}" data-appearance="${e.appearance}">${e.pin ? "Reassign person" : "Assign to person…"}</button>
         ${rejectable ? `<button class="b-reject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Not this person</button>` : ""}
         ${e.status === "rejected" ? `<button class="b-unreject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Undo exclusion</button>` : ""}
         ${wrongLabelable ? `<button class="b-wronglabel" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(e.immich_label)}">Wrong label</button>` : ""}
+        `}
       </div>
     `;
   }).join("");
@@ -459,6 +472,16 @@ function wireEvidenceEvents() {
       unpinAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
     });
   });
+  document.querySelectorAll(".b-ignore[data-asset]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      ignoreAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
+    });
+  });
+  document.querySelectorAll(".b-unignore[data-asset]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      unignoreAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
+    });
+  });
   document.querySelectorAll(".b-unreject[data-asset]").forEach(btn => {
     btn.addEventListener("click", () => {
       const name = state.assignment?.proposed_name;
@@ -571,7 +594,7 @@ async function rejectAppearance(assetId, appearance, name) {
       e => e.asset_id === assetId && String(e.appearance) === String(appearance)
     );
     if (card) card.status = "rejected";
-    toast(`appearance ${appearance} of ${assetId.slice(0, 8)}… will not be proposed as “${name}”`);
+    toast(`“${assetLabel(assetId)}” (appearance ${appearance}) will not be proposed as “${name}”`);
     renderEvidence();
   } catch (err) {
     toast(`reject failed: ${err.message}`);
@@ -587,7 +610,7 @@ function assignPrompt(assetId, appearance) {
     e => e.asset_id === assetId && String(e.appearance) === String(appearance)
   )?.pin;
   host.innerHTML = `<div class="modal"><div class="inner">
-    <h3>Assign to person <span class="mono muted">${esc(assetId.slice(0, 12))}… · ${appearance}</span></h3>
+    <h3>Assign to person <span class="mono muted">${esc(assetLabel(assetId))} · ${appearance}</span></h3>
     <div class="muted" style="margin-bottom:10px">${current ? `currently pinned to “${esc(current)}”` : "The pinned name is proposed on the next batch run — reviewed like any other label before anything writes."}</div>
     <input id="ap" list="apl" placeholder="Type or pick an existing person…" style="width:100%">
     <datalist id="apl">${state.people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
@@ -671,6 +694,59 @@ const STATUS_KEY_BY_ENUM = {
   ask_name: "ask_for_name",
   rejected: "rejected",
 };
+
+function assetLabel(assetId) {
+  const card = state.evidence.find(e => e.asset_id === assetId);
+  return (card && card.asset_name) || `${assetId.slice(0, 8)}…`;
+}
+
+async function ignoreAppearance(assetId, appearance) {
+  try {
+    const res = await fetch("/api/ignore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_id: assetId, appearance }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`ignore failed: ${data.error}`);
+      return;
+    }
+    const card = state.evidence.find(
+      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
+    );
+    if (card) card.ignored = true;
+    toast(
+      `ignored “${assetLabel(assetId)}” — it is excluded from clustering and never labeled`
+    );
+    renderEvidence();
+  } catch (err) {
+    toast(`ignore failed: ${err.message}`);
+  }
+}
+
+async function unignoreAppearance(assetId, appearance) {
+  try {
+    const res = await fetch("/api/unignore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_id: assetId, appearance }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`unignore failed: ${data.error}`);
+      return;
+    }
+    const card = state.evidence.find(
+      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
+    );
+    if (card) card.ignored = false;
+    toast("ignore removed — the appearance is re-evaluated on the next batch run");
+    renderEvidence();
+  } catch (err) {
+    toast(`unignore failed: ${err.message}`);
+  }
+}
 
 async function unrejectAppearance(assetId, appearance, name) {
   if (!name) {
