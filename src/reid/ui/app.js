@@ -319,11 +319,11 @@ function renderEvidence() {
           ${conflictLabel ? `<span class="chip warn" title="These Immich labels both appear in this cluster. Assign each appearance to the person it actually is.">conflict: ${esc(conflictLabel)}</span>` : ""}
           ${e.immich_label ? `<span class="chip">immich: ${esc(e.immich_label)}</span>` : ""}
           ${e.pin ? `<span class="chip ok pinchip">pinned: ${esc(e.pin)}</span>` : ""}
-          ${e.ignored ? `<span class="chip bad" title="You flagged this detection as wrong. It is excluded from clustering and will never be labeled.">ignored — never labeled</span>` : ""}
+          ${e.ignored ? `<span class="chip bad" title="You ignored this appearance. It is excluded from clustering and will never be labeled.">ignored — never labeled</span>` : ""}
         </div>
         ${e.ignored
           ? `<button class="b-unignore" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Undo ignore</button>`
-          : `<button class="b-ignore" data-asset="${e.asset_id}" data-appearance="${e.appearance}" title="This detection is wrong (not a person / not someone you track). It is excluded from clustering and never labeled.">Ignore — not a person</button>`}
+          : `<button class="b-ignore" data-asset="${e.asset_id}" data-appearance="${e.appearance}" title="Skip this appearance: not a person, or a person you're not interested in. It is excluded from clustering and never labeled.">Ignore</button>`}
         ${e.ignored ? "" : `
         ${e.pin ? `<button class="b-unpin" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Unpin</button>` : ""}
         <button class="b-assign" data-asset="${e.asset_id}" data-appearance="${e.appearance}">${e.pin ? "Reassign person" : "Assign to person…"}</button>
@@ -717,7 +717,7 @@ async function ignoreAppearance(assetId, appearance) {
     );
     if (card) card.ignored = true;
     toast(
-      `ignored “${assetLabel(assetId)}” — it is excluded from clustering and never labeled`
+      `ignored “${assetLabel(assetId)}” (appearance ${appearance}) — excluded from clustering, never labeled`
     );
     renderEvidence();
   } catch (err) {
