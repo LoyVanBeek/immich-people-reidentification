@@ -7,6 +7,7 @@ occur from this API — it only reads from the local store.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -43,6 +44,19 @@ _log = logging.getLogger("reid.server")
 
 # Static file directory (served at /)
 STATIC_DIR = Path(__file__).parent / "ui"
+
+_UI_VERSION: str | None = None
+
+
+def ui_version() -> str:
+    """Stable content hash of the static assets, for cache-busting URLs."""
+    global _UI_VERSION
+    if _UI_VERSION is None:
+        digest = hashlib.sha256()
+        for name in ("app.js", "style.css"):
+            digest.update((STATIC_DIR / name).read_bytes())
+        _UI_VERSION = digest.hexdigest()[:12]
+    return _UI_VERSION
 
 
 @dataclass(frozen=True)
@@ -176,7 +190,7 @@ class UIAPIHandler(BaseHTTPRequestHandler):
                 return
             self._send_bytes(data, ctype)
         elif path == "/" or path == "/index.html":
-            self._serve_static("index.html")
+            self._serve_index()
         else:
             self._serve_static(path.lstrip("/"))
 
@@ -267,6 +281,21 @@ class UIAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "private, max-age=3600")
         self.end_headers()
         self.wfile.write(data)
+
+    def _serve_index(self) -> None:
+        """index.html with the asset URLs stamped by a content hash.
+
+        The hash changes whenever app.js or style.css change, so every new
+        build gets brand-new asset URLs — a browser can never pair new HTML
+        with stale cached JS, which made deploys look like they did nothing.
+        """
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        html = html.replace("__UI_VERSION__", ui_version())
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(html.encode())
 
     def _serve_static(self, name: str) -> None:
         # Prevent directory traversal

@@ -214,7 +214,28 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
   transition: border-color 0.1s;
 }
 .evcard:hover { border-color: var(--accent); }
-.evcard .crop { width: 100%; aspect-ratio: 150/170; background: #0c0d10; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.evcard .crop { width: 100%; aspect-ratio: 150/170; background: #0c0d10; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); position: relative; }
+/* Crops load asynchronously: spinner until the image arrives, then fade in. */
+.evcard .crop .spinner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.evcard .crop .spinner::after {
+  content: "";
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+.evcard .crop img.crop { opacity: 0; }
+.evcard .crop img.crop.loaded { opacity: 1; transition: opacity .25s; }
+.evcard .crop img.crop.loaded + .spinner { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .evcard .asset-row { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
 .evcard .asset-name { font-family: ui-monospace, monospace; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .evcard .date-conf { color: var(--dim); margin-top: 4px; font-size: 11px; }

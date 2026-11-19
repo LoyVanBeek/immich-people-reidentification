@@ -201,7 +201,7 @@ function paneHTML() {
   const hasName = a.proposed_name != null;
   return `
     <div class="name-display">${hasName ? esc(a.proposed_name) : '<span class="muted">—</span>'}</div>
-    <div class="cluster-meta muted">${a.total_appearances} appearances · ${a.writable} writable · ${a.conflicted} conflict · ${a.no_head} no-head</div>
+    <div class="cluster-meta muted">${a.total_appearances} appearances · ${a.writable} writable · ${a.conflicted} conflict · ${a.no_head ?? a.ask_for_name ?? 0} no-head</div>
     ${!hasName ? `<button class="b-name primary" style="width:100%;margin-bottom:10px">Name this cluster</button>` : ""}
     <div class="name-prompt">
       <label class="muted">Assign to</label>
@@ -236,7 +236,7 @@ function renderEvidence() {
     const wrongLabelable = e.status === "already_labeled" && e.immich_label;
     return `
       <div class="evcard ${e.status === "rejected" ? "evrejected" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
-        <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected")}</div>
+        <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected")}<div class="spinner" title="loading crop…"></div></div>
         <div class="asset-row">
           ${e.status === "will_write" ? `<label class="writemark" title="Checked: this appearance is written to Immich when you confirm. Uncheck to leave it out.">
             <input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>write</label>` : ""}
@@ -252,6 +252,16 @@ function renderEvidence() {
       </div>
     `;
   }).join("");
+  // Crops stream in from /api/crop: keep a spinner up until each image
+  // actually arrives (or errors out), then fade the picture in.
+  grid.querySelectorAll("img.crop").forEach(img => {
+    const done = () => img.classList.add("loaded");
+    if (img.complete) done();
+    else {
+      img.addEventListener("load", done, { once: true });
+      img.addEventListener("error", done, { once: true });
+    }
+  });
   wireEvidenceEvents();
 }
 

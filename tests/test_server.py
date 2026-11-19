@@ -671,6 +671,15 @@ class TestServerHTTP:
         with urlopen(f"{server_url}/app.js") as resp:
             assert resp.headers["Cache-Control"] == "no-store"
 
+    def test_http_index_stamps_versioned_asset_urls(self, server_url: str) -> None:
+        """Asset URLs carry a content-hash version, so a new build always
+        means new URLs and stale cached JS can never run against new HTML."""
+        with urlopen(f"{server_url}/") as resp:
+            html = resp.read().decode()
+        assert "__UI_VERSION__" not in html
+        assert "app.js?v=" in html
+        assert "style.css?v=" in html
+
     def test_http_evidence_endpoint(self, server_url: str) -> None:
         with urlopen(f"{server_url}/api/evidence?cluster=0&window=2026-11-10") as resp:
             assert resp.status == 200
