@@ -74,6 +74,7 @@ def config_with_store(tmp_path: Path, ui_stub: StubImmich) -> Iterator[Path]:
 [immich]
 base_url = "{ui_stub.base_url}"
 api_key = "{API_KEY}"
+write_api_key = "{API_KEY}"
 page_size = 1000
 
 [store]
@@ -1107,6 +1108,196 @@ class TestServerAPI:
         actions = server.store.get_dry_run_batches()[0].actions
         assert all(a.appearance != 0 for a in actions)
         assert [a.appearance for a in actions] == [1]
+
+    def test_write_review_groups_by_name(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """Tabs per pending name across clusters; already-labeled matched via
+        face claims; unnamed clusters land on the unnamed tab."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # A LABELED row Immich agrees on: informational, matched by name.
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id="asset1",
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+                Proposal(
+                    asset_id="asset1",
+                    appearance=1,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.LABELED,
+                    proposed_name=None,
+                ),
+                Proposal(
+                    asset_id="asset2",
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=1,
+                    status=ProposalStatus.ASK_NAME,
+                    proposed_name=None,
+                ),
+            ]
+        )
+
+        review = server.get_write_review()
+
+        # No faces: nothing matches the Alice tab as already-labeled, but
+        # the writable card is there.
+        alice = next((t for t in review["tabs"] if t["name"] == "Alice"), None)
+        assert alice is not None
+        assert [c["asset_id"] for c in alice["writable_cards"]] == ["asset1"]
+        assert alice["writable"] == 1
+        assert alice["labeled"] == 0
+        # The nameless ask-name cluster is on the unnamed tab, not a name tab.
+        assert len(review["unnamed"]) == 1
+        assert review["unnamed"][0]["cluster"] == 1
+        assert review["total_writable"] == 1
+
+    def test_write_decision_persists_and_clears_on_run(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+
+        server.set_write_decision("asset1", 0, False)
+        assert server.store.write_decisions() == {("asset1", 0): False}
+
+        # The review page honors the decision: the excluded card stays in the
+        # pane (so it can be re-included) but is not counted writable.
+        review = server.get_write_review()
+        alice = next(t for t in review["tabs"] if t["name"] == "Alice")
+        assert alice["writable"] == 1  # asset1 app1 remains included
+        excluded = next(c for c in alice["writable_cards"] if c["appearance"] == 0)
+        assert excluded["included"] is False
+
+        # A new run replaces proposals and clears decisions.
+        rows = server.store.proposals()
+        server.store.replace_proposals(rows)
+        assert server.store.write_decisions() == {}
+
+    def test_confirm_all_records_one_batch_per_group(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # The stub 404s unknown assets; use the registry fixture id. A second
+        # appearance on the next day makes a second (name, window, cluster)
+        # group.
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=1,
+                    embedding=b"\x01" * 512,
+                    confidence=0.85,
+                    box_left=700.0,
+                    box_top=100.0,
+                    box_right=1100.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-11T10:00:00"),
+                ),
+            ],
+        )
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=1,
+                    window="2026-11-11",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+            ]
+        )
+        # The operator drops the second day's appearance from the batch.
+        server.set_write_decision(asset_id, 1, False)
+
+        result = server.confirm_all({"dry_run": True})
+
+        assert "error" not in result
+        # Two groups (one per window); the excluded day is not written.
+        assert len(result["batch_ids"]) == 1
+        assert result["count"] == 1
+        batches = server.store.get_dry_run_batches()
+        assert [b.window for b in batches] == ["2026-11-10"]
+        all_actions = [a for b in batches for a in b.actions]
+        assert [a.appearance for a in all_actions] == [0]
+
+    def test_promote_all_promotes_everything(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+            ],
+        )
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_id,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+            ]
+        )
+        server.confirm_all({"dry_run": True})
+        assert len(server.store.get_dry_run_batches()) == 1
+
+        result = server.promote_all()
+
+        assert result["promoted"] == 1
+        assert server.store.get_dry_run_batches()[0].promoted_at is not None
+        # Second call: nothing left to promote.
+        assert server.promote_all()["promoted"] == 0
 
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store

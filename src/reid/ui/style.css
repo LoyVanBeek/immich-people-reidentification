@@ -344,6 +344,63 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .evcard.evignored .crop { border-color: var(--bad); }
 a.asset-name { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--dim); }
 a.asset-name:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Write-review page: full-width, tabs per person, day sub-groups. */
+#app.review { display: grid; grid-template-columns: 1fr; grid-template-rows: auto 46px minmax(0, 1fr); }
+#app.review > .banner { grid-column: 1; }
+#app.review .top { grid-column: 1; grid-row: 2; }
+#app.review .rvwrap { grid-column: 1; grid-row: 3; min-height: 0; display: flex; flex-direction: column; }
+.rvtabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  overflow-x: auto;
+  flex: none;
+}
+.rvtab {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel2);
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.rvtab:hover { border-color: var(--accent); }
+.rvtab.sel { background: var(--accent); border-color: var(--accent); color: #fff; }
+.rvtab.sel .chip { color: #fff; }
+.rvbody { overflow: auto; padding: 14px 16px; }
+.rv-day {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.rv-day:first-child { margin-top: 0; }
+.rv-dayname { font-weight: 700; }
+.rv-global {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+.rv-global .primary { padding: 8px 14px; }
+/* Already-labeled on the review page: informational, visibly done. */
+.evcard.evlabeled { border-color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
 .writemark { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--dim); cursor: pointer; }
 .b-reopen { font-size: 13px; padding: 6px 10px; }
 

@@ -21,8 +21,7 @@ const CLUSTERS = [
   { cluster: 1, window: "2026-11-17", proposed_name: "Alice", anchor: "x", confidence: 0.8, appearances: 2, writable: 2, conflicted: 0, ask_for_name: 0, labeled: 0, status: "open", crops: [] },
   { cluster: 0, window: "2025-09-23", proposed_name: "Steffie", anchor: "x", confidence: 0.7, appearances: 2, writable: 1, conflicted: 0, ask_for_name: 0, labeled: 1, status: "open", crops: [] },
 ];
-const DRY_BATCH = {
-  id: "batch-1",
+const DRY_BATCH = {  id: "batch-1",
   name: "Alice",
   window: "2026-11-17",
   cluster: 0,
@@ -32,6 +31,79 @@ const DRY_BATCH = {
     { asset_id: "asset-a", appearance: 0, head_box: null, status: "would_write", message: "" },
     { asset_id: "asset-b", appearance: 1, head_box: null, status: "conflict_skip", message: "existing label" },
   ],
+};
+
+const WRITABLE_CARD = (asset, window_, cluster, included = true) => ({
+  asset_id: asset,
+  appearance: 0,
+  window: window_,
+  cluster,
+  date: window_,
+  confidence: 0.9,
+  status: "will_write",
+  included,
+  immich_label: null,
+  pin: null,
+  asset_name: `IMG_${asset}.jpg`,
+  ignored: false,
+  conflict_names: null,
+  proposed_name: "Steffie",
+});
+const REVIEW = {
+  tabs: [
+    {
+      name: "Steffie",
+      writable: 2,
+      labeled: 1,
+      writable_cards: [
+        WRITABLE_CARD("asset-s1", "2026-11-17", 0),
+        WRITABLE_CARD("asset-s2", "2025-09-23", 1),
+      ],
+      labeled_cards: [
+        {
+          asset_id: "asset-s3",
+          appearance: 0,
+          window: "2026-11-17",
+          cluster: 2,
+          date: "2026-11-17",
+          confidence: 0.9,
+          status: "already_labeled",
+          included: false,
+          immich_label: "Steffie",
+          pin: null,
+          asset_name: "IMG_s3.jpg",
+          ignored: false,
+          conflict_names: null,
+          proposed_name: null,
+        },
+      ],
+    },
+  ],
+  unnamed: [
+    {
+      window: "2026-11-17",
+      cluster: 5,
+      cards: [
+        {
+          asset_id: "asset-u1",
+          appearance: 0,
+          window: "2026-11-17",
+          cluster: 5,
+          date: "2026-11-17",
+          confidence: 0.9,
+          status: "ask_for_name",
+          included: false,
+          immich_label: null,
+          pin: null,
+          asset_name: "IMG_u1.jpg",
+          ignored: false,
+          conflict_names: null,
+          proposed_name: null,
+        },
+      ],
+    },
+  ],
+  total_writable: 2,
 };
 
 function makeDom(opts = {}) {
@@ -101,6 +173,14 @@ function makeDom(opts = {}) {
       if (delay) await new Promise(r => setTimeout(r, delay));
     } else if (path === "/api/dry-run-batches") {
       json = [DRY_BATCH];
+    } else if (path === "/api/write-review") {
+      json = REVIEW;
+    } else if (path === "/api/confirm-all") {
+      json = { groups: [], count: 2, batch_ids: ["batch-1", "batch-2"] };
+    } else if (path === "/api/promote-all") {
+      json = { promoted: 2, results: [] };
+    } else if (path.startsWith("/api/write-decision")) {
+      json = { included: true };
     } else {
       json = { results: [] };
     }
@@ -369,6 +449,66 @@ async function testIgnoreButtonIgnoresAndUndoRestores() {
   assert.ok(restored.querySelector(".b-assign"), "assign button not restored");
 }
 
+async function testReviewPageTogglesAndRenders() {
+  // The top-bar toggle opens the write-review page: person tabs, day
+  // sub-groups, already-labeled with the green-border treatment, and the
+  // global action bar. "Back to queue" returns.
+  const { window, document } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  window.eval('setView("review")');
+  await flush(window, 30);
+
+  assert.ok(document.getElementById("rvTabs"), "review shell missing");
+  const tabs = [...document.querySelectorAll(".rvtab")].map(el => el.textContent.trim());
+  assert.ok(tabs.some(t => t.includes("Steffie")), "person tab missing");
+  assert.ok(tabs.some(t => t.includes("unnamed")), "unnamed tab missing");
+  assert.ok(
+    document.body.textContent.includes("Record (dry-run): 2 writes"),
+    "global dry-run action missing"
+  );
+
+  // Day sub-groups inside the person pane.
+  window.eval('setReviewTab("Steffie");');
+  await flush(window, 10);
+  const days = [...document.querySelectorAll(".rv-dayname")].map(el => el.textContent);
+  assert.ok(days.includes("2026-11-17") && days.includes("2025-09-23"), "day sub-groups missing");
+  const labeledCard = document.querySelector(".evcard.evlabeled");
+  assert.ok(labeledCard && labeledCard.dataset.asset === "asset-s3", "already-labeled card not styled");
+
+  // Back to queue restores the 4-pane workspace.
+  window.eval('setView("queue")');
+  await flush(window, 10);
+  assert.ok(document.querySelector(".days"), "queue did not return");
+}
+
+async function testReviewConfirmAllAndToggleAll() {
+  const { window, document, fetchLog } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  window.eval('setView("review")');
+  await flush(window, 30);
+  window.eval('setReviewTab("Steffie");');
+  await flush(window, 10);
+
+  // None: every writable card of the tab posts its decision.
+  window.eval('toggleAllWrites(false)');
+  await flush(window, 30);
+  const decisions = fetchLog.filter(p => p === "/api/write-decision").length;
+  assert.equal(decisions, 2, "toggle-all did not persist both decisions");
+  const unchecked = [...document.querySelectorAll('.evcard input[type="checkbox"]')].every(
+    el => !el.checked
+  );
+  assert.ok(unchecked, "checkboxes did not uncheck");
+
+  // All: back on, then confirm-all posts once.
+  window.eval('toggleAllWrites(true)');
+  await flush(window, 30);
+  window.eval('confirmAllWrites()');
+  await flush(window, 30);
+  assert.equal(fetchLog.filter(p => p === "/api/confirm-all").length, 1, "confirm-all not posted once");
+}
+
 const tests = [
   testBootRendersWithDryRunBatchPresent,
   testDayClickSelectsAndLoads,
@@ -382,6 +522,8 @@ const tests = [
   testConflictedCardShowsFightingLabels,
   testCardsLinkToImmichAndShowFileNames,
   testIgnoreButtonIgnoresAndUndoRestores,
+  testReviewPageTogglesAndRenders,
+  testReviewConfirmAllAndToggleAll,
 ];
 for (const test of tests) {
   await test();

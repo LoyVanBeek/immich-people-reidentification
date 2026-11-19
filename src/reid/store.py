@@ -228,6 +228,16 @@ class Store:
             )
             self._conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS write_decision (
+                    asset_id TEXT NOT NULL,
+                    appearance INTEGER NOT NULL,
+                    included INTEGER NOT NULL,
+                    PRIMARY KEY (asset_id, appearance)
+                )
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS tuning (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -346,10 +356,13 @@ class Store:
         """Persist one run's proposals, replacing any previous run's.
 
         Clusters are rebuilt from scratch every run, so the proposal table
-        always mirrors the most recent run's conclusions.
+        always mirrors the most recent run's conclusions. The write/skip
+        decisions from the previous review cycle are cleared with them:
+        every new proposal comes back fresh for review.
         """
         with self._conn:
             self._conn.execute("DELETE FROM proposal")
+            self._conn.execute("DELETE FROM write_decision")
             self._conn.executemany(
                 """
                 INSERT INTO proposal (asset_id, appearance, window, cluster, status, proposed_name)
@@ -715,6 +728,33 @@ class Store:
             "SELECT asset_id, appearance FROM appearance_ignore"
         ).fetchall()
         return {(str(r[0]), int(r[1])) for r in rows}
+
+    def set_write_decision(
+        self, asset_id: str, appearance: int, included: bool
+    ) -> None:
+        """Persist the operator's write/skip choice for one appearance.
+
+        Covers exactly one review cycle: the table is cleared whenever
+        proposals are replaced by a batch run, so a fresh proposal is never
+        silently suppressed by an old decision.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO write_decision (asset_id, appearance, included)
+                VALUES (?, ?, ?)
+                ON CONFLICT(asset_id, appearance) DO UPDATE
+                SET included = excluded.included
+                """,
+                (asset_id, appearance, int(included)),
+            )
+
+    def write_decisions(self) -> dict[tuple[str, int], bool]:
+        """Persisted write/skip decisions as (asset_id, appearance) -> included."""
+        rows = self._conn.execute(
+            "SELECT asset_id, appearance, included FROM write_decision"
+        ).fetchall()
+        return {(str(r[0]), int(r[1])): bool(r[2]) for r in rows}
 
     def dismiss_cluster(self, window: str, cluster: int, dismissed: bool) -> None:
         """Persist (or clear) 'I don't care about this cluster'."""

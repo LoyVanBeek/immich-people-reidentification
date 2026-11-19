@@ -100,6 +100,7 @@ class EvidenceCard:
     conflict_names: list[str] | None = None  # labels fighting in a conflicted cluster
     asset_name: str = ""  # original file name, for human-readable review
     ignored: bool = False  # operator flagged this detection as wrong
+    proposed_name: str | None = None  # name this proposal would write
 
 
 @dataclass(frozen=True)
@@ -180,6 +181,8 @@ class UIAPIHandler(BaseHTTPRequestHandler):
 
         if path == "/api/state":
             self._send_json(self.ui_server.get_ui_state())  # type: ignore[union-attr]
+        elif path == "/api/write-review":
+            self._send_json(self.ui_server.get_write_review())  # type: ignore[union-attr]
         elif path == "/api/evidence":
             self._send_json(self.ui_server.get_evidence(parse_qs(parsed.query)))  # type: ignore[union-attr]
         elif path == "/api/people":
@@ -274,6 +277,24 @@ class UIAPIHandler(BaseHTTPRequestHandler):
                 str(body.get("name", "")).strip(),
             )
             self._send_json(result)
+        elif path == "/api/write-decision":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.set_write_decision(  # type: ignore[union-attr]
+                str(body.get("asset_id", "")),
+                int(body.get("appearance", -1)),
+                bool(body.get("included", True)),
+            )
+            self._send_json(result)
+        elif path == "/api/confirm-all":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.confirm_all(body)  # type: ignore[union-attr]
+            self._send_json(result)
+        elif path == "/api/promote-all":
+            self._send_json(self.ui_server.promote_all())  # type: ignore[union-attr]
         elif path == "/api/ignore":
             body = self._read_json()
             if body is None:
@@ -703,6 +724,168 @@ class UIServer:
         """Remove the ignore; normal clustering applies again."""
         self.store.unignore_appearance(asset_id, appearance)
         return {"asset_id": asset_id, "appearance": appearance, "ignored": False}
+
+    def get_write_review(self) -> dict[str, Any]:
+        """Person-centric review of everything about to be written.
+
+        One tab per name with pending writes (across all days and clusters),
+        that person's already-labeled appearances alongside (matched via
+        face claims), and an "unnamed" tab for clusters still needing a
+        name. Cards carry the effective write decision (persisted choice,
+        defaulting to the proposal's writability).
+        """
+        proposals = self.store.proposals()
+        if not proposals:
+            return {"tabs": [], "unnamed": [], "total_writable": 0}
+        appearances_by_asset = self.store.appearances_by_asset()
+        decisions = self.store.write_decisions()
+        rejected = set(self.store.appearance_rejections())
+
+        faces_by_asset: dict[str, list[Face]] = {}
+        for asset_id in sorted({p.asset_id for p in proposals}):
+            try:
+                faces_by_asset[asset_id] = self.immich.fetch_faces(asset_id)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("failed to fetch faces for %s: %s", asset_id, exc)
+                faces_by_asset[asset_id] = []
+
+        # Build cards with the per-cluster logic, then regroup by person.
+        all_cards: list[dict[str, Any]] = []
+        groups: dict[tuple[str, int], list[Proposal]] = {}
+        for p in proposals:
+            groups.setdefault((p.window, p.cluster), []).append(p)
+        for window, cluster in sorted(groups):
+            cards = self._build_evidence_for_cluster(
+                cluster,
+                proposals,
+                appearances_by_asset,
+                window=window,
+                faces_by_asset=faces_by_asset,
+                rejected=rejected,
+            )
+            for card in map(asdict, cards):
+                # The persisted decision, if any, wins over the default.
+                card["included"] = decisions.get(
+                    (card["asset_id"], card["appearance"]), card["included"]
+                )
+                all_cards.append(card)
+
+        writable_by_name: dict[str, list[dict[str, Any]]] = {}
+        labeled_by_name: dict[str, list[dict[str, Any]]] = {}
+        unnamed: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        for card in all_cards:
+            if card["proposed_name"]:
+                writable_by_name.setdefault(card["proposed_name"], []).append(card)
+            elif card["status"] == "already_labeled" and card["immich_label"]:
+                labeled_by_name.setdefault(card["immich_label"], []).append(card)
+            elif card["status"] == "ask_for_name" or (
+                card["status"] == "will_write" and not card["proposed_name"]
+            ):
+                # Nameless proposals (unnamed clusters, or a degenerate
+                # proposed row) need a name before they are writable: the
+                # unnamed tab hands them to the queue for naming.
+                unnamed.setdefault((card["window"], card["cluster"]), []).append(card)
+
+        tabs = []
+        for name in sorted(set(writable_by_name) | set(labeled_by_name)):
+            writable_cards = writable_by_name.get(name, [])
+            labeled_cards = labeled_by_name.get(name, [])
+            tabs.append(
+                {
+                    "name": name,
+                    "writable_cards": writable_cards,
+                    "labeled_cards": labeled_cards,
+                    "writable": sum(
+                        1
+                        for c in writable_cards
+                        if c["status"] == "will_write" and c["included"]
+                    ),
+                    "labeled": len(labeled_cards),
+                }
+            )
+        unnamed_list = [
+            {"window": window, "cluster": cluster, "cards": cards}
+            for (window, cluster), cards in sorted(unnamed.items())
+        ]
+        return {
+            "tabs": tabs,
+            "unnamed": unnamed_list,
+            "total_writable": sum(t["writable"] for t in tabs),
+        }
+
+    def set_write_decision(
+        self, asset_id: str, appearance: int, included: bool
+    ) -> dict[str, Any]:
+        """Persist the operator's write/skip choice for one appearance."""
+        self.store.set_write_decision(asset_id, appearance, included)
+        return {
+            "asset_id": asset_id,
+            "appearance": appearance,
+            "included": included,
+        }
+
+    def confirm_all(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Confirm every pending write in one go, grouped by name/window/cluster.
+
+        Dry-run records one batch per (name, window, cluster); live writes
+        them all. Write decisions, rejections and ignores are respected —
+        this composes the existing per-cluster confirm, nothing new writes
+        outside it.
+        """
+        dry_run = bool(body.get("dry_run", True))
+        review = self.get_write_review()
+        groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+        for tab in review["tabs"]:
+            for card in tab["writable_cards"]:
+                if card["status"] == "will_write" and card["included"]:
+                    key = (tab["name"], card["window"], card["cluster"])
+                    groups.setdefault(key, []).append(
+                        {"asset_id": card["asset_id"], "appearance": card["appearance"]}
+                    )
+        if not groups:
+            return {"error": "nothing to write"}
+
+        results: list[dict[str, Any]] = []
+        for (name, window, cluster), included in sorted(groups.items()):
+            group_result = self.confirm_cluster(
+                {
+                    "cluster": cluster,
+                    "window": window,
+                    "name": name,
+                    "included": included,
+                    "dry_run": dry_run,
+                }
+            )
+            results.append(
+                {
+                    "name": name,
+                    "window": window,
+                    "cluster": cluster,
+                    "result": group_result,
+                }
+            )
+        return {
+            "groups": results,
+            "count": sum(len(g) for g in groups.values()),
+            "batch_ids": [
+                r["result"]["batch_id"] for r in results if "batch_id" in r["result"]
+            ],
+        }
+
+    def promote_all(self) -> dict[str, Any]:
+        """Promote every un-promoted dry-run batch, one click.
+
+        Batches whose promote reports an error are not counted as promoted
+        and stay in the list for another try.
+        """
+        results = []
+        for batch in self.store.get_dry_run_batches():
+            if batch.promoted_at is not None:
+                continue
+            outcome = self.promote_batch(batch.id)
+            if "error" not in outcome:
+                results.append({"batch_id": batch.id, **outcome})
+        return {"promoted": len(results), "results": results}
 
     def unreject_appearance(
         self, asset_id: str, appearance: int, proposed_name: str
@@ -1143,6 +1326,7 @@ class UIServer:
                     ),
                     asset_name=self._asset_name(prop.asset_id),
                     ignored=(prop.asset_id, prop.appearance) in ignored,
+                    proposed_name=prop.proposed_name,
                 )
             )
         return cards
