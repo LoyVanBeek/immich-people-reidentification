@@ -1176,9 +1176,9 @@ class UIServer:
         """Return (proposed_name, anchor_description) for a proposal group."""
         proposed_name = next((p.proposed_name for p in props if p.proposed_name), None)
         if proposed_name:
-            return proposed_name, f"{proposed_name} (anchored)"
+            return proposed_name, f"Immich label: {proposed_name}"
         if any(p.status == ProposalStatus.ASK_NAME for p in props):
-            return None, "ask for name"
+            return None, "needs a name"
         return None, None
 
     def _asset_name(self, asset_id: str) -> str:

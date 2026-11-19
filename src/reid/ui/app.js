@@ -113,8 +113,8 @@ function render() {
       <span class="chip acc">${state.clusters.filter(c => c.status === "open").length} open</span>
       <span class="spacer"></span>
       <div class="knobs">
-        <label><input type="checkbox" id="dryToggle" ${state.dryRun ? "checked" : ""}> dry-run</label>
-        <button id="gearBtn" title="Tuning knobs">⚙</button>
+        <label><input type="checkbox" id="dryToggle" ${state.dryRun ? "checked" : ""}>review before writing</label>
+        <button id="gearBtn" title="Settings">⚙</button>
       </div>
       <button id="viewReview" title="Review everything about to be written, per person">Write review</button>
       <span class="muted"><kbd class="kbd">j</kbd>/<kbd class="kbd">k</kbd> move · <kbd class="kbd">c</kbd> confirm · <kbd class="kbd">s</kbd> skip</span>
@@ -144,27 +144,27 @@ function render() {
 
 function bannerHTML() {
   return state.dryRun
-    ? `<div class="banner dry">DRY-RUN — nothing will be written to Immich</div>`
+    ? `<div class="banner dry">PREVIEW — approving only records; you choose when to write to Immich</div>`
     : `<div class="banner real">LIVE — confirmations write real faces to Immich</div>`;
 }
 
 function configPopoverHTML() {
   const k = state.configKnobs;
   if (!k) {
-    return `<div class="muted">knobs unavailable</div>`;
+    return `<div class="muted">settings unavailable</div>`;
   }
   const rows = [
-    ["windowDays", "Timespan window (days)", k.window_days, 1, 30, 1],
-    ["distanceThreshold", "Cluster distance threshold", k.distance_threshold, 0.2, 1, 0.01],
-    ["confidenceFloor", "Detector confidence floor", k.confidence_floor, 0, 1, 0.01],
-    ["minBoxHeight", "Min box height (px)", k.min_box_height, 40, 300, 10],
-    ["faceOverlap", "Face→person containment", k.face_overlap, 0.1, 1, 0.05],
+    ["windowDays", "Days grouped together", k.window_days, 1, 30, 1],
+    ["distanceThreshold", "How alike faces must be to group", k.distance_threshold, 0.2, 1, 0.01],
+    ["confidenceFloor", "Minimum detection confidence", k.confidence_floor, 0, 1, 0.01],
+    ["minBoxHeight", "Minimum person size (pixels)", k.min_box_height, 40, 300, 10],
+    ["faceOverlap", "How much a face must sit inside its person", k.face_overlap, 0.1, 1, 0.05],
   ];
   return rows.map(([key, label, value, min, max, step]) =>
     `<label>${label} <input type="range" min="${min}" max="${max}" step="${step}" value="${value}" data-cfg="${key}"> <span class="mono" data-cfg-val="${key}">${value}</span></label>`
   ).join("")
-    + `<button class="primary" id="cfgSave" style="width:100%;margin-top:8px">Save tuning</button>`
-    + `<div class="muted">Saved values apply to the next batch run.</div>`;
+    + `<button class="primary" id="cfgSave" style="width:100%;margin-top:8px">Save settings</button>`
+    + `<div class="muted">Changes apply on the next run.</div>`;
 }
 
 function daysHTML() {
@@ -203,7 +203,7 @@ function clustersHTML() {
         <div class="strip">${renderCrops(c.crops || [], 26, 36)}</div>
         <div class="item-info">
           <div class="item-name">${c.proposed_name ? esc(c.proposed_name) : '<span class="muted">unnamed</span>'}</div>
-          <div class="item-meta mono">cluster ${c.cluster} · ${(c.confidence * 100).toFixed(0)}% · ${c.appearances} ap</div>
+          <div class="item-meta mono">group ${c.cluster} · ${(c.confidence * 100).toFixed(0)}% · ${c.appearances} photos</div>
         </div>
       </div>
     </div>
@@ -216,7 +216,8 @@ function dryBatchesHTML() {
   const pending = dryBatches.filter(b => !b.promoted_at).length;
   return `
     <div class="dry-batches">
-      ${pending > 1 ? `<button id="promoteAll" class="primary" style="width:100%;margin-bottom:8px" title="Promote every un-promoted dry-run batch in one click">Promote all (${pending} batches)</button>` : ""}
+      <div class="batch-id" style="margin-bottom:8px">Pending writes — approved, not yet in Immich</div>
+      ${pending > 1 ? `<button id="promoteAll" class="primary" style="width:100%;margin-bottom:8px" title="Write every approved change to Immich in one go">Write all to Immich (${pending} groups)</button>` : ""}
       ${dryBatches.map(b => {
         // Server shape: {id, name, window, cluster, timestamp, promoted_at,
         // actions: [{asset_id, appearance, head_box, status, message}]}
@@ -225,13 +226,13 @@ function dryBatchesHTML() {
           counts[a.status] = (counts[a.status] || 0) + 1;
         }
         const summary = Object.entries(counts)
-          .map(([status, n]) => `${status} ×${n}`)
+          .map(([status, n]) => `${({ would_write: "ready", conflict_skip: "label conflict", no_head_skip: "no face found", error: "failed" })[status] ?? status} ×${n}`)
           .join(" · ");
         return `
         <div class="dry-batch">
-          <div class="batch-id">Dry-run batch ${b.id} — ${esc(b.window || "")} / ${b.cluster ?? "?"} → ${esc(b.name || "?")}</div>
+          <div class="batch-id" title="${esc(b.id)}">Approved ${b.timestamp ? new Date(b.timestamp).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : ""} — ${esc(b.name || "?")} · ${esc(b.window || "")}</div>
           <div class="batch-entries">${esc(summary || "no actions")}</div>
-          ${b.promoted_at ? '<span class="chip ok">promoted</span>' : `<button class="primary" data-promote="${b.id}">Promote to real write</button>`}
+          ${b.promoted_at ? '<span class="chip ok">written to Immich</span>' : `<button class="primary" data-promote="${b.id}">Write to Immich</button>`}
         </div>
       `;
       }).join("")}
@@ -249,7 +250,7 @@ function mainHTML() {
       <span class="cluster-id mono">${c.window} / ${c.cluster}</span>
       <h2>${c.proposed_name ? esc(c.proposed_name) : '<span class="muted">unnamed cluster</span>'}</h2>
     </div>
-    <div class="muted cluster-anchor">${c.anchor || "no anchor found"} · window conf ${(c.confidence * 100).toFixed(0)}%</div>
+    <div class="muted cluster-anchor">${c.anchor || "no Immich label found"} · group confidence ${(c.confidence * 100).toFixed(0)}%</div>
     <div class="evgrid" id="evgrid"></div>
   `;
 }
@@ -262,7 +263,7 @@ function paneHTML() {
   const hasName = a.proposed_name != null;
   return `
     <div class="name-display">${hasName ? esc(a.proposed_name) : '<span class="muted">—</span>'}</div>
-    <div class="cluster-meta muted">${a.total_appearances} appearances · ${a.writable} writable · ${a.conflicted} conflict · ${a.no_head ?? a.ask_for_name ?? 0} no-head</div>
+    <div class="cluster-meta muted">${a.total_appearances} faces · ${a.writable} to write · ${a.conflicted} label conflicts · ${a.no_head ?? a.ask_for_name ?? 0} without a face</div>
     ${!hasName ? `<button class="b-name primary" style="width:100%;margin-bottom:10px">Name this cluster</button>` : ""}
     <div class="name-prompt">
       <label class="muted">Assign to</label>
@@ -273,7 +274,7 @@ function paneHTML() {
     <div class="actions">
       ${state.activeKey !== null ? `
         <button class="b-ok primary">
-          ${state.dryRun ? "Record (dry-run)" : `Write ${a.writable || 0} faces`}
+          ${state.dryRun ? `Approve ${a.writable || 0} for review` : `Write ${a.writable || 0} faces`}
         </button>
         <button class="b-skip">Skip cluster</button>
       ` : `<div class="chip">Select a cluster</div>`}
@@ -282,7 +283,7 @@ function paneHTML() {
       <button class="b-reopen" data-key="${a.window}:${a.cluster}" style="width:100%;margin-top:8px">Reopen dismissed cluster</button>
     ` : ""}
     <hr>
-    <div class="footer muted">⚙ Config (top right) holds the tuning knobs; store wipes stay out of this screen.</div>
+    <div class="footer muted">⚙ Settings (top right) adjust how photos are grouped — changes apply on the next run.</div>
     ${dryBatchesHTML()}
   `;
 }
@@ -367,7 +368,7 @@ function renderEvidence() {
   if (state.evidenceLoading) {
     // The cluster just switched: show an explicit loading state instead of
     // the previous cluster's cards.
-    grid.innerHTML = `<div class="evloading">loading appearances\u2026</div>`;
+    grid.innerHTML = `<div class="evloading">loading photos\u2026</div>`;
     return;
   }
   grid.innerHTML = state.evidence
@@ -426,7 +427,7 @@ function renderReviewShell(root) {
       <span class="chip acc">${(state.review?.total_writable ?? 0)} writes pending</span>
       <span class="spacer"></span>
       <div class="knobs">
-        <label><input type="checkbox" id="dryToggle" ${state.dryRun ? "checked" : ""}> dry-run</label>
+        <label><input type="checkbox" id="dryToggle" ${state.dryRun ? "checked" : ""}>review before writing</label>
       </div>
       <button id="viewQueue" class="primary">Back to queue</button>
       <div class="cfgpop" id="cfgPop">${configPopoverHTML()}</div>
@@ -506,7 +507,7 @@ function renderPersonPane(tab) {
     const clusters = [...byCluster.entries()].map(([cluster, cards]) => `
       <div class="rv-day">
         <span class="rv-dayname">${window}</span>
-        <span class="item-meta mono">cluster ${cluster} · ${cards.filter(c => c.included).length}/${cards.length} write</span>
+        <span class="item-meta mono">group ${cluster} · ${cards.filter(c => c.included).length} of ${cards.length} to write</span>
       </div>
       <div class="evgrid">${cards.map(c => evidenceCardHTML(c, { proposed_name: tab.name })).join("")}</div>
     `).join("");
@@ -522,11 +523,11 @@ function renderPersonPane(tab) {
   const globalBar = `
     <div class="rv-global">
       <button id="rvConfirm" class="primary" ${tab.writable ? "" : "disabled"}>
-        ${state.dryRun ? `Record (dry-run): ${tab.writable} writes` : `Write ${tab.writable} faces`}
+        ${state.dryRun ? `Approve ${tab.writable} writes for review` : `Write ${tab.writable} faces`}
       </button>
       <button id="rvAll">All</button>
       <button id="rvNone">None</button>
-      <span class="muted">one click records every write for ${esc(tab.name)} — one dry-run batch per day/cluster</span>
+      <span class="muted">one click approves every write for ${esc(tab.name)} — grouped by day</span>
     </div>
   `;
   return globalBar + sections + labeledSection;
@@ -536,7 +537,7 @@ function renderUnnamedSections() {
   return state.review.unnamed.map(g => `
     <div class="rv-day">
       <span class="rv-dayname">${g.window}</span>
-      <span class="item-meta mono">cluster ${g.cluster} · ${g.cards.length} appearances</span>
+      <span class="item-meta mono">group ${g.cluster} · ${g.cards.length} photos</span>
       <button class="b-opencluster" data-window="${g.window}" data-cluster="${g.cluster}">Open in queue to name it</button>
     </div>
     <div class="evgrid">${g.cards.map(c => evidenceCardHTML(c, null)).join("")}</div>
@@ -611,7 +612,7 @@ async function confirmAllWrites() {
       return;
     }
     if (state.dryRun) {
-      toast(`recorded (dry-run): ${data.count} writes in ${data.batch_ids.length} batch(es) — promote from the queue's action pane`);
+      toast(`approved ${data.count} writes in ${data.batch_ids.length} group(s) — use “Write all to Immich” when ready`);
       loadDryRunBatches();
     } else {
       const written = data.groups.reduce((n, g) => n + (g.result.results?.filter(r => r.status === "written").length || 0), 0);
@@ -795,7 +796,7 @@ function wirePaneEvents() {
         const row = activeRow();
         if (row) {
           row.proposed_name = v;
-          toast(`${row.window} / ${row.cluster} → ${v} (${state.people.includes(v) ? "existing" : "new"})`);
+          toast(`Group on ${row.window} named ${v} (${state.people.includes(v) ? "existing person" : "new person"}).`);
         }
         render();
       }
@@ -827,7 +828,7 @@ async function promoteBatch(id) {
       toast(`promote failed: ${data.error}`);
       return;
     }
-    toast(`promoted batch ${id}: ${data.results.filter(r => r.status === "written").length} written`);
+    toast(`wrote ${data.results.filter(r => r.status === "written").length} faces to Immich`);
     loadDryRunBatches();
   } catch (err) {
     toast(`promote error: ${err.message}`);
@@ -846,7 +847,7 @@ async function promoteAll() {
       (n, r) => n + (r.results?.filter(x => x.status === "written").length || 0),
       0
     );
-    toast(`promoted ${data.promoted} batch(es): ${written} faces written`);
+    toast(`wrote ${written} faces to Immich from ${data.promoted} group(s)`);
     loadDryRunBatches();
   } catch (err) {
     toast(`promote-all error: ${err.message}`);
@@ -872,7 +873,7 @@ async function saveConfig() {
       toast(`tuning rejected: ${data.error}`);
     } else {
       state.configKnobs = data.knobs;
-      toast("tuning saved — applies to the next batch run");
+      toast("settings saved — applies on the next run");
       render();
     }
   } catch (err) {
@@ -1193,7 +1194,7 @@ async function doConfirm(key) {
   if (!c.proposed_name) {
     namePrompt(key, name => {
       c.proposed_name = name;
-      c.anchor = `named manually (${state.people.includes(name) ? "existing" : "new"})`;
+      c.anchor = `named by you (${state.people.includes(name) ? "existing person" : "new person"})`;
       doConfirm(key);
     });
     return;
@@ -1262,7 +1263,7 @@ function namePrompt(key, onPick) {
       const c = state.clusters.find(x => keyOf(x) === key);
       if (c) {
         c.proposed_name = name;
-        c.anchor = `named manually (${state.people.includes(name) ? "existing" : "new"})`;
+        c.anchor = `named by you (${state.people.includes(name) ? "existing person" : "new person"})`;
       }
       if (
         state.assignment &&
@@ -1303,8 +1304,8 @@ function statusChip(status) {
   const map = {
     will_write: ["ok", "will write"],
     already_labeled: ["acc", "already labeled"],
-    conflict_skip: ["bad", "conflict — skip"],
-    no_head_skip: ["warn", "no head — skip"],
+    conflict_skip: ["bad", "label conflict"],
+    no_head_skip: ["warn", "no face found"],
     ask_for_name: ["", "needs a name"],
     rejected: ["bad", "excluded"],
   };

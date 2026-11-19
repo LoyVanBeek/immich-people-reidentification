@@ -46,7 +46,7 @@ A buildable spec for Re-ID v1: a Python (uv-packaged) Docker container on the Pi
 
 - Manual backfill of the historical library: out of scope for v1 (see Out of scope); feasibility is now known — a full ~30k pass estimates at 2–10 h on the Pi 5, under ~2 h embedding-only via reused Immich detections. Returns as a fresh effort after v1.
 - Scheduler mechanics: nightly run via cron/systemd timer vs a loop inside the container.
-- Tuning knobs as they surface during use.
+- Tuning knobs as they surface during use. Systematic calibration from confirmed human input is charted as its own effort: [Re-ID calibration v1 — Map](../reid-calibration/map.md).
 - Embedding/model versioning: what happens to stored embeddings when the embedding model or detector changes.
 
 ## Out of scope

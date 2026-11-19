@@ -229,9 +229,9 @@ async function testBootRendersWithDryRunBatchPresent() {
   // render() and left the workspace frozen on stale DOM.
   const batchCard = document.querySelector(".dry-batch");
   assert.ok(batchCard, "dry-run batch card missing");
-  assert.match(batchCard.textContent, /Dry-run batch batch-1/);
-  assert.match(batchCard.textContent, /would_write ×1/);
-  assert.match(batchCard.textContent, /conflict_skip ×1/);
+  assert.match(batchCard.textContent, /Approved.*Alice/);
+  assert.match(batchCard.textContent, /ready ×1/);
+  assert.match(batchCard.textContent, /label conflict ×1/);
   assert.ok(batchCard.querySelector("[data-promote='batch-1']"), "promote button missing");
   assert.ok(header(document) === "2026-11-17 / 0", "initial header wrong");
 }
@@ -309,7 +309,7 @@ async function testInstantSwitchShowsLoadingState() {
   assert.equal(document.querySelectorAll(".evcard").length, 0, "previous cluster's cards lingered");
   // Action counts come from the cluster row at click time (2 appearances).
   const meta = document.querySelector(".cluster-meta")?.textContent || "";
-  assert.match(meta, /2 appearances/, "action counts not updated at click time");
+  assert.match(meta, /2 faces/, "action counts not updated at click time");
 
   await flush(window, 250); // fetch resolves
   assert.ok(!document.querySelector(".evloading"), "loading state never cleared");
@@ -479,7 +479,7 @@ async function testReviewPageTogglesAndRenders() {
   assert.ok(tabs.some(t => t.includes("Steffie")), "person tab missing");
   assert.ok(tabs.some(t => t.includes("unnamed")), "unnamed tab missing");
   assert.ok(
-    document.body.textContent.includes("Record (dry-run): 2 writes"),
+    document.body.textContent.includes("Approve 2 writes for review"),
     "global dry-run action missing"
   );
 
