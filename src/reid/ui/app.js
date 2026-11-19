@@ -8,6 +8,7 @@ let state = {
   activeDay: null, // which day's clusters the second pane shows
   activeKey: null, // "window:cluster" — cluster numbers repeat across windows
   evidence: [],
+  evidenceLoading: false, // evidence fetch in flight for the active cluster
   assignment: null,
   stats: [],
   configKnobs: null,
@@ -15,6 +16,7 @@ let state = {
   dryRun: true,
 };
 let keyHandler = null;
+let evidenceToken = 0; // discards stale fetches when the selection moves on
 
 function keyOf(row) {
   return `${row.window}:${row.cluster}`;
@@ -48,9 +50,24 @@ async function loadInitialState() {
 }
 
 async function loadEvidence(cluster, window) {
-  const data = await fetchJson(`/api/evidence?cluster=${cluster}&window=${encodeURIComponent(window)}`);
-  state.evidence = data;
-  renderEvidence();
+  const token = ++evidenceToken;
+  try {
+    const data = await fetchJson(`/api/evidence?cluster=${cluster}&window=${encodeURIComponent(window)}`);
+    if (token !== evidenceToken) return; // a newer selection superseded this fetch
+    state.evidence = data;
+    state.evidenceLoading = false;
+    renderEvidence();
+    // Refine the actions-pane counts now that the real evidence is in.
+    const row = activeRow();
+    if (row) {
+      state.assignment = buildAssignment(row);
+      renderPane();
+    }
+  } catch (err) {
+    if (token !== evidenceToken) return;
+    state.evidenceLoading = false;
+    toast(`failed to load evidence: ${err.message}`);
+  }
 }
 
 async function loadPeople() {
@@ -260,6 +277,12 @@ function paneHTML() {
 function renderEvidence() {
   const grid = document.getElementById("evgrid");
   if (!grid) return;
+  if (state.evidenceLoading) {
+    // The cluster just switched: show an explicit loading state instead of
+    // the previous cluster's cards.
+    grid.innerHTML = `<div class="evloading">loading appearances…</div>`;
+    return;
+  }
   const assignment = state.assignment;
   grid.innerHTML = state.evidence.map(e => {
     const [chipClass, chipText] = statusChip(e.status);
@@ -374,6 +397,11 @@ function selectCluster(key) {
   const row = activeRow();
   if (row) {
     state.activeDay = row.window;
+    // Switch immediately: drop the previous cluster's cards and show the
+    // pane-level loading state until the fetch lands. Header, cluster
+    // pane and action counts all update at click time.
+    state.evidence = [];
+    state.evidenceLoading = true;
     loadEvidence(row.cluster, row.window);
     state.assignment = buildAssignment(row);
   }
@@ -567,8 +595,26 @@ async function dismissCluster(cluster, window, dismissed) {
 }
 
 function buildAssignment(clusterRow) {
-  // Build assignment pane from cluster row + evidence
+  // Evidence for this cluster may not be loaded yet (the fetch is in
+  // flight). The cluster row carries the server's own counts, so the
+  // actions pane is correct at click time and refines when evidence lands.
   const w = state.evidence.filter(e => e.cluster === clusterRow.cluster && e.window === clusterRow.window);
+  if (!w.length && clusterRow.appearances != null) {
+    return {
+      cluster: clusterRow.cluster,
+      window: clusterRow.window,
+      cluster_status: clusterRow.status,
+      proposed_name: clusterRow.proposed_name,
+      anchor: clusterRow.anchor,
+      total_appearances: clusterRow.appearances,
+      writable: clusterRow.writable,
+      conflicted: clusterRow.conflicted,
+      no_head: clusterRow.ask_for_name,
+      labeled: clusterRow.labeled,
+      existing_people: state.people,
+    };
+  }
+  // Build assignment pane from cluster row + evidence
   const writable = w.filter(e => e.status === "will_write").length;
   const conflicted = w.filter(e => e.status === "conflict_skip").length;
   const no_head = w.filter(e => e.status === "no_head_skip").length;
@@ -589,6 +635,10 @@ async function doConfirm(key) {
   if (key === null) return;
   const c = state.clusters.find(x => keyOf(x) === key);
   if (!c || c.status !== "open") return;
+  if (state.evidenceLoading) {
+    toast("evidence still loading — one moment");
+    return;
+  }
 
   if (!c.proposed_name) {
     namePrompt(key, name => {

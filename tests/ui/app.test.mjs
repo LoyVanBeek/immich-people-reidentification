@@ -33,11 +33,8 @@ const DRY_BATCH = {
     { asset_id: "asset-b", appearance: 1, head_box: null, status: "conflict_skip", message: "existing label" },
   ],
 };
-const EVIDENCE = [
-  { asset_id: "asset-a", appearance: 0, window: "2026-11-17", cluster: 0, date: "2026-11-17", confidence: 0.9, status: "will_write", included: true, immich_label: null },
-];
 
-function makeDom() {
+function makeDom(opts = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>
     <div id="app"></div><div id="modalhost"></div><div id="toasthost"></div>
   </body></html>`, { url: "http://localhost/", runScripts: "outside-only" });
@@ -68,7 +65,21 @@ function makeDom() {
         dry_run: true,
       };
     } else if (path.startsWith("/api/evidence")) {
-      json = EVIDENCE;
+      // Evidence is per-cluster so tests can tell stale fetches apart.
+      const cluster = new URLSearchParams(path.split("?")[1]).get("cluster");
+      json = [{
+        asset_id: `asset-c${cluster}`,
+        appearance: 0,
+        window: new URLSearchParams(path.split("?")[1]).get("window"),
+        cluster: Number(cluster),
+        date: "2026-11-17",
+        confidence: 0.9,
+        status: "will_write",
+        included: true,
+        immich_label: null,
+      }];
+      const delay = opts.evidenceDelayFor ? opts.evidenceDelayFor(cluster) : 0;
+      if (delay) await new Promise(r => setTimeout(r, delay));
     } else if (path === "/api/dry-run-batches") {
       json = [DRY_BATCH];
     } else {
@@ -167,11 +178,56 @@ async function testPaneErrorDoesNotFreezeTheWorkspace() {
   assert.ok(sel && sel.dataset.key === "2026-11-17:1", "cluster selection lost after a pane error");
 }
 
+async function testInstantSwitchShowsLoadingState() {
+  // Clicking a cluster must switch the evidence pane immediately: no stale
+  // cards from the previous cluster, a visible loading state, the header
+  // and action counts updated — while the fetch is still in flight.
+  const { window, document } = makeDom({ evidenceDelayFor: () => 150 });
+  await window.eval("boot()");
+  await flush(window);
+
+  clickAll(window, document, '.clusters .item[data-key="2026-11-17:1"]');
+  await flush(window, 10); // fetch still in flight
+
+  assert.equal(header(document), "2026-11-17 / 1", "header did not switch instantly");
+  assert.ok(document.querySelector(".evloading"), "no loading state while fetching");
+  assert.equal(document.querySelectorAll(".evcard").length, 0, "previous cluster's cards lingered");
+  // Action counts come from the cluster row at click time (2 appearances).
+  const meta = document.querySelector(".cluster-meta")?.textContent || "";
+  assert.match(meta, /2 appearances/, "action counts not updated at click time");
+
+  await flush(window, 250); // fetch resolves
+  assert.ok(!document.querySelector(".evloading"), "loading state never cleared");
+  const card = document.querySelector(".evcard");
+  assert.ok(card && card.dataset.asset === "asset-c1", "fetched evidence not rendered");
+}
+
+async function testStaleEvidenceFetchIsDiscarded() {
+  // A slow fetch for an older selection must never overwrite a newer one.
+  const { window, document } = makeDom({
+    evidenceDelayFor: cluster => (cluster === "0" ? 200 : 10),
+  });
+  await window.eval("boot()");
+  await flush(window);
+
+  clickAll(window, document, '.clusters .item[data-key="2026-11-17:0"]'); // slow (200ms)
+  await flush(window, 10);
+  clickAll(window, document, '.clusters .item[data-key="2026-11-17:1"]'); // fast (10ms)
+  await flush(window, 300); // both resolved by now
+
+  assert.equal(header(document), "2026-11-17 / 1", "selection moved on");
+  const card = document.querySelector(".evcard");
+  assert.ok(card && card.dataset.asset === "asset-c1", "stale fetch overwrote the newer selection");
+  assert.ok(!document.querySelector(".evloading"), "loading state stuck after race");
+}
+
 const tests = [
   testBootRendersWithDryRunBatchPresent,
   testDayClickSelectsAndLoads,
   testClusterClickSelects,
   testPaneErrorDoesNotFreezeTheWorkspace,
+  testInstantSwitchShowsLoadingState,
+  testStaleEvidenceFetchIsDiscarded,
 ];
 for (const test of tests) {
   await test();

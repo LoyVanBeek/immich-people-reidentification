@@ -213,6 +213,26 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 10px;
 }
+/* Evidence fetch in flight after a cluster switch. */
+.evloading {
+  grid-column: 1/-1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 48px 0;
+  color: var(--dim);
+  font-size: 13px;
+}
+.evloading::before {
+  content: "";
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
 .evcard {
   background: var(--panel);
   border: 1px solid var(--line);

@@ -1,0 +1,2 @@
+# TODO
+- [ ] When finding overlapping people, subtract the foreground's box from the background box, so that appearance bounding boxes do not overlap, so that it is 100% clear what person a detection belongs to.  
