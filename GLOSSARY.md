@@ -67,3 +67,15 @@ _Avoid_: write log, journal
 **Tombstone**:
 A write-ledger entry marking an asset–person pair the user removed in Immich directly. Such pairs are never re-proposed.
 _Avoid_: deletion record
+
+**Review decision**:
+A judgment the human made in the confirmation UI — pin, reject, ignore, cluster dismissal, a confirmed person label, or a spot-check verdict. Survives wipes and batch runs: it is the operator's voice, not pipeline state. Pipeline state (embeddings, proposals, write ledger, tombstones, checkpoint) is erased by a wipe; review decisions are not.
+_Avoid_: preference, setting (a review decision is per-appearance or per-cluster evidence, not configuration)
+
+**Appearance label**:
+The per-appearance person verdict a review decision records: same-person (confirm, ask-for-name answer, pin) or not-this-person (reject). The evidence calibration learns from. Distinct from the write ledger, which journals what was written to Immich, and from Immich's own face labels, which are Immich's recognition, not the human's verdict.
+_Avoid_: write ledger entry, Immich label, ground truth
+
+**Spot-check**:
+The calibration-time review where the human sees crops sitting near a quality gate — just above or below the confidence floor or the minimum box height — and marks each one person or not-person. These verdicts are the gates' only human signal, because a detection a gate drops never becomes an appearance and never reaches the confirmation UI.
+_Avoid_: reject (that means wrong person, not wrong detection), gate audit

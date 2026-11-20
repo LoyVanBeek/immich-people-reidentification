@@ -1,9 +1,9 @@
 """The head/face detector: SCRFD-500M via ONNX Runtime.
 
-Runs on person crops (letterboxed to 320x320) to find a face box,
-which is then expanded geometrically to a head box. This is the
-fallback when Immich's own unassigned face detections don't cover
-the person box.
+Runs on person crops (letterboxed to the model's expected input size) to
+find a face box, which is then expanded geometrically to a head box.
+This is the fallback when Immich's own unassigned face detections don't
+cover the person box.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ class HeadDetectorConfig:
     """Configuration for the SCRFD head detector."""
 
     weights_path: str
-    input_size: int = 320  # 320x320 letterboxed input per spec
+    input_size: int = 320  # fallback letterbox size; the model's shape wins
     confidence_threshold: float = 0.5  # minimum face score to accept
     # Face box -> head box expansion constants (tunable)
     top_expansion_ratio: float = 0.55  # extend top by this * face_height
@@ -50,6 +50,18 @@ class HeadDetector:
     def __init__(self, cfg: HeadDetectorConfig) -> None:
         self._cfg = cfg
         self._session = self._load_session(cfg.weights_path)
+        # The packaged model fixes its input size (e.g. 640x640); letterbox
+        # to whatever the model actually expects instead of the configured
+        # default, or inference fails with a dimension mismatch.
+        self._input_size = self._effective_input_size()
+
+    def _effective_input_size(self) -> int:
+        """The input size the loaded model expects (config value as fallback)."""
+        shape = self._session.get_inputs()[0].shape
+        dims = [d for d in shape[2:4] if isinstance(d, int) and d > 0]
+        if len(dims) == 2 and dims[0] == dims[1]:
+            return dims[0]
+        return self._cfg.input_size
 
     def _load_session(self, weights_path: str) -> ort.InferenceSession:
         providers = ["CPUExecutionProvider"]
@@ -66,7 +78,7 @@ class HeadDetector:
         Returns the highest-scoring face detection above the confidence
         threshold, or None if no face is found.
         """
-        # Preprocess: letterbox to 320x320
+        # Preprocess: letterbox to the model's expected input size
         input_tensor, scale, pad_left, pad_top = self._preprocess(crop_bgr)
 
         # Run inference
@@ -90,9 +102,9 @@ class HeadDetector:
         return best
 
     def _preprocess(self, image: np.ndarray) -> tuple[np.ndarray, float, int, int]:
-        """Letterbox resize to input_size x input_size, return tensor and transform params."""
+        """Letterbox resize to the model's input size, return tensor and transform params."""
         height, width = image.shape[:2]
-        scale = self._cfg.input_size / max(height, width)
+        scale = self._input_size / max(height, width)
         new_height = int(height * scale)
         new_width = int(width * scale)
 
@@ -103,10 +115,10 @@ class HeadDetector:
 
         # Pad to square
         padded = np.full(
-            (self._cfg.input_size, self._cfg.input_size, 3), 114, dtype=np.uint8
+            (self._input_size, self._input_size, 3), 114, dtype=np.uint8
         )  # 114 = typical SCRFD pad value
-        pad_top = (self._cfg.input_size - new_height) // 2
-        pad_left = (self._cfg.input_size - new_width) // 2
+        pad_top = (self._input_size - new_height) // 2
+        pad_left = (self._input_size - new_width) // 2
         padded[pad_top : pad_top + new_height, pad_left : pad_left + new_width] = (
             resized
         )
@@ -128,50 +140,40 @@ class HeadDetector:
         original_shape: tuple[int, int],
     ) -> list[FaceDetection]:
         """Parse SCRFD multi-scale outputs into face detections in original crop coordinates."""
-        # SCRFD outputs: [cls_8, bbox_8, kps_8, cls_16, bbox_16, kps_16, cls_32, bbox_32, kps_32]
-        # Each cls: (1, num_anchors, 1), each bbox: (1, num_anchors, 4), each kps: (1, num_anchors, 10)
-        # We only use cls and bbox. Strides: 8, 16, 32.
-
+        # The insightface scrfd2onnx export groups outputs by kind:
+        # [score_8, score_16, score_32, bbox_8, bbox_16, bbox_32].
+        # Each score: (1, num_anchors*fh*fw, 1); each bbox: (..., 4).
+        # Box values are per-coordinate distances to the anchor center,
+        # scaled by the stride — no exp, no half-width form.
         strides = [8, 16, 32]
+        num_anchors = 2
         detections: list[FaceDetection] = []
 
-        # Group outputs by stride: each stride has 3 outputs (cls, bbox, kps)
         for i, stride in enumerate(strides):
-            cls_idx = i * 3
-            bbox_idx = i * 3 + 1
-            # kps_idx = i * 3 + 2  # ignored
+            cls_map = outputs[i][0]  # (N, 1)
+            bbox_map = outputs[len(strides) + i][0]  # (N, 4)
+            if cls_map.shape[0] != bbox_map.shape[0]:
+                continue
 
-            cls_map = outputs[cls_idx][0]  # (num_anchors, 1)
-            bbox_map = outputs[bbox_idx][0]  # (num_anchors, 4)
+            fm_h = self._input_size // stride
+            fm_w = self._input_size // stride
+            anchor_centers = self._generate_anchors(fm_h, fm_w, stride, num_anchors)
+            if anchor_centers.shape[0] != cls_map.shape[0]:
+                continue  # export layout mismatch: skip rather than misplace
 
-            # Feature map size for this stride
-            fm_h = self._cfg.input_size // stride
-            fm_w = self._cfg.input_size // stride
-
-            # Generate anchor centers
-            anchor_centers = self._generate_anchors(fm_h, fm_w, stride)
-
-            # Decode boxes
             for j in range(cls_map.shape[0]):
                 score = float(cls_map[j, 0])
                 if score < self._cfg.confidence_threshold:
                     continue
 
-                # Decode bbox: [dx, dy, dw, dh] relative to anchor center
-                _dx, _dy, dw, dh = bbox_map[j]
                 cx, cy = anchor_centers[j]
-
-                # SCRFD box decoding: assumes insightface's raw SCRFD ONNX export format.
-                # The export from insightface/tools/scrfd2onnx.py outputs [dx, dy, dw, dh]
-                # where dw/dh are log-space width/height deltas relative to stride.
-                # Other exporters may output pre-decoded boxes (x1,y1,x2,y2) directly.
-                # If coordinates look wildly wrong, verify the ONNX output format matches.
-                w = float(np.exp(dw) * stride)
-                h = float(np.exp(dh) * stride)
-                x1 = cx - w * 0.5
-                y1 = cy - h * 0.5
-                x2 = cx + w * 0.5
-                y2 = cy + h * 0.5
+                d_left, d_top, d_right, d_bottom = (
+                    float(v) * stride for v in bbox_map[j]
+                )
+                x1 = cx - d_left
+                y1 = cy - d_top
+                x2 = cx + d_right
+                y2 = cy + d_bottom
 
                 # Map back to original crop coordinates (remove padding, scale back)
                 x1 = (x1 - pad_left) / scale
@@ -192,15 +194,20 @@ class HeadDetector:
         # NMS
         return self._nms(detections)
 
-    def _generate_anchors(self, fm_h: int, fm_w: int, stride: int) -> np.ndarray:
-        """Generate anchor centers for a feature map."""
-        # SCRFD anchors: centers at stride/2, 3*stride/2, ... across the feature map
-        # Output shape: (fm_h * fm_w, 2)
+    def _generate_anchors(
+        self, fm_h: int, fm_w: int, stride: int, num_anchors: int
+    ) -> np.ndarray:
+        """Generate anchor centers for a feature map.
+
+        SCRFD places num_anchors per grid cell at ((i + 0.5) * stride,
+        (j + 0.5) * stride), tiled so the flat order matches the ONNX
+        outputs (row-major, each cell's anchors consecutive).
+        """
         ys = (np.arange(fm_h) + 0.5) * stride
         xs = (np.arange(fm_w) + 0.5) * stride
         yy, xx = np.meshgrid(ys, xs, indexing="ij")
-        anchors = np.stack([xx.ravel(), yy.ravel()], axis=1)  # (N, 2)
-        return anchors.astype(np.float32)
+        centers = np.stack([xx.ravel(), yy.ravel()], axis=1)  # (fm_h*fm_w, 2)
+        return np.repeat(centers, num_anchors, axis=0).astype(np.float32)
 
     def _nms(self, detections: list[FaceDetection]) -> list[FaceDetection]:
         """Non-maximum suppression on face detections."""

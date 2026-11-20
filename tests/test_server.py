@@ -1299,6 +1299,103 @@ class TestServerAPI:
         # Second call: nothing left to promote.
         assert server.promote_all()["promoted"] == 0
 
+    def test_write_pending_writes_only_the_selected(
+        self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
+    ) -> None:
+        """Per-item writes: the selected action is written and marked, the
+        unselected one stays pending, and the batch closes only when
+        everything in it is written."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        asset_a = library.PHOTO_1_STANDING_ID
+        asset_b = library.PHOTO_2_BLURRED_ID
+        for asset_id in (asset_a, asset_b):
+            server.store.add_appearances(
+                asset_id,
+                [
+                    Appearance(
+                        asset_id=asset_id,
+                        appearance=0,
+                        embedding=b"\x00" * 512,
+                        confidence=0.9,
+                        box_left=200.0,
+                        box_top=100.0,
+                        box_right=600.0,
+                        box_bottom=500.0,
+                        pixel_source="preview",
+                        captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                    ),
+                ],
+            )
+            # An unassigned Immich face claims the appearance: its head box
+            # comes from Immich (deterministic), so the recorded action is a
+            # clean would_write.
+            ui_stub.faces[asset_id] = [
+                {
+                    "id": f"face-unassigned-{asset_id}",
+                    "assetId": asset_id,
+                    "person": None,
+                    "boundingBoxX1": 300.0,
+                    "boundingBoxY1": 200.0,
+                    "boundingBoxX2": 500.0,
+                    "boundingBoxY2": 400.0,
+                    "imageWidth": 1440,
+                    "imageHeight": 1440,
+                    "sourceType": "machine-learning",
+                }
+            ]
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id=asset_a,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+                Proposal(
+                    asset_id=asset_b,
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+            ]
+        )
+        server.confirm_all({"dry_run": True})
+        batch = server.store.get_dry_run_batches()[0]
+        assert len(batch.actions) == 2
+
+        # The review's pending section lists both, pre-checked.
+        review = server.get_write_review()
+        assert len(review["pending"]) == 2
+        assert all(p["default_included"] for p in review["pending"])
+
+        # Write only the first item.
+        result = server.write_pending(
+            {"items": [{"batch_id": batch.id, "asset_id": asset_a, "appearance": 0}]}
+        )
+        assert result["written"] == 1
+
+        # The unselected one stays pending; the batch is not closed yet.
+        review = server.get_write_review()
+        assert len(review["pending"]) == 1
+        assert review["pending"][0]["asset_id"] == asset_b
+        still_open = server.store.get_dry_run_batch(batch.id)
+        assert still_open is not None
+        assert still_open.promoted_at is None
+
+        # Writing the last one closes the batch.
+        server.write_pending(
+            {"items": [{"batch_id": batch.id, "asset_id": asset_b, "appearance": 0}]}
+        )
+        closed = server.store.get_dry_run_batch(batch.id)
+        assert closed is not None
+        assert closed.promoted_at is not None
+        assert server.get_write_review()["pending"] == []
+
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
     ) -> None:

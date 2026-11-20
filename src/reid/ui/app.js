@@ -410,11 +410,34 @@ async function loadReview() {
   render();
   try {
     state.review = await fetchJson("/api/write-review");
-    if (!state.reviewTab || !state.review.tabs.some(t => t.name === state.reviewTab)) {
+    const validTab =
+      state.reviewTab === "__pending__" ||
+      state.reviewTab === "__unnamed__" ||
+      state.review.tabs.some(t => t.name === state.reviewTab);
+    if (!validTab) {
       state.reviewTab = state.review.tabs[0]?.name ?? null;
     }
+    // Pending-write selection: page state. New items take their default
+    // (clean writes pre-checked); existing selections survive reloads;
+    // written items drop out.
+    const seen = state.pendingSeen ?? new Set();
+    const selected = state.pendingSelected ?? new Set();
+    const pendingKeys = new Set();
+    for (const p of state.review.pending || []) {
+      const key = `${p.batch_id}:${p.asset_id}:${p.appearance}`;
+      pendingKeys.add(key);
+      if (!seen.has(key)) {
+        seen.add(key);
+        if (p.default_included) selected.add(key);
+      }
+    }
+    for (const key of [...selected]) {
+      if (!pendingKeys.has(key)) selected.delete(key);
+    }
+    state.pendingSeen = seen;
+    state.pendingSelected = selected;
   } catch (err) {
-    state.review = { tabs: [], unnamed: [], total_writable: 0, error: err.message };
+    state.review = { tabs: [], unnamed: [], total_writable: 0, pending: [], total_pending: 0, error: err.message };
   }
   render();
 }
@@ -460,7 +483,15 @@ function renderReviewTabs() {
   const unnamed = state.review.unnamed.length
     ? `<button class="rvtab ${state.reviewTab === "__unnamed__" ? "sel" : ""}" data-tab="__unnamed__">unnamed <span class="chip">${state.review.unnamed.length}</span></button>`
     : "";
-  tabsEl.innerHTML = tabs + unnamed;
+  const pendingTab = (state.review.pending?.length || state.reviewTab === "__pending__")
+    ? `<button class="rvtab ${state.reviewTab === "__pending__" ? "sel" : ""}" data-tab="__pending__">Pending writes <span class="chip white">${state.review.pending?.length || 0}</span></button>`
+    : "";
+  tabsEl.innerHTML = tabs + pendingTab + unnamed;
+  // Tabs re-render on every switch: bind them here, not in wireReviewEvents
+  // (which runs once on an empty strip).
+  tabsEl.querySelectorAll(".rvtab").forEach(el => {
+    el.addEventListener("click", () => setReviewTab(el.dataset.tab));
+  });
 }
 
 function renderReviewBody() {
@@ -470,7 +501,9 @@ function renderReviewBody() {
     body.innerHTML = `<div class="panerr">review failed to load: ${esc(state.review.error)}</div>`;
     return;
   }
-  if (state.reviewTab === "__unnamed__") {
+  if (state.reviewTab === "__pending__") {
+    body.innerHTML = renderPendingPane();
+  } else if (state.reviewTab === "__unnamed__") {
     body.innerHTML = renderUnnamedSections();
   } else {
     const tab = state.review.tabs.find(t => t.name === state.reviewTab);
@@ -544,6 +577,118 @@ function renderUnnamedSections() {
   `).join("");
 }
 
+function pendingKey(p) {
+  return `${p.batch_id}:${p.asset_id}:${p.appearance}`;
+}
+
+const PENDING_CHIP = {
+  would_write: ["ok", "ready"],
+  conflict_skip: ["bad", "label conflict"],
+  no_head_skip: ["warn", "no face found"],
+  error: ["bad", "failed"],
+};
+
+function renderPendingPane() {
+  const pending = state.review?.pending || [];
+  if (!pending.length) {
+    return `<div class="empty muted">nothing pending — every approved write is in Immich</div>`;
+  }
+  const selected = pending.filter(p => state.pendingSelected.has(pendingKey(p)));
+  const globalBar = `
+    <div class="rv-global">
+      <button id="rvWritePending" class="primary" ${selected.length ? "" : "disabled"}>
+        Write ${selected.length} selected to Immich
+      </button>
+      <button id="rvSelAll">Select all</button>
+      <button id="rvSelNone">Deselect all</button>
+      <span class="hint">Click a card to include or leave it out. Unselected items stay pending — written items disappear from this list.</span>
+    </div>
+  `;
+  const byName = new Map();
+  for (const p of pending) {
+    const name = p.name || "?";
+    if (!byName.has(name)) byName.set(name, []);
+    byName.get(name).push(p);
+  }
+  const sections = [...byName.entries()].map(([name, items]) => {
+    const byWindow = new Map();
+    for (const p of items) {
+      if (!byWindow.has(p.window)) byWindow.set(p.window, []);
+      byWindow.get(p.window).push(p);
+    }
+    return [...byWindow.entries()].map(([window, group]) => {
+      const selCount = group.filter(p => state.pendingSelected.has(pendingKey(p))).length;
+      return `
+        <div class="rv-day">
+          <span class="rv-dayname">${esc(name)}</span>
+          <span class="item-meta mono">${window} · group ${group[0].cluster} · ${selCount} of ${group.length} selected</span>
+        </div>
+        <div class="evgrid">${group.map(pendingCardHTML).join("")}</div>
+      `;
+    }).join("");
+  }).join("");
+  return globalBar + sections;
+}
+
+function pendingCardHTML(p) {
+  const key = pendingKey(p);
+  const selected = state.pendingSelected.has(key);
+  const skipped = p.status !== "would_write";
+  const [chipClass, chipText] = PENDING_CHIP[p.status] ?? ["", p.status];
+  const link = state.immichUrl
+    ? `${state.immichUrl}/photos/${encodeURIComponent(p.asset_id)}`
+    : null;
+  const nameLine = link
+    ? `<a href="${link}" target="_blank" rel="noopener" title="open ${esc(p.asset_id)} in Immich">${esc(p.asset_name || p.asset_id)}</a>`
+    : `<span title="${esc(p.asset_id)}">${esc(p.asset_name || p.asset_id)}</span>`;
+  return `
+    <div class="pcard ${selected ? "selected" : ""} ${skipped ? "skipped" : ""}" data-pending="${key}"
+      title="${selected ? "Selected — click to leave out (it stays pending)" : "Click to select for writing"}">
+      <div class="imgwrap">${cropImg({ asset_id: p.asset_id, appearance: p.appearance }, 150, 170, false)}<div class="check">✓</div></div>
+      <div class="name">${nameLine}</div>
+      <div class="writeas">write as <b>${esc(p.name)}</b></div>
+      <div class="meta2"><span class="chip ${chipClass}">${esc(chipText)}</span> ${esc(p.window)} · group ${p.cluster}</div>
+    </div>
+  `;
+}
+
+function togglePending(key) {
+  if (state.pendingSelected.has(key)) state.pendingSelected.delete(key);
+  else state.pendingSelected.add(key);
+  renderReviewBody();
+}
+
+async function writeSelectedPending() {
+  const pending = state.review?.pending || [];
+  const items = pending
+    .filter(p => state.pendingSelected.has(pendingKey(p)))
+    .map(p => ({ batch_id: p.batch_id, asset_id: p.asset_id, appearance: p.appearance }));
+  if (!items.length) {
+    toast("nothing selected");
+    return;
+  }
+  try {
+    const res = await fetch("/api/write-pending", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(`write failed: ${data.error}`);
+      return;
+    }
+    const notWritten = data.results.filter(r => r.status && r.status !== "written").length;
+    toast(
+      `wrote ${data.written} faces to Immich` +
+        (notWritten ? ` — ${notWritten} could not be written (reasons on the items)` : "")
+    );
+    loadReview();
+  } catch (err) {
+    toast(`write failed: ${err.message}`);
+  }
+}
+
 function wireReviewEvents() {
   document.getElementById("viewQueue")?.addEventListener("click", () => setView("queue"));
   document.getElementById("dryToggle")?.addEventListener("change", e => {
@@ -560,15 +705,27 @@ function wireReviewEvents() {
     });
   });
   document.getElementById("cfgSave")?.addEventListener("click", saveConfig);
-  document.querySelectorAll(".rvtab").forEach(el => {
-    el.addEventListener("click", () => setReviewTab(el.dataset.tab));
-  });
 }
 
 function wireReviewBodyEvents() {
   document.getElementById("rvConfirm")?.addEventListener("click", confirmAllWrites);
   document.getElementById("rvAll")?.addEventListener("click", () => toggleAllWrites(true));
   document.getElementById("rvNone")?.addEventListener("click", () => toggleAllWrites(false));
+  document.getElementById("rvWritePending")?.addEventListener("click", writeSelectedPending);
+  document.getElementById("rvSelAll")?.addEventListener("click", () => {
+    for (const p of state.review?.pending || []) state.pendingSelected.add(pendingKey(p));
+    renderReviewBody();
+  });
+  document.getElementById("rvSelNone")?.addEventListener("click", () => {
+    state.pendingSelected.clear();
+    renderReviewBody();
+  });
+  document.querySelectorAll(".pcard[data-pending]").forEach(el => {
+    el.addEventListener("click", e => {
+      if (e.target.closest("a")) return; // filename links open Immich, not toggle
+      togglePending(el.dataset.pending);
+    });
+  });
   document.querySelectorAll(".b-opencluster").forEach(btn => {
     btn.addEventListener("click", () => {
       state.view = "queue";

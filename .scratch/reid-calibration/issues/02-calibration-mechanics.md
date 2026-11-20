@@ -2,7 +2,7 @@
 
 Part of: [Re-ID calibration v1 — Map](../map.md)
 Type: grilling
-Status: open
+Status: claimed
 Blocked by: 01
 
 ## Question
@@ -16,5 +16,6 @@ Pin down:
 3. Cold-start behavior: minimum label/pair volumes before a knob gets a suggestion at all, and what the report shows before then.
 4. Where suggestions persist and how apply updates the config (the existing `reid.toml` sections and the ⚙/`/api/config` surface), including whether an audit trail of applied changes is kept so they can be reverted.
 5. How the six knobs interact when applied together (sweep order, which suggestion is computed against which baseline values).
+6. How labels re-bind to appearances after a wipe + re-detection (box-coord IoU, per ticket 01) and what happens to labels that match nothing (orphans: skip, surface, or prune). Label sources are settled: `appearance_label` + pins are positives, `appearance_rejection` is the negative, `gate_verdict` feeds the gates; the `tuning` table is the existing apply surface for suggested values.
 
 Grilling + domain-modeling; cross-reference with `clustering.py`, `anchoring.py`, `pipeline.py`, and the store schema before designing anything.

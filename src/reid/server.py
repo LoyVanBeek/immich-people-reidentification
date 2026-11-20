@@ -295,6 +295,12 @@ class UIAPIHandler(BaseHTTPRequestHandler):
             self._send_json(result)
         elif path == "/api/promote-all":
             self._send_json(self.ui_server.promote_all())  # type: ignore[union-attr]
+        elif path == "/api/write-pending":
+            body = self._read_json()
+            if body is None:
+                return
+            result = self.ui_server.write_pending(body)  # type: ignore[union-attr]
+            self._send_json(result)
         elif path == "/api/ignore":
             body = self._read_json()
             if body is None:
@@ -732,11 +738,42 @@ class UIServer:
         that person's already-labeled appearances alongside (matched via
         face claims), and an "unnamed" tab for clusters still needing a
         name. Cards carry the effective write decision (persisted choice,
-        defaulting to the proposal's writability).
+        defaulting to the proposal's writability). The pending section
+        lists approved-but-unwritten items from dry-run batches for the
+        per-item write flow.
         """
         proposals = self.store.proposals()
+        # Approved-but-unwritten items: un-promoted batches, un-written actions.
+        pending: list[dict[str, Any]] = []
+        for batch in self.store.get_dry_run_batches():
+            if batch.promoted_at is not None:
+                continue
+            for action in batch.actions:
+                if action.written_at is not None:
+                    continue
+                pending.append(
+                    {
+                        "batch_id": batch.id,
+                        "name": batch.name,
+                        "window": batch.window,
+                        "cluster": batch.cluster,
+                        "asset_id": action.asset_id,
+                        "appearance": action.appearance,
+                        "asset_name": self._asset_name(action.asset_id),
+                        "status": action.status.value,
+                        "default_included": (
+                            action.status == DryRunActionStatus.WOULD_WRITE
+                        ),
+                    }
+                )
         if not proposals:
-            return {"tabs": [], "unnamed": [], "total_writable": 0}
+            return {
+                "tabs": [],
+                "unnamed": [],
+                "total_writable": 0,
+                "pending": pending,
+                "total_pending": len(pending),
+            }
         appearances_by_asset = self.store.appearances_by_asset()
         decisions = self.store.write_decisions()
         rejected = set(self.store.appearance_rejections())
@@ -811,6 +848,8 @@ class UIServer:
             "tabs": tabs,
             "unnamed": unnamed_list,
             "total_writable": sum(t["writable"] for t in tabs),
+            "pending": pending,
+            "total_pending": len(pending),
         }
 
     def set_write_decision(
@@ -1715,6 +1754,10 @@ class UIServer:
                 expected_head_box=action.head_box,
             )
             results.append(result)
+            if result["status"] == WriteResultStatus.WRITTEN.value:
+                self.store.mark_dry_run_action_written(
+                    batch_id, action.asset_id, action.appearance, timestamp
+                )
 
         # Mark the batch as promoted with the person_id
         self.store.mark_dry_run_batch_promoted(batch_id, timestamp, person_id)
@@ -1728,6 +1771,109 @@ class UIServer:
             "cluster": batch.cluster,
             "results": results,
         }
+
+    def write_pending(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Write exactly the selected pending items, one click on the review page.
+
+        Each item identifies an action of an un-promoted dry-run batch. The
+        write reuses the batch promote path; every written action is marked,
+        and a batch whose actions are all written closes automatically —
+        unselected items stay pending for a later pass.
+        """
+        items = body.get("items", [])
+        if not items:
+            return {"error": "no items selected"}
+
+        by_batch: dict[str, list[tuple[str, int]]] = {}
+        for item in items:
+            batch_id = str(item.get("batch_id", ""))
+            asset_id = str(item.get("asset_id", ""))
+            try:
+                appearance = int(item.get("appearance", -1))
+            except (TypeError, ValueError):
+                return {"error": "invalid item in selection"}
+            if not batch_id or not asset_id:
+                return {"error": "invalid item in selection"}
+            by_batch.setdefault(batch_id, []).append((asset_id, appearance))
+
+        results: list[dict[str, Any]] = []
+        timestamp = datetime.now(UTC)
+        for batch_id, wanted in by_batch.items():
+            batch = self.store.get_dry_run_batch(batch_id)
+            if batch is None:
+                results.append(
+                    {"batch_id": batch_id, "error": f"batch not found: {batch_id}"}
+                )
+                continue
+            if batch.promoted_at is not None:
+                results.append({"batch_id": batch_id, "error": "batch already written"})
+                continue
+
+            write_api_key = self.cfg.immich.write_api_key
+            if not write_api_key:
+                return {"error": "write-scoped API key not configured"}
+            write_client = self._make_write_client()
+            existing_person = write_client.find_person_by_name(batch.name)
+            if existing_person is not None:
+                person_id = existing_person.id
+            else:
+                try:
+                    person_id = write_client.create_person(batch.name).id
+                except ImmichError as exc:
+                    results.append(
+                        {
+                            "batch_id": batch_id,
+                            "error": f"failed to create person: {exc.message}",
+                        }
+                    )
+                    continue
+
+            wanted_set = set(wanted)
+            appearances_by_asset = self.store.appearances_by_asset()
+            for action in batch.actions:
+                if (action.asset_id, action.appearance) not in wanted_set:
+                    continue  # stays pending for a later pass
+                if action.written_at is not None:
+                    continue  # already written
+                app_list = appearances_by_asset.get(action.asset_id, [])
+                appearance_row = next(
+                    (a for a in app_list if a.appearance == action.appearance),
+                    None,
+                )
+                if (
+                    action.status != DryRunActionStatus.WOULD_WRITE
+                    or appearance_row is None
+                ):
+                    result = {
+                        "asset_id": action.asset_id,
+                        "appearance": action.appearance,
+                        "status": WriteResultStatus.SKIPPED.value,
+                        "message": action.message or "not a writable action",
+                    }
+                else:
+                    result = self._write_appearance(
+                        write_client=write_client,
+                        asset_id=action.asset_id,
+                        appearance=appearance_row,
+                        person_id=person_id,
+                        cluster=batch.cluster,
+                        window=batch.window,
+                        timestamp=timestamp,
+                        dry_run=False,
+                        expected_head_box=action.head_box,
+                    )
+                results.append({"batch_id": batch_id, **result})
+                if result["status"] == WriteResultStatus.WRITTEN.value:
+                    self.store.mark_dry_run_action_written(
+                        batch_id, action.asset_id, action.appearance, timestamp
+                    )
+            # The batch closes once nothing in it is left un-written.
+            self.store.close_dry_run_batch_if_complete(batch_id, timestamp)
+
+        written = sum(
+            1 for r in results if r.get("status") == WriteResultStatus.WRITTEN.value
+        )
+        return {"count": len(items), "written": written, "results": results}
 
     def get_dry_run_batches(self) -> list[dict[str, Any]]:
         """Return all persisted dry-run batches as dicts."""

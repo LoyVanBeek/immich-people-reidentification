@@ -407,6 +407,33 @@ a.asset-name:hover { color: var(--accent); border-bottom-color: var(--accent); }
 .rv-global .primary { padding: 8px 14px; }
 /* Already-labeled on the review page: informational, visibly done. */
 .evcard.evlabeled { border-color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
+
+/* Pending-write cards: photo-app style selection. */
+.pcard {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pcard.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.pcard.skipped { opacity: .6; border-style: dashed; }
+.pcard .imgwrap { position: relative; width: 100%; aspect-ratio: 150/170; background: #0c0d10; border-radius: 6px; overflow: hidden; }
+.pcard .imgwrap img.crop { width: 100%; height: 100%; object-fit: cover; }
+.pcard .check {
+  position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; border-radius: 6px;
+  background: rgba(20, 22, 26, .8); border: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: center; font-size: 15px; color: transparent;
+}
+.pcard.selected .check { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pcard .name { font-family: ui-monospace, monospace; font-size: 11px; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pcard .name a { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--dim); }
+.pcard .name a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.pcard .writeas { margin-top: 5px; font-size: 11px; color: var(--text); }
+.pcard .writeas b { color: var(--accent); }
+.pcard .meta2 { color: var(--dim); font-size: 10px; margin-top: 3px; display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.chip.white { color: #fff; background: rgba(255, 255, 255, .2); }
 .writemark { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--dim); cursor: pointer; }
 .writemark:hover { color: var(--accent); }
 .b-reopen { font-size: 13px; padding: 6px 10px; }

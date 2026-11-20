@@ -83,6 +83,7 @@ class DryRunAction:
     head_box: tuple[float, float, float, float] | None
     status: DryRunActionStatus
     message: str | None = None
+    written_at: datetime | None = None  # set once the write actually happened
 
 
 @dataclass(frozen=True)
@@ -273,6 +274,12 @@ class Store:
             self._conn.execute("ALTER TABLE dry_run_batch ADD COLUMN promoted_at TEXT")
         if "person_id" not in batch_columns:
             self._conn.execute("ALTER TABLE dry_run_batch ADD COLUMN person_id TEXT")
+        action_columns = {
+            str(row[1])
+            for row in self._conn.execute("PRAGMA table_info(dry_run_action)")
+        }
+        if "written_at" not in action_columns:
+            self._conn.execute("ALTER TABLE dry_run_action ADD COLUMN written_at TEXT")
 
     def get_checkpoint(self, feed: str) -> str | None:
         row = self._conn.execute(
@@ -540,7 +547,7 @@ class Store:
             return None
 
         action_rows = self._conn.execute(
-            "SELECT asset_id, appearance, head_box, status, message FROM dry_run_action WHERE batch_id = ? ORDER BY ROWID",
+            "SELECT asset_id, appearance, head_box, status, message, written_at FROM dry_run_action WHERE batch_id = ? ORDER BY ROWID",
             (batch_id,),
         ).fetchall()
 
@@ -556,6 +563,11 @@ class Store:
                     head_box=head_box,
                     status=DryRunActionStatus(str(arow[3])),
                     message=arow[4] if arow[4] is not None else None,
+                    written_at=(
+                        datetime.fromisoformat(str(arow[5]))
+                        if arow[5] is not None
+                        else None
+                    ),
                 )
             )
 
@@ -596,6 +608,50 @@ class Store:
             self._conn.execute(
                 "UPDATE dry_run_batch SET promoted_at = ?, person_id = ? WHERE id = ?",
                 (timestamp.isoformat(), person_id, batch_id),
+            )
+
+    def mark_dry_run_action_written(
+        self, batch_id: str, asset_id: str, appearance: int, timestamp: datetime
+    ) -> None:
+        """Record that one action of a batch has actually been written.
+
+        Lets the write-review page track partial progress: a batch is done
+        when every action carries a written_at.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE dry_run_action SET written_at = ?
+                WHERE batch_id = ? AND asset_id = ? AND appearance = ?
+                """,
+                (timestamp.isoformat(), batch_id, asset_id, appearance),
+            )
+
+    def close_dry_run_batch_if_complete(
+        self, batch_id: str, timestamp: datetime
+    ) -> None:
+        """Mark the batch promoted once every action has been written.
+
+        Called after partial writes: a batch whose remaining actions were
+        all written (or which had none left) closes automatically, so the
+        pending list only shows what is genuinely left.
+        """
+        row = self._conn.execute(
+            """
+            SELECT count(*) FROM dry_run_action
+            WHERE batch_id = ? AND written_at IS NULL
+            """,
+            (batch_id,),
+        ).fetchone()
+        if int(row[0]) > 0:
+            return
+        batch = self.get_dry_run_batch(batch_id)
+        if batch is None or batch.promoted_at is not None:
+            return
+        with self._conn:
+            self._conn.execute(
+                "UPDATE dry_run_batch SET promoted_at = ? WHERE id = ?",
+                (timestamp.isoformat(), batch_id),
             )
 
     # -- wipe ----------------------------------------------------------------

@@ -95,6 +95,31 @@ const REVIEW = {
       ],
     },
   ],
+  pending: [
+    {
+      batch_id: "b1",
+      name: "Steffie",
+      window: "2026-11-17",
+      cluster: 0,
+      asset_id: "asset-p1",
+      appearance: 0,
+      asset_name: "IMG_p1.jpg",
+      status: "would_write",
+      default_included: true,
+    },
+    {
+      batch_id: "b1",
+      name: "Steffie",
+      window: "2026-11-17",
+      cluster: 0,
+      asset_id: "asset-p2",
+      appearance: 0,
+      asset_name: "IMG_p2.jpg",
+      status: "would_write",
+      default_included: true,
+    },
+  ],
+  total_pending: 2,
   unnamed: [
     {
       window: "2026-11-17",
@@ -190,11 +215,12 @@ function makeDom(opts = {}) {
     } else if (path === "/api/dry-run-batches") {
       json = [DRY_BATCH];
     } else if (path === "/api/write-review") {
-      json = REVIEW;
-    } else if (path === "/api/confirm-all") {
+      json = REVIEW;    } else if (path === "/api/confirm-all") {
       json = { groups: [], count: 2, batch_ids: ["batch-1", "batch-2"] };
     } else if (path === "/api/promote-all") {
       json = { promoted: 2, results: [] };
+    } else if (path === "/api/write-pending") {
+      json = { count: 1, written: 1, results: [] };
     } else if (path.startsWith("/api/write-decision")) {
       json = { included: true };
     } else {
@@ -575,6 +601,65 @@ async function testChipsCarryNames() {
   );
 }
 
+async function testReviewTabClicksSwitchPanes() {
+  // Tab clicks must switch panes: renderReviewTabs re-renders the strip on
+  // every switch, so the binding has to live there (a click binding on the
+  // first render silently died after the first re-render).
+  const { window, document } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  window.eval('setView("review")');
+  await flush(window, 30);
+
+  document.querySelector('.rvtab[data-tab="__pending__"]').click();
+  await flush(window, 10);
+  assert.ok(
+    document.getElementById("rvBody").textContent.includes("Pending writes") ||
+      document.getElementById("rvWritePending"),
+    "pending tab click did not switch the pane"
+  );
+
+  document.querySelector('.rvtab[data-tab="Steffie"]').click();
+  await flush(window, 10);
+  assert.ok(
+    document.body.textContent.includes("Approve 2 writes for review"),
+    "person tab click did not switch the pane"
+  );
+}
+
+async function testPendingWritesTabCardsAndWrite() {
+  // The Pending writes tab lists approved-but-unwritten items as
+  // selectable cards; select all/none work; writing posts exactly the
+  // checked items.
+  const { window, document, fetchLog } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  window.eval('setView("review")');
+  await flush(window, 30);
+  window.eval('setReviewTab("__pending__");');
+  await flush(window, 10);
+
+  const cards = [...document.querySelectorAll(".pcard")];
+  assert.equal(cards.length, 2, "pending cards missing");
+  assert.ok(
+    cards.every(c => c.classList.contains("selected")),
+    "ready items not pre-checked"
+  );
+
+  // Deselect all, re-select only the second.
+  window.eval('document.getElementById("rvSelNone").click();');
+  await flush(window, 10);
+  window.eval('togglePending("b1:asset-p2:0");');
+  await flush(window, 10);
+
+  const btn = document.getElementById("rvWritePending");
+  assert.equal(btn.textContent.trim(), "Write 1 selected to Immich", "count wrong");
+  btn.click();
+  await flush(window, 30);
+
+  assert.ok(fetchLog.includes("/api/write-pending"), "no /api/write-pending request");
+}
+
 const tests = [
   testBootRendersWithDryRunBatchPresent,
   testDayClickSelectsAndLoads,
@@ -592,6 +677,8 @@ const tests = [
   testReviewConfirmAllAndToggleAll,
   testResolveButtonsPinDirectly,
   testChipsCarryNames,
+  testPendingWritesTabCardsAndWrite,
+  testReviewTabClicksSwitchPanes,
 ];
 for (const test of tests) {
   await test();
