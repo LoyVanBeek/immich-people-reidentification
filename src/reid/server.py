@@ -799,18 +799,28 @@ class UIServer:
                 window=window,
                 faces_by_asset=faces_by_asset,
                 rejected=rejected,
+                include_pin_divergent=True,
             )
             for card in map(asdict, cards):
                 # The persisted decision, if any, wins over the default.
                 card["included"] = decisions.get(
                     (card["asset_id"], card["appearance"]), card["included"]
                 )
+                card["pinned_elsewhere"] = (
+                    card["pin"] is not None and card["pin"] != card["proposed_name"]
+                )
                 all_cards.append(card)
 
         writable_by_name: dict[str, list[dict[str, Any]]] = {}
+        pinned_by_name: dict[str, list[dict[str, Any]]] = {}
         labeled_by_name: dict[str, list[dict[str, Any]]] = {}
         unnamed: dict[tuple[str, int], list[dict[str, Any]]] = {}
         for card in all_cards:
+            if card["pinned_elsewhere"]:
+                # Pinned to another person: shown under that person, not
+                # writable until the next batch run regroups it.
+                pinned_by_name.setdefault(card["pin"], []).append(card)
+                continue
             if card["proposed_name"]:
                 writable_by_name.setdefault(card["proposed_name"], []).append(card)
             elif card["status"] == "already_labeled" and card["immich_label"]:
@@ -823,21 +833,25 @@ class UIServer:
                 # unnamed tab hands them to the queue for naming.
                 unnamed.setdefault((card["window"], card["cluster"]), []).append(card)
 
+        tab_names = set(writable_by_name) | set(labeled_by_name) | set(pinned_by_name)
         tabs = []
-        for name in sorted(set(writable_by_name) | set(labeled_by_name)):
+        for name in sorted(tab_names):
             writable_cards = writable_by_name.get(name, [])
             labeled_cards = labeled_by_name.get(name, [])
+            pinned_cards = pinned_by_name.get(name, [])
             tabs.append(
                 {
                     "name": name,
                     "writable_cards": writable_cards,
                     "labeled_cards": labeled_cards,
+                    "pinned_cards": pinned_cards,
                     "writable": sum(
                         1
                         for c in writable_cards
                         if c["status"] == "will_write" and c["included"]
                     ),
                     "labeled": len(labeled_cards),
+                    "pinned": len(pinned_cards),
                 }
             )
         unnamed_list = [
@@ -1029,6 +1043,40 @@ class UIServer:
         expected_head_box: tuple[float, float, float, float] | None = None,
     ) -> dict[str, Any]:
         """Shared write logic for one appearance (used by confirm and promote)."""
+        try:
+            return self._write_appearance_checked(
+                write_client,
+                asset_id,
+                appearance,
+                person_id,
+                cluster,
+                window,
+                timestamp,
+                dry_run,
+                expected_head_box,
+            )
+        except ImmichError as exc:
+            # Immich hiccups (missing pixels, transient errors) are per-item
+            # failures, not confirm crashes: report and continue.
+            return {
+                "asset_id": asset_id,
+                "appearance": appearance.appearance,
+                "status": WriteResultStatus.ERROR.value,
+                "message": str(exc),
+            }
+
+    def _write_appearance_checked(
+        self,
+        write_client: ImmichClient,
+        asset_id: str,
+        appearance: Appearance,
+        person_id: str,
+        cluster: int,
+        window: str,
+        timestamp: datetime,
+        dry_run: bool = False,
+        expected_head_box: tuple[float, float, float, float] | None = None,
+    ) -> dict[str, Any]:
         # Check if already written (via write ledger) - idempotency
         if self.store.has_write_ledger_entry(asset_id, person_id):
             return {
@@ -1141,6 +1189,26 @@ class UIServer:
             "head_box": head_box,
         }
 
+    def _pin_divergent_props(
+        self, props: list[Proposal]
+    ) -> tuple[list[Proposal], list[Proposal]]:
+        """Split proposals into (kept, pinned-elsewhere).
+
+        A proposal pinned to a person other than its own proposed name has,
+        in the operator's eyes, left this cluster: views exclude it until
+        the next batch run regroups everything.
+        """
+        pins = self.store.appearance_pins()
+        kept: list[Proposal] = []
+        moved: list[Proposal] = []
+        for prop in props:
+            pin = pins.get((prop.asset_id, prop.appearance))
+            if pin is not None and pin != prop.proposed_name:
+                moved.append(prop)
+            else:
+                kept.append(prop)
+        return kept, moved
+
     def _build_cluster_rows(
         self,
         proposals: list[Proposal],
@@ -1161,7 +1229,11 @@ class UIServer:
 
         rows: list[ClusterRow] = []
         dismissed = self.store.dismissed_clusters()
-        for (window, cluster_id), props in sorted(groups.items()):
+        for (window, cluster_id), all_props in sorted(groups.items()):
+            # Proposals pinned to another person have left this cluster.
+            props, _moved = self._pin_divergent_props(all_props)
+            if not props:
+                continue
             # Shared status counts
             writable, conflicted, no_head, labeled = self._status_counts(props)
             proposed_name, anchor = self._anchor_and_name(props)
@@ -1239,6 +1311,7 @@ class UIServer:
         *,
         faces_by_asset: dict[str, list[Face]] | None = None,
         rejected: set[tuple[str, int, str]] | None = None,
+        include_pin_divergent: bool = False,
     ) -> list[EvidenceCard]:
         """Build evidence cards for one cluster.
 
@@ -1261,6 +1334,11 @@ class UIServer:
             for p in proposals
             if p.cluster == cluster and (window is None or p.window == window)
         ]
+        if not include_pin_divergent:
+            # Proposals pinned to another person have left this cluster: the
+            # review page requests them explicitly to show them under the
+            # pinned person instead.
+            target_props, _moved = self._pin_divergent_props(target_props)
         if not target_props:
             return []
 
@@ -1389,10 +1467,14 @@ class UIServer:
         if not target_props:
             return None
 
+        # Proposals pinned to another person have left this cluster.
+        target_props, _moved = self._pin_divergent_props(target_props)
+        if not target_props:
+            return None
+
         window = target_props[0].window
         proposed_name, anchor = self._anchor_and_name(target_props)
         writable, conflicted, ask_for_name, labeled = self._status_counts(target_props)
-
         return AssignmentPane(
             cluster=cluster,
             window=window,

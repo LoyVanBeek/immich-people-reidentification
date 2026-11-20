@@ -49,12 +49,31 @@ const WRITABLE_CARD = (asset, window_, cluster, included = true) => ({
   conflict_names: null,
   proposed_name: "Steffie",
 });
+const PINNED_CARD = {
+  asset_id: "asset-pin",
+  appearance: 0,
+  window: "2026-11-17",
+  cluster: 9,
+  date: "2026-11-17",
+  confidence: 0.9,
+  status: "will_write",
+  included: false,
+  immich_label: null,
+  pin: "Steffie",
+  asset_name: "IMG_pin.jpg",
+  ignored: false,
+  conflict_names: null,
+  proposed_name: "Othercluster",
+  pinned_elsewhere: true,
+};
 const REVIEW = {
   tabs: [
     {
       name: "Steffie",
       writable: 2,
       labeled: 1,
+      pinned: 1,
+      pinned_cards: [PINNED_CARD],
       writable_cards: [
         WRITABLE_CARD("asset-s1", "2026-11-17", 0),
         WRITABLE_CARD("asset-s2", "2025-09-23", 1),
@@ -95,7 +114,9 @@ const REVIEW = {
       ],
     },
   ],
-  pending: [
+  pending: [],
+  total_pending: 0,
+  pending_all: [
     {
       batch_id: "b1",
       name: "Steffie",
@@ -215,7 +236,10 @@ function makeDom(opts = {}) {
     } else if (path === "/api/dry-run-batches") {
       json = [DRY_BATCH];
     } else if (path === "/api/write-review") {
-      json = REVIEW;    } else if (path === "/api/confirm-all") {
+      json = opts.emptyPending
+        ? { ...REVIEW, pending: [] }
+        : { ...REVIEW, pending: REVIEW.pending_all };
+    } else if (path === "/api/confirm-all") {
       json = { groups: [], count: 2, batch_ids: ["batch-1", "batch-2"] };
     } else if (path === "/api/promote-all") {
       json = { promoted: 2, results: [] };
@@ -550,6 +574,41 @@ async function testReviewConfirmAllAndToggleAll() {
   assert.equal(fetchLog.filter(p => p === "/api/confirm-all").length, 1, "confirm-all not posted once");
 }
 
+async function testPendingTabAlwaysRenderedAndPinnedSection() {
+  // The Pending writes tab is always visible (empty state included), and
+  // cards pinned to a person show up on that person's tab under 'pinned'
+  // — without a write checkbox (they are not writable until the next run).
+  const { window, document } = makeDom({ emptyPending: true });
+  await window.eval("boot()");
+  await flush(window);
+  window.eval('setView("review")');
+  await flush(window, 30);
+
+  const pendingTab = document.querySelector('.rvtab[data-tab="__pending__"]');
+  assert.ok(pendingTab, "pending tab not rendered");
+  assert.match(pendingTab.textContent, /Pending writes 0/, "pending tab count wrong");
+  window.eval('setReviewTab("__pending__");');
+  await flush(window, 10);
+  assert.match(
+    document.getElementById("rvBody").textContent,
+    /nothing pending — every approved write is in Immich/,
+    "empty state missing"
+  );
+
+  // Steffie's tab: the pinned card is under 'pinned', without a checkbox.
+  window.eval('setReviewTab("Steffie");');
+  await flush(window, 10);
+  const pinnedCard = document.querySelector('.evcard[data-asset="asset-pin"]');
+  assert.ok(pinnedCard, "pinned card missing from the pinned section");
+  assert.match(pinnedCard.textContent, /pinned: Steffie/, "pinned chip missing");
+  assert.ok(!pinnedCard.querySelector("input[type=checkbox]"), "pinned card offers a write checkbox");
+  assert.match(
+    document.getElementById("rvBody").textContent,
+    /will be proposed as Steffie on the next batch run/,
+    "pinned section header missing"
+  );
+}
+
 async function testResolveButtonsPinDirectly() {
   // A conflicted card offers one button per fighting label; clicking pins
   // the appearance to that person without opening the modal — and the card
@@ -677,6 +736,7 @@ const tests = [
   testReviewConfirmAllAndToggleAll,
   testResolveButtonsPinDirectly,
   testChipsCarryNames,
+  testPendingTabAlwaysRenderedAndPinnedSection,
   testPendingWritesTabCardsAndWrite,
   testReviewTabClicksSwitchPanes,
 ];

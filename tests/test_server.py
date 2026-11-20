@@ -1396,6 +1396,53 @@ class TestServerAPI:
         assert closed.promoted_at is not None
         assert server.get_write_review()["pending"] == []
 
+    def test_pinned_elsewhere_leaves_the_cluster_views(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """Pinning an appearance to a different person removes it from the
+        cluster's evidence, counts and assignment immediately; the review
+        page shows it under the pinned person until the next run."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # Pin asset1 app0 to Bob while the cluster anchors Alice.
+        server.pin_appearance("asset1", 0, "Bob")
+
+        # Cluster 0's evidence no longer contains the moved card.
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+        assert [e["appearance"] for e in evidence] == [1]
+
+        # The sidebar row counts match the grid.
+        state = server.get_ui_state()
+        row = next(c for c in state["clusters"] if c["cluster"] == 0)
+        assert row["writable"] == 1
+        assert row["appearances"] == 1
+
+        # The assignment pane excludes it too.
+        assignment = server._build_assignment(
+            0, server.store.proposals(), server.store.appearances_by_asset()
+        )
+        assert assignment is not None and assignment.total_appearances == 1
+
+        # The review page shows it under the pinned person, not writable
+        # until the next run, and confirm-all skips it.
+        review = server.get_write_review()
+        bob = next(t for t in review["tabs"] if t["name"] == "Bob")
+        assert len(bob["pinned_cards"]) == 1
+        assert bob["pinned_cards"][0]["pinned_elsewhere"] is True
+        assert bob["writable"] == 0
+        assert bob["pinned"] == 1
+        result = server.confirm_all({"dry_run": True})
+        assert "error" not in result
+        # The approved batch contains only the remaining Alice appearance —
+        # the Bob-pinned card is not written as Alice.
+        batch = server.store.get_dry_run_batches()[-1]
+        assert [a.appearance for a in batch.actions] == [1]
+
+        # Unpinning restores everything.
+        server.unpin_appearance("asset1", 0)
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+        assert [e["appearance"] for e in evidence] == [0, 1]
+
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
     ) -> None:

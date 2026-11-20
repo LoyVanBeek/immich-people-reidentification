@@ -22,14 +22,13 @@ A buildable spec for a calibration feature: a `reid-calibrate` command that deri
 <!-- the index: one line per closed ticket, enough to judge relevance, then zoom the link for the detail the ticket holds -->
 
 - [Calibration signal persistence](issues/01-calibration-signal-persistence.md): reject = the calibration negative (exclude is per-cycle write intent, no signal); a new durable `appearance_label` table records confirm-time positives — decision-based, write-outcome-independent, box coords stored so labels re-bind by IoU after a wipe + re-detection; a new durable `gate_verdict` table records spot-check person/not-person verdicts; both survive wipes as operator-voice state; curated external ground truth stays out. Recording only — nothing consumes the tables until ticket 02.
+- [Calibration mechanics](issues/02-calibration-mechanics.md): in-memory sweeps reuse the pure pipeline (the threshold-independent merge order makes threshold sweeps nearly free); Immich faces fetched once per calibration run, never persisted; gate sweeps score accumulated spot-check verdicts (sampled re-detection ≤ ~300 assets per run); per-candidate scores are wrong proposals / negative violations / missed positives / manual touches, suggested = lexicographic best (clean first, then fewest touches), full curve always stored, highlight overridable; cold start at ≥ 30 pos / ≥ 10 neg pairs or ≥ 20 verdicts; staleness visible (labels since last calibration), never automatic; curves persisted per knob, apply via the tuning-override path with a `tuning_history` journal; any subset applies at once; global values only; orphans surfaced + counted, never pruned.
 
 ## Not yet specified
 
 <!-- see "Fog of war": in-scope fog you can't ticket yet; graduates as the frontier advances -->
 
-- Recalibration cadence and staleness: how often the pass re-runs and how the UI signals that enough new confirmations have accumulated to be worth recalibrating. Hangs on ticket 02's mechanics.
-- Whether Immich's own face-recognition labels may serve as calibration evidence beyond the operator-voice records — the store keeps the two apart by design (ticket 01), so this is now purely a calibration-pass question. Depends on how fast labeled data accumulates (cold start). Hangs on ticket 02.
-- Per-window vs global knob values: whether the report suggests one value per knob or window-specific ones. Hangs on what the sweep in ticket 02 shows.
+- Whether Immich's own face-recognition labels may serve as calibration evidence beyond the operator-voice records — the store keeps the two apart by design (ticket 01) and cold-start minimums are now defined (ticket 02), so this decision hangs on real-world label accumulation after the feature lands, not on anything chartable now.
 
 ## Out of scope
 

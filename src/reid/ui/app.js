@@ -322,7 +322,7 @@ function evidenceCardHTML(e, assignment) {
     <div class="evcard ${e.status === "rejected" ? "evrejected" : ""} ${e.ignored ? "evignored" : ""} ${alreadyLabeled ? "evlabeled" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
       <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected" && !e.ignored)}<div class="spinner" title="loading crop\u2026"></div></div>
       <div class="asset-row">
-        ${e.status === "will_write" && !e.ignored ? (() => {
+        ${e.status === "will_write" && !e.ignored && !e.pinned_elsewhere ? (() => {
           const writeName = e.proposed_name ?? assignment?.proposed_name ?? null;
           const label = writeName ? `write “${esc(writeName)}”` : "write";
           const tip = writeName
@@ -483,9 +483,7 @@ function renderReviewTabs() {
   const unnamed = state.review.unnamed.length
     ? `<button class="rvtab ${state.reviewTab === "__unnamed__" ? "sel" : ""}" data-tab="__unnamed__">unnamed <span class="chip">${state.review.unnamed.length}</span></button>`
     : "";
-  const pendingTab = (state.review.pending?.length || state.reviewTab === "__pending__")
-    ? `<button class="rvtab ${state.reviewTab === "__pending__" ? "sel" : ""}" data-tab="__pending__">Pending writes <span class="chip white">${state.review.pending?.length || 0}</span></button>`
-    : "";
+  const pendingTab = `<button class="rvtab ${state.reviewTab === "__pending__" ? "sel" : ""}" data-tab="__pending__">Pending writes <span class="chip white">${state.review.pending?.length || 0}</span></button>`;
   tabsEl.innerHTML = tabs + pendingTab + unnamed;
   // Tabs re-render on every switch: bind them here, not in wireReviewEvents
   // (which runs once on an empty strip).
@@ -553,6 +551,13 @@ function renderPersonPane(tab) {
     </div>
     <div class="evgrid">${tab.labeled_cards.map(c => evidenceCardHTML(c, { proposed_name: tab.name })).join("")}</div>
   ` : "";
+  const pinnedSection = tab.pinned_cards?.length ? `
+    <div class="rv-day">
+      <span class="rv-dayname">pinned to ${esc(tab.name)}</span>
+      <span class="item-meta muted">${tab.pinned_cards.length} — will be proposed as ${esc(tab.name)} on the next batch run</span>
+    </div>
+    <div class="evgrid">${tab.pinned_cards.map(c => evidenceCardHTML(c, { proposed_name: tab.name })).join("")}</div>
+  ` : "";
   const globalBar = `
     <div class="rv-global">
       <button id="rvConfirm" class="primary" ${tab.writable ? "" : "disabled"}>
@@ -563,7 +568,7 @@ function renderPersonPane(tab) {
       <span class="muted">one click approves every write for ${esc(tab.name)} — grouped by day</span>
     </div>
   `;
-  return globalBar + sections + labeledSection;
+  return globalBar + sections + labeledSection + pinnedSection;
 }
 
 function renderUnnamedSections() {
