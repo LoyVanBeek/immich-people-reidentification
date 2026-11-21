@@ -1443,6 +1443,51 @@ class TestServerAPI:
         evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
         assert [e["appearance"] for e in evidence] == [0, 1]
 
+    def test_fully_labeled_clusters_are_flagged(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """A cluster where Immich labeled every appearance carries
+        fully_labeled=True (the queue hides it by default); mixed clusters
+        stay visible."""
+        cfg = load_config(config_with_store)
+        server = UIServer(cfg)
+        # Turn cluster 0 into a fully-labeled group (both appearances).
+        server.store.update_proposal_status("asset1", 0, ProposalStatus.LABELED)
+        server.store.update_proposal_status("asset1", 1, ProposalStatus.LABELED)
+
+        state = server.get_ui_state()
+        row0 = next(c for c in state["clusters"] if c["cluster"] == 0)
+        assert row0["fully_labeled"] is True
+        assert row0["anchor"] == "already labeled in Immich"
+        # Cluster 1 (ask-name) stays normal.
+        row1 = next(c for c in state["clusters"] if c["cluster"] == 1)
+        assert row1["fully_labeled"] is False
+
+        # A mixed cluster (labeled + proposed) is not fully labeled.
+        server.store.replace_proposals(
+            [
+                Proposal(
+                    asset_id="asset1",
+                    appearance=0,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.LABELED,
+                    proposed_name=None,
+                ),
+                Proposal(
+                    asset_id="asset1",
+                    appearance=1,
+                    window="2026-11-10",
+                    cluster=0,
+                    status=ProposalStatus.PROPOSED,
+                    proposed_name="Alice",
+                ),
+            ]
+        )
+        state = server.get_ui_state()
+        row0 = next(c for c in state["clusters"] if c["cluster"] == 0)
+        assert row0["fully_labeled"] is False
+
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
     ) -> None:

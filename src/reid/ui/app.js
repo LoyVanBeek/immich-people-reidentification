@@ -14,6 +14,7 @@ let state = {
   configKnobs: null,
   people: [],
   dryRun: true,
+  showLabeled: false, // queue hides fully-labeled groups unless asked
   view: "queue", // "queue" | "review" — remembered across reloads
   review: null, // /api/write-review payload
   reviewTab: null, // active person tab on the review page
@@ -27,6 +28,13 @@ function keyOf(row) {
 
 function activeRow() {
   return state.clusters.find(c => keyOf(c) === state.activeKey) || null;
+}
+
+// Fully-labeled clusters are hidden from the queue unless the operator
+// asks for them — they have no pending work, and the review page's person
+// tabs are the surface for checking Immich's labels.
+function visibleClusters() {
+  return state.clusters.filter(c => state.showLabeled || !c.fully_labeled);
 }
 
 /* ---------- API ---------- */
@@ -110,10 +118,12 @@ function render() {
     ${bannerHTML()}
     <div class="top">
       <strong>Review</strong>
-      <span class="chip acc">${state.clusters.filter(c => c.status === "open").length} open</span>
+      <span class="chip acc">${visibleClusters().filter(c => c.status === "open").length} open</span>
       <span class="spacer"></span>
       <div class="knobs">
         <label><input type="checkbox" id="dryToggle" ${state.dryRun ? "checked" : ""}>review before writing</label>
+        <label title="Groups whose every face is already labeled in Immich have nothing pending — show them here too">
+          <input type="checkbox" id="showLabeledToggle" ${state.showLabeled ? "checked" : ""}> show already labeled</label>
         <button id="gearBtn" title="Settings">⚙</button>
       </div>
       <button id="viewReview" title="Review everything about to be written, per person">Write review</button>
@@ -170,7 +180,7 @@ function configPopoverHTML() {
 function daysHTML() {
   // Pane 1: one row per day (newest first), Finder column style.
   const groups = new Map();
-  for (const c of state.clusters) {
+  for (const c of visibleClusters()) {
     if (!groups.has(c.window)) groups.set(c.window, []);
     groups.get(c.window).push(c);
   }
@@ -193,7 +203,7 @@ function daysHTML() {
 
 function clustersHTML() {
   // Pane 2: the clusters of the selected day.
-  const rows = state.clusters.filter(c => c.window === state.activeDay);
+  const rows = visibleClusters().filter(c => c.window === state.activeDay);
   if (!rows.length) {
     return `<div class="empty muted">select a day</div>`;
   }
@@ -809,6 +819,31 @@ function wireEvents() {
   // View toggle
   document.getElementById("viewReview")?.addEventListener("click", () => setView("review"));
 
+  // Show already-labeled groups
+  document.getElementById("showLabeledToggle")?.addEventListener("change", e => {
+    state.showLabeled = e.target.checked;
+    try {
+      localStorage.setItem("reid-show-labeled", state.showLabeled ? "1" : "0");
+    } catch {
+      /* private mode: toggle resets on reload */
+    }
+    // Hiding the cluster you're viewing moves the selection to the first
+    // visible one, so the panes never show something the list doesn't.
+    if (!state.showLabeled) {
+      const active = activeRow();
+      if (active && active.fully_labeled) {
+        const first = visibleClusters().find(c => c.status === "open") || visibleClusters()[0];
+        if (first) {
+          state.activeKey = keyOf(first);
+          state.activeDay = first.window;
+          loadEvidence(first.cluster, first.window);
+          state.assignment = buildAssignment(first);
+        }
+      }
+    }
+    render();
+  });
+
   // Sidebar: day rows select a day, cluster rows select a cluster
   document.querySelectorAll(".days .dayrow").forEach(el => {
     el.addEventListener("click", () => selectDay(el.dataset.day));
@@ -831,7 +866,7 @@ function wireEvents() {
   keyHandler = e => {
     if (/input|textarea/i.test(e.target.tagName) || e.target.isContentEditable) return;
     if (state.view === "review") return; // the review page is mouse/tab driven
-    const openClusters = state.clusters.filter(c => c.status === "open");
+    const openClusters = visibleClusters().filter(c => c.status === "open");
     const idx = openClusters.findIndex(c => keyOf(c) === state.activeKey);
     if (e.key === "j") {
       const next = openClusters[(idx + 1) % openClusters.length];
@@ -851,7 +886,7 @@ function selectDay(day) {
   state.activeDay = day;
   // Show the day's clusters AND load its first open one, so the
   // evidence/actions panes move with the click.
-  const rows = state.clusters.filter(c => c.window === day);
+  const rows = visibleClusters().filter(c => c.window === day);
   const first = rows.find(c => c.status === "open") || rows[0];
   if (first) selectCluster(keyOf(first));
   else render();
@@ -1538,6 +1573,7 @@ function toast(msg) {
 async function boot() {
   try {
     state.view = localStorage.getItem("reid-view") || "queue";
+    state.showLabeled = localStorage.getItem("reid-show-labeled") === "1";
   } catch {
     /* private mode: default view */
   }

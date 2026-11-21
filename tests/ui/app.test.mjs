@@ -18,6 +18,7 @@ const APP_JS = readFileSync(join(ROOT, "src", "reid", "ui", "app.js"), "utf8");
 // shape (actions/promoted_at), which used to crash every re-render.
 const CLUSTERS = [
   { cluster: 0, window: "2026-11-17", proposed_name: null, anchor: null, confidence: 0.9, appearances: 3, writable: 2, conflicted: 0, ask_for_name: 1, labeled: 0, status: "open", crops: [] },
+  { cluster: 0, window: "2026-11-18", proposed_name: null, anchor: "already labeled in Immich", confidence: 0.9, appearances: 3, writable: 0, conflicted: 0, ask_for_name: 0, labeled: 3, status: "open", crops: [], fully_labeled: true },
   { cluster: 1, window: "2026-11-17", proposed_name: "Alice", anchor: "x", confidence: 0.8, appearances: 2, writable: 2, conflicted: 0, ask_for_name: 0, labeled: 0, status: "open", crops: [] },
   { cluster: 0, window: "2025-09-23", proposed_name: "Steffie", anchor: "x", confidence: 0.7, appearances: 2, writable: 1, conflicted: 0, ask_for_name: 0, labeled: 1, status: "open", crops: [] },
 ];
@@ -660,6 +661,59 @@ async function testChipsCarryNames() {
   );
 }
 
+async function testFullyLabeledClustersHiddenBehindToggle() {
+  // Fully-labeled groups are hidden from the queue by default (no pending
+  // work); the 'show already labeled' toggle reveals them, and j/k never
+  // lands on a hidden group.
+  const { window, document } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+
+  // Hidden: not in the clusters pane, not in day counts.
+  const keys = [...document.querySelectorAll(".clusters .item")].map(el => el.dataset.key);
+  assert.ok(!keys.includes("2026-11-18:0"), "fully-labeled cluster visible without the toggle");
+  assert.ok(keys.includes("2026-11-17:0"), "normal cluster missing");
+
+  // j/k navigation skips the hidden group: from the last visible open
+  // cluster, j wraps to the first.
+  window.eval('selectCluster("2026-11-17:1");');
+  await flush(window, 10);
+  window.document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "j", bubbles: true }));
+  await flush(window, 10);
+  assert.equal(
+    document.querySelector(".main-header .cluster-id")?.textContent,
+    "2025-09-23 / 0",
+    "navigation did not skip the hidden fully-labeled cluster"
+  );
+
+  // The toggle reveals them: their day reappears in the days pane.
+  window.eval(`
+    const t = document.getElementById("showLabeledToggle");
+    t.checked = true;
+    t.dispatchEvent(new window.Event("change", { bubbles: true }));
+  `);
+  await flush(window, 10);
+  const revealed = [...document.querySelectorAll(".days .dayrow")].map(
+    el => el.dataset.day
+  );
+  assert.ok(revealed.includes("2026-11-18"), "toggle did not reveal fully-labeled clusters");
+
+  // Toggling off again while viewing the hidden cluster moves the selection
+  // to a visible one.
+  window.eval('selectCluster("2026-11-18:0");');
+  await flush(window, 10);
+  window.eval(`
+    const t2 = document.getElementById("showLabeledToggle");
+    t2.checked = false;
+    t2.dispatchEvent(new window.Event("change", { bubbles: true }));
+  `);
+  await flush(window, 10);
+  assert.ok(
+    document.querySelector(".main-header .cluster-id")?.textContent !== "2026-11-18 / 0",
+    "selection stuck on a hidden cluster"
+  );
+}
+
 async function testReviewTabClicksSwitchPanes() {
   // Tab clicks must switch panes: renderReviewTabs re-renders the strip on
   // every switch, so the binding has to live there (a click binding on the
@@ -739,6 +793,7 @@ const tests = [
   testPendingTabAlwaysRenderedAndPinnedSection,
   testPendingWritesTabCardsAndWrite,
   testReviewTabClicksSwitchPanes,
+  testFullyLabeledClustersHiddenBehindToggle,
 ];
 for (const test of tests) {
   await test();

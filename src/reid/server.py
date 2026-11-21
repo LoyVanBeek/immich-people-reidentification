@@ -80,6 +80,7 @@ class ClusterRow:
     labeled: int
     status: ClusterRowStatus
     crops: list[dict[str, Any]]  # appearance refs; UI fetches each via /api/crop
+    fully_labeled: bool = False  # every appearance already labeled by Immich
 
 
 @dataclass(frozen=True)
@@ -1244,6 +1245,13 @@ class UIServer:
             ]
             confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
+            # A cluster where Immich labeled every appearance has no pending
+            # work; the queue hides it by default (the review page's person
+            # tabs remain the surface for those labels).
+            fully_labeled = all(p.status == ProposalStatus.LABELED for p in props)
+            if fully_labeled:
+                proposed_name, anchor = None, "already labeled in Immich"
+
             rows.append(
                 ClusterRow(
                     cluster=cluster_id,
@@ -1268,6 +1276,7 @@ class UIServer:
                         {"asset_id": p.asset_id, "appearance": p.appearance}
                         for p in props[:4]
                     ],
+                    fully_labeled=fully_labeled,
                 )
             )
         return rows
