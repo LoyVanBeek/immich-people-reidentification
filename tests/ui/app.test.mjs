@@ -740,6 +740,41 @@ async function testReviewTabClicksSwitchPanes() {
   );
 }
 
+async function testReviewRejectUsesTheTabName() {
+  // Rejecting on a review person tab must target THAT person — never the
+  // queue's stale last-viewed cluster name.
+  const { window, document, fetchLog } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+  // Give the queue's assignment a WRONG name through the app's own
+  // name-input handler — the stale state you'd have after visiting some
+  // other cluster in the queue.
+  window.eval(`
+    const inp = document.getElementById("nameInput");
+    inp.value = "OtherQueueName";
+    inp.dispatchEvent(new window.Event("change", { bubbles: true }));
+  `);
+  await flush(window, 10);
+  window.eval('setView("review")');
+  await flush(window, 30);
+  window.eval('setReviewTab("Steffie");');
+  await flush(window, 10);
+
+  const btn = document.querySelector('.evcard[data-asset="asset-s1"] .b-reject');
+  assert.ok(btn, "reject button missing on the review card");
+  assert.equal(btn.dataset.name, "Steffie", "reject button carries the wrong name");
+  btn.click();
+  await flush(window, 30);
+
+  assert.ok(fetchLog.includes("/api/reject"), "no /api/reject request");
+  // The rejected card leaves the person tab: it is no longer proposed as
+  // that person.
+  assert.ok(
+    !document.querySelector('.evcard[data-asset="asset-s1"]'),
+    "rejected card still shown on the person tab"
+  );
+}
+
 async function testPendingWritesTabCardsAndWrite() {
   // The Pending writes tab lists approved-but-unwritten items as
   // selectable cards; select all/none work; writing posts exactly the
@@ -791,6 +826,7 @@ const tests = [
   testResolveButtonsPinDirectly,
   testChipsCarryNames,
   testPendingTabAlwaysRenderedAndPinnedSection,
+  testReviewRejectUsesTheTabName,
   testPendingWritesTabCardsAndWrite,
   testReviewTabClicksSwitchPanes,
   testFullyLabeledClustersHiddenBehindToggle,

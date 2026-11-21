@@ -364,7 +364,7 @@ function evidenceCardHTML(e, assignment) {
       ${e.ignored ? "" : `
       ${e.pin ? `<button class="b-unpin" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Unpin</button>` : ""}
       <button class="b-assign" data-asset="${e.asset_id}" data-appearance="${e.appearance}">${e.pin ? "Reassign person" : "Assign to person\u2026"}</button>
-      ${rejectable ? `<button class="b-reject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Not this person</button>` : ""}
+      ${rejectable ? `<button class="b-reject" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(assignment?.proposed_name ?? "")}">Not this person</button>` : ""}
       ${e.status === "rejected" ? `<button class="b-unreject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Undo exclusion</button>` : ""}
       ${wrongLabelable ? `<button class="b-wronglabel" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(e.immich_label)}">Wrong label</button>` : ""}
       `}
@@ -930,7 +930,9 @@ function wireEvidenceEvents() {
   });
   document.querySelectorAll(".b-reject[data-asset]").forEach(btn => {
     btn.addEventListener("click", () => {
-      const name = state.assignment?.proposed_name;
+      // The card carries its own context name: the review page's person
+      // tab (not the queue's possibly stale last-viewed cluster).
+      const name = btn.dataset.name || state.assignment?.proposed_name;
       rejectAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10), name);
     });
   });
@@ -1094,13 +1096,21 @@ async function rejectAppearance(assetId, appearance, name) {
       toast(`reject failed: ${data.error}`);
       return;
     }
-    // Update local state so the card flips to 'rejected' without a reload.
+    // Update local state so the card flips to 'rejected' without a reload —
+    // in the queue's evidence or on the review page.
     const card = state.evidence.find(
       e => e.asset_id === assetId && String(e.appearance) === String(appearance)
     );
     if (card) card.status = "rejected";
+    const reviewCard = state.review?.tabs
+      .flatMap(t => [...t.writable_cards, ...t.labeled_cards, ...(t.pinned_cards || [])])
+      .find(
+        e => e.asset_id === assetId && String(e.appearance) === String(appearance)
+      );
+    if (reviewCard) reviewCard.status = "rejected";
     toast(`“${assetLabel(assetId)}” (appearance ${appearance}) will not be proposed as “${name}”`);
-    renderEvidence();
+    if (state.view === "review") renderReviewBody();
+    else renderEvidence();
   } catch (err) {
     toast(`reject failed: ${err.message}`);
   }
@@ -1217,7 +1227,12 @@ const STATUS_KEY_BY_ENUM = {
 };
 
 function assetLabel(assetId) {
-  const card = state.evidence.find(e => e.asset_id === assetId);
+  // The asset may live in the queue's evidence or on the review page.
+  const card =
+    state.evidence.find(e => e.asset_id === assetId) ||
+    state.review?.tabs
+      .flatMap(t => [...t.writable_cards, ...t.labeled_cards, ...(t.pinned_cards || [])])
+      .find(e => e.asset_id === assetId);
   return (card && card.asset_name) || `${assetId.slice(0, 8)}…`;
 }
 
