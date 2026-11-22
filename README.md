@@ -102,6 +102,43 @@ reprocesses every asset.
 5. Sanity-check the image end-to-end with the stub Immich server used by the
    test suite: `scripts/container-smoke.sh`.
 
+## Run the UI on another machine (laptop → Pi core)
+
+The UI is a thin proxy: it holds no store and no Immich client, so it can run
+anywhere and point at the core on the Pi. The core binds loopback by default,
+so on the Pi set `[core] host = "0.0.0.0"` (and `[core] api_key`) in `reid.toml`,
+then restart `reid-core`. The core reports its own Immich `base_url`, which on
+the Pi is usually `localhost` and useless on a laptop — override it with
+`[ui] immich_url` (or `--immich-url`) so "open in Immich" links resolve there.
+
+On the laptop:
+
+```bash
+# minimal reid.toml: only [core] + [ui] are read
+cat > reid.toml <<EOF
+[core]
+url = "http://<pi>:8090"
+api_key = "<same key as on the Pi>"
+host = "127.0.0.1"
+port = 8090
+
+[ui]
+immich_url = "http://<pi>:2283"
+EOF
+
+uv run reid-ui --config reid.toml   # binds 0.0.0.0:8080
+# or without any config file, purely via flags/env:
+uv run reid-ui \
+  --core-url http://<pi>:8090 \
+  --core-key "<same key>" \
+  --immich-url http://<pi>:2283 \
+  --host 127.0.0.1
+```
+
+Open `http://<laptop>:8080`. The UI proxies `/api/*` to the Pi's core, injects
+the API key server-side, and shows the same queue. `reid.toml` (which holds the
+core key) is gitignored — never commit it.
+
 ## Layout
 
 - `src/reid/` — the Python package (batch entry point, Immich client, local store)

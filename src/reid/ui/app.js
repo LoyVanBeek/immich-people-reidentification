@@ -81,7 +81,11 @@ async function loadInitialState() {
     // Server serialises dataclasses snake_case; state uses camelCase.
     configKnobs: data.config_knobs ?? null,
     dryRun: data.dry_run ?? state.dryRun,
-    immichUrl: (data.immich_url ?? "").replace(/\/$/, ""),
+    // A UI on another machine cannot use the core's own Immich URL (it may
+    // be a localhost address); the UI server can inject a reachable one.
+    immichUrl: (
+      window.__REID_UI__?.immichUrl ?? data.immich_url ?? ""
+    ).replace(/\/$/, ""),
   };
   // The server builds the initial evidence/assignment for clusters[0]'s
   // exact window; the key is derived from that same row.

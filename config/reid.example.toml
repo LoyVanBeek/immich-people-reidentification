@@ -73,11 +73,25 @@ log_level = "info"
 # (reid-ui) serves the browser assets and proxies /api/* to it.
 url = "http://127.0.0.1:8090"
 
+# Address reid-core itself binds to. Loopback by default: the UI proxies
+# /api/* and the nightly trigger reaches the core on the same machine. Set a
+# non-loopback address (e.g. "0.0.0.0") only together with an api_key, and
+# only if something else (a UI on another machine) needs to reach it.
+host = "127.0.0.1"
+port = 8090
+
 # Token the UI (and the nightly trigger) must present. Leave empty for local
 # development; on any shared network set it here or, better, export
 # REID_CORE_API_KEY. The core can start pipeline runs, so treat it as a
 # secret.
 api_key = ""
+
+# [ui] is only read by reid-ui, never by the core. It lets a UI on another
+# machine override the Immich URL used by "open in Immich" links: the core
+# reports its own base_url, which on the Pi is usually localhost and means
+# nothing on a laptop.
+[ui]
+# immich_url = "http://<pi>:2283"
 
 # Resetting: `reid-wipe` erases all stored embeddings and resets the batch
 # checkpoint so the next run reprocesses every asset from scratch. Run it

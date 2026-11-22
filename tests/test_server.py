@@ -1548,6 +1548,94 @@ class TestServerAPI:
         with urlopen(f"{base}/app.js", timeout=10) as resp:
             assert resp.status == 200
 
+    def test_ui_with_core_only_config(
+        self, tmp_path: Path, populated_store: Store
+    ) -> None:
+        """The UI can run from a [core]-only config (no [immich]/[store]):
+        this is what an independent UI on another machine uses."""
+        import socket
+        import threading
+
+        from reid.server import serve_ui
+
+        def free_port() -> int:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                return s.getsockname()[1]
+
+        core_port = free_port()
+        ui_port = free_port()
+
+        # [core]-only config: enough for the UI to find and auth to the core.
+        core_config = tmp_path / "core.toml"
+        core_config.write_text(
+            f"""
+[core]
+url = "http://127.0.0.1:{core_port}"
+api_key = "core-key"
+host = "127.0.0.1"
+port = {core_port}
+"""
+        )
+
+        # The core needs the full config (with [immich]/[store]) to own the
+        # store, but it must bind the same port the UI points at.
+        full_config = tmp_path / "full.toml"
+        full_config.write_text(
+            f"""
+[immich]
+base_url = "http://immich:2283"
+api_key = "k"
+
+[store]
+path = "{tmp_path / "store.sqlite3"}"
+
+[head_detection]
+weights_path = "{Path(__file__).parent.parent / "src" / "reid" / "weights" / "scrfd_500m.onnx"}"
+
+[core]
+url = "http://127.0.0.1:{core_port}"
+api_key = "core-key"
+host = "127.0.0.1"
+port = {core_port}
+"""
+        )
+
+        load_config(full_config)
+
+        threading.Thread(
+            target=serve_core,
+            args=(full_config, "127.0.0.1", core_port),
+            daemon=True,
+        ).start()
+
+        threading.Thread(
+            target=serve_ui,
+            args=(core_config, "127.0.0.1", ui_port),
+            daemon=True,
+        ).start()
+
+        for _ in range(50):
+            try:
+                with urlopen(
+                    f"http://127.0.0.1:{ui_port}/api/state", timeout=1
+                ) as resp:
+                    assert resp.status == 200
+                    data = json.load(resp)
+                    assert "clusters" in data
+                break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.05)
+        else:
+            pytest.fail("UI did not start")
+
+        # index.html carries the version stamp (immich_url not set here).
+        with urlopen(f"http://127.0.0.1:{ui_port}/", timeout=10) as resp:
+            assert resp.status == 200
+            html = resp.read().decode()
+            assert "__UI_VERSION__" not in html
+            assert "window.__REID_UI__" not in html
+
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
     ) -> None:

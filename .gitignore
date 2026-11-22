@@ -222,6 +222,9 @@ __marimo__/
 # local stores (contain proposals with real names — never commit)
 data/
 *.sqlite3
+# install.sh writes a generated core API key into reid.toml
+/reid.toml
+/reid-data/
 
 # UI test node modules
 tests/ui/node_modules/

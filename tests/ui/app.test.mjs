@@ -504,6 +504,24 @@ async function testCardsLinkToImmichAndShowFileNames() {
   assert.ok(!/asset-a/.test(link.textContent), "UUID still visible");
 }
 
+async function testViewerLinkUsesUiInjectedImmichUrl() {
+  // A UI on another machine can override the core's Immich URL via
+  // window.__REID_UI__, so viewer links point where the laptop can reach.
+  const { window, document } = makeDom();
+  window.__REID_UI__ = { immichUrl: "http://override.test" };
+  await window.eval("boot()");
+  await flush(window);
+
+  const card = document.querySelector('.evcard[data-asset="asset-a"]');
+  const link = card.querySelector("a.asset-name");
+  assert.ok(link, "no viewer link on the card");
+  assert.equal(
+    link.getAttribute("href"),
+    "http://override.test/photos/asset-a",
+    "wrong viewer link — __REID_UI__ should win over the core's URL"
+  );
+}
+
 async function testIgnoreButtonIgnoresAndUndoRestores() {
   const { window, document, fetchLog } = makeDom();
   await window.eval("boot()");
@@ -902,6 +920,7 @@ const tests = [
   testRejectedCardWordingAndUndo,
   testConflictedCardShowsFightingLabels,
   testCardsLinkToImmichAndShowFileNames,
+  testViewerLinkUsesUiInjectedImmichUrl,
   testIgnoreButtonIgnoresAndUndoRestores,
   testReviewPageTogglesAndRenders,
   testReviewConfirmAllAndToggleAll,

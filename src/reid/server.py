@@ -15,7 +15,7 @@ from pathlib import Path
 
 import httpx
 
-from .config import load_config
+from .config import load_ui_config
 
 _log = logging.getLogger("reid.server")
 
@@ -43,6 +43,9 @@ class UIHandler(BaseHTTPRequestHandler):
     # Class variables set by serve_ui()
     core_url: str = ""
     api_key: str = ""
+    # Overrides the core-reported Immich URL for "open in Immich" links, so a
+    # UI on another machine can point at an address that resolves there.
+    immich_url: str | None = None
 
     def do_GET(self) -> None:
         try:
@@ -102,11 +105,25 @@ class UIHandler(BaseHTTPRequestHandler):
         """
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         html = html.replace("__UI_VERSION__", ui_version())
+        html = html.replace("<!--__REID_UI_CONFIG__-->", self._ui_config_script())
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(html.encode())
+
+    def _ui_config_script(self) -> str:
+        """Inline window.__REID_UI__ config, or nothing when unset.
+
+        The URL comes from this server, not the core, because a core on the
+        Pi reports a localhost address that means nothing on a laptop.
+        """
+        if not self.immich_url:
+            return ""
+        import json
+
+        payload = json.dumps({"immichUrl": self.immich_url}).replace("<", "\\u003c")
+        return f"<script>window.__REID_UI__ = {payload};</script>"
 
     def _serve_static(self, name: str) -> None:
         import mimetypes
@@ -141,19 +158,35 @@ class UIHandler(BaseHTTPRequestHandler):
         self.wfile.write(message.encode())
 
 
-def serve_ui(config_path: Path, host: str = "0.0.0.0", port: int = 8080) -> None:
-    """Run the UI server: static assets + proxy to the core."""
-    cfg = load_config(config_path)
+def serve_ui(
+    config_path: Path | None = None,
+    host: str = "0.0.0.0",
+    port: int = 8080,
+    *,
+    core_url: str | None = None,
+    core_key: str | None = None,
+    immich_url: str | None = None,
+) -> None:
+    """Run the UI server: static assets + proxy to the core.
 
-    UIHandler.core_url = cfg.core.url
-    UIHandler.api_key = cfg.core.api_key
+    The config file is optional: without one the core defaults to localhost,
+    and the flags (or REID_CORE_URL / REID_CORE_API_KEY) say where it really
+    is. That is what lets a laptop run the UI against a core on another
+    machine.
+    """
+    cfg = load_ui_config(config_path)
+
+    UIHandler.core_url = (core_url or cfg.core.url).rstrip("/")
+    UIHandler.api_key = core_key if core_key is not None else cfg.core.api_key
+    override = immich_url or cfg.immich_url
+    UIHandler.immich_url = override.rstrip("/") if override else None
 
     server = HTTPServer((host, port), UIHandler)
     _log.info(
         "UI server listening on http://%s:%d (proxying /api to %s)",
         host,
         port,
-        cfg.core.url,
+        UIHandler.core_url,
     )
     try:
         server.serve_forever()
@@ -172,19 +205,49 @@ def main() -> None:
     @click.option(
         "--config",
         "config_path",
-        required=True,
+        default=None,
         type=click.Path(path_type=Path, dir_okay=False),
+        help="Optional reid.toml; only [core] and [ui] are read",
     )
     @click.option("--host", default="0.0.0.0", help="Bind address")
     @click.option("--port", default=8080, type=int, help="Port to listen on")
-    def ui(config_path: Path, host: str, port: int) -> None:
+    @click.option(
+        "--core-url",
+        default=None,
+        help="Core base URL (default: [core] url or http://127.0.0.1:8090)",
+    )
+    @click.option(
+        "--core-key",
+        default=None,
+        help="Core API key (default: [core] api_key or REID_CORE_API_KEY)",
+    )
+    @click.option(
+        "--immich-url",
+        default=None,
+        help="Immich URL for viewer links (default: what the core reports)",
+    )
+    def ui(
+        config_path: Path | None,
+        host: str,
+        port: int,
+        core_url: str | None,
+        core_key: str | None,
+        immich_url: str | None,
+    ) -> None:
         """Run the UI server (static assets + proxy to the core)."""
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
             stream=sys.stderr,
         )
-        serve_ui(config_path, host, port)
+        serve_ui(
+            config_path,
+            host,
+            port,
+            core_url=core_url,
+            core_key=core_key,
+            immich_url=immich_url,
+        )
 
     ui()
 

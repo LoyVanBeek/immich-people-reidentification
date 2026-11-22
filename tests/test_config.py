@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from reid.config import ClusteringConfig, ConfigError, load_config
+from reid.config import (
+    ClusteringConfig,
+    ConfigError,
+    UiConfig,
+    load_config,
+    load_ui_config,
+)
 
 
 @pytest.fixture
@@ -88,3 +94,116 @@ def test_invalid_clustering_knobs_are_rejected(
             )
         )
     assert message in str(excinfo.value)
+
+
+# --- [core] host/port -------------------------------------------------------
+
+
+def test_core_host_port_default_loopback(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path, MINIMAL))
+    assert config.core.host == "127.0.0.1"
+    assert config.core.port == 8090
+
+
+def test_core_host_port_parse_from_file(tmp_path: Path) -> None:
+    config = load_config(
+        write_config(
+            tmp_path,
+            MINIMAL
+            + """
+[core]
+host = "0.0.0.0"
+port = 8091
+""",
+        )
+    )
+    assert config.core.host == "0.0.0.0"
+    assert config.core.port == 8091
+
+
+def test_core_port_rejects_out_of_range(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(
+            write_config(
+                tmp_path,
+                MINIMAL + "\n[core]\nport = 70000\n",
+            )
+        )
+    assert "port" in str(excinfo.value)
+
+
+# --- load_ui_config ----------------------------------------------------------
+
+
+def CORE_ONLY_BODY() -> str:
+    return """
+[core]
+url = "http://core.local:8090"
+api_key = "abc123"
+host = "0.0.0.0"
+port = 8090
+"""
+
+
+def test_load_ui_config_reads_only_core_section(tmp_path: Path) -> None:
+    cfg = load_ui_config(
+        write_config(
+            tmp_path,
+            CORE_ONLY_BODY() + '[immich]\nbase_url = "http://x"\napi_key = "k"\n',
+        )
+    )
+    assert isinstance(cfg, UiConfig)
+    assert cfg.core.url == "http://core.local:8090"
+    assert cfg.core.api_key == "abc123"
+    assert cfg.core.host == "0.0.0.0"
+    assert cfg.core.port == 8090
+    assert cfg.immich_url is None
+
+
+def test_load_ui_config_with_ui_immich_url(tmp_path: Path) -> None:
+    cfg = load_ui_config(
+        write_config(
+            tmp_path,
+            CORE_ONLY_BODY()
+            + """
+[ui]
+immich_url = "http://immich.laptop:2283"
+""",
+        )
+    )
+    assert cfg.immich_url == "http://immich.laptop:2283"
+
+
+def test_load_ui_config_no_path_defaults(tmp_path: Path) -> None:
+    cfg = load_ui_config(None)
+    assert cfg.core.url == "http://127.0.0.1:8090"
+    assert cfg.core.api_key == ""
+    assert cfg.core.host == "127.0.0.1"
+    assert cfg.core.port == 8090
+    assert cfg.immich_url is None
+
+
+def test_load_ui_config_env_precedes_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REID_CORE_URL", "http://env-core:9000")
+    monkeypatch.setenv("REID_CORE_API_KEY", "env-key")
+    cfg = load_ui_config(write_config(tmp_path, CORE_ONLY_BODY()))
+    assert cfg.core.url == "http://env-core:9000"
+    assert cfg.core.api_key == "env-key"
+
+
+def test_load_ui_config_invalid_immich_url_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError):
+        load_ui_config(
+            write_config(
+                tmp_path,
+                CORE_ONLY_BODY() + '\n[ui]\nimmich_url = ""\n',
+            )
+        )
+
+
+def test_load_ui_config_missing_file_raises(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist.toml"
+    with pytest.raises(ConfigError):
+        load_ui_config(missing)

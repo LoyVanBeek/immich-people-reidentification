@@ -1,11 +1,12 @@
 # reid-core.service — Core API server for Immich Person Re-ID
-# Installed by install-systemd.sh to /etc/systemd/system/reid-ui.service
+# Installed by scripts/install.sh to /etc/systemd/system/reid-core.service
 #
-# This is a long-running service that serves the confirmation UI on
-# port 8080 (by default). It pulls the image from ghcr.io.
+# This is a long-running service that owns the store and serves the core
+# API on port 8090 (by default); reid-ui proxies to it. It pulls the image
+# from ghcr.io.
 #
-# To enable: systemctl enable --now reid-ui.service
-# To view logs: journalctl -u reid-ui -f
+# To enable: systemctl enable --now reid-core.service
+# To view logs: journalctl -u reid-core -f
 
 [Unit]
 Description=Immich Person Re-ID core API server (store owner)

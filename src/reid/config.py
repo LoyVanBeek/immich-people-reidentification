@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 API_KEY_ENV = "IMMICH_API_KEY"
+CORE_URL_ENV = "REID_CORE_URL"
+CORE_KEY_ENV = "REID_CORE_API_KEY"
 
 MAX_PAGE_SIZE = 1000
 
@@ -48,6 +50,27 @@ class CoreConfig:
 
     url: str = "http://127.0.0.1:8090"
     api_key: str = ""
+    # Bind address for reid-core itself. Loopback by default: the UI proxies
+    # /api/*, and the nightly trigger reaches the core on the same machine.
+    # Set a non-loopback address only together with an api_key.
+    host: str = "127.0.0.1"
+    port: int = 8090
+
+
+@dataclass(frozen=True)
+class UiConfig:
+    """What the UI server needs: where the core is, and nothing else.
+
+    The UI has no store and no Immich client, so it does not need the full
+    config file. A laptop can run it with a [core]-only reid.toml (or no
+    file at all, via the reid-ui CLI flags).
+    """
+
+    core: CoreConfig
+    # Optional override for the Immich URL used by "open in Immich" links:
+    # the core reports its own base_url, which may be a localhost address
+    # that means nothing on another machine.
+    immich_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -190,17 +213,7 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
         head_detection_raw, "nms_threshold", "[head_detection]", 0.4
     )
 
-    core_raw = raw.get("core", {})
-    if not isinstance(core_raw, dict):
-        raise ConfigError("[core] must be a table")
-    core_url = core_raw.get("url", "http://127.0.0.1:8090")
-    if not isinstance(core_url, str) or not core_url:
-        raise ConfigError("[core] url must be a non-empty string")
-    core_api_key = env.get("REID_CORE_API_KEY", "").strip() or core_raw.get(
-        "api_key", ""
-    )
-    if not isinstance(core_api_key, str):
-        raise ConfigError("[core] api_key must be a string")
+    core = _parse_core(raw, env)
 
     return Config(
         immich=ImmichConfig(
@@ -231,7 +244,70 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
             face_overlap=face_overlap,
         ),
         run=RunConfig(log_level=log_level),
-        core=CoreConfig(url=core_url, api_key=core_api_key),
+        core=core,
+    )
+
+
+def load_ui_config(
+    config_path: Path | None, *, env: Mapping[str, str] | None = None
+) -> UiConfig:
+    """Load only what `reid-ui` needs: the [core] section and [ui] overrides.
+
+    A full reid.toml works unchanged; the Immich and store sections are
+    ignored. With no path, defaults apply (localhost core, no token), and
+    environment variables still win over file values.
+    """
+    env = os.environ if env is None else env
+    raw: dict[str, Any] = {}
+    if config_path is not None:
+        try:
+            with config_path.open("rb") as fh:
+                raw = tomllib.load(fh)
+        except FileNotFoundError as exc:
+            raise ConfigError(f"config file not found: {config_path}") from exc
+        except OSError as exc:
+            raise ConfigError(
+                f"config file not readable: {config_path}: {exc}"
+            ) from exc
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(
+                f"config file is not valid TOML: {config_path}: {exc}"
+            ) from exc
+
+    ui_raw = raw.get("ui", {})
+    if not isinstance(ui_raw, dict):
+        raise ConfigError("[ui] must be a table")
+    immich_url = ui_raw.get("immich_url")
+    if immich_url is not None:
+        if not isinstance(immich_url, str) or not immich_url:
+            raise ConfigError("[ui] immich_url must be a non-empty string")
+        immich_url = immich_url.rstrip("/")
+
+    return UiConfig(core=_parse_core(raw, env), immich_url=immich_url)
+
+
+def _parse_core(raw: Mapping[str, Any], env: Mapping[str, str]) -> CoreConfig:
+    """Parse the [core] section, with env overrides for URL and token."""
+    core_raw = raw.get("core", {})
+    if not isinstance(core_raw, dict):
+        raise ConfigError("[core] must be a table")
+    core_url = env.get(CORE_URL_ENV, "").strip() or core_raw.get(
+        "url", "http://127.0.0.1:8090"
+    )
+    if not isinstance(core_url, str) or not core_url:
+        raise ConfigError("[core] url must be a non-empty string")
+    core_api_key = env.get(CORE_KEY_ENV, "").strip() or core_raw.get("api_key", "")
+    if not isinstance(core_api_key, str):
+        raise ConfigError("[core] api_key must be a string")
+    core_host = core_raw.get("host", "127.0.0.1")
+    if not isinstance(core_host, str) or not core_host:
+        raise ConfigError("[core] host must be a non-empty string")
+    core_port = _bounded_int(core_raw, "port", 1, 65535, "[core]", 8090)
+    return CoreConfig(
+        url=core_url.rstrip("/"),
+        api_key=core_api_key,
+        host=core_host,
+        port=core_port,
     )
 
 
