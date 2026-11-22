@@ -352,7 +352,7 @@ render_unit() {
 
 render_reid_core() {
     local install_dir="$1" user="$2" group="$3" uid_gid="$4" image="$5" data_dir="$6"
-    cat <<UNITEOF | render_unit "${install_dir}" "${user}" "${group}" "${uid_gid}" "${image}" "${data_dir}"
+    cat <<'UNITEOF' | render_unit "${install_dir}" "${user}" "${group}" "${uid_gid}" "${image}" "${data_dir}"
 # reid-core.service — Core API server for Immich Person Re-ID
 # Installed by scripts/install.sh to /etc/systemd/system/reid-core.service
 #
@@ -402,7 +402,7 @@ UNITEOF
 
 render_reid_ui() {
     local install_dir="$1" user="$2" group="$3" uid_gid="$4" image="$5" data_dir="$6"
-    cat <<UNITEOF | render_unit "${install_dir}" "${user}" "${group}" "${uid_gid}" "${image}" "${data_dir}"
+    cat <<'UNITEOF' | render_unit "${install_dir}" "${user}" "${group}" "${uid_gid}" "${image}" "${data_dir}"
 # reid-ui.service — Confirmation UI for Immich Person Re-ID
 # Installed by scripts/install.sh to /etc/systemd/system/reid-ui.service
 #
@@ -453,7 +453,7 @@ UNITEOF
 
 render_reid_batch_service() {
     local install_dir="$1" user="$2" group="$3" uid_gid="$4" image="$5" data_dir="$6"
-    cat <<UNITEOF | render_unit "${install_dir}" "${user}" "${group}" "${uid_gid}" "${image}" "${data_dir}"
+    cat <<'UNITEOF' | render_unit "${install_dir}" "${user}" "${group}" "${uid_gid}" "${image}" "${data_dir}"
 # reid-batch.service — Nightly pipeline trigger for Immich Person Re-ID
 # Installed by scripts/install.sh to /etc/systemd/system/reid-batch.service
 #
