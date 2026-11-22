@@ -114,12 +114,12 @@ apply_defaults() {
     REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
     INSTALL_DIR="${INSTALL_DIR:-${REPO_ROOT}}"
 
-    # Read REID_DATA_DIR from .env if present (never overwrite an existing .env)
+    # Read REID_DATA_DIR from .env if present (never overwrite an existing .env).
+    # Source it safely: only pick up REID_DATA_DIR, never UID/GID which are
+    # readonly shell variables and would abort the script under `set -u`.
     if [[ -f "${INSTALL_DIR}/.env" ]]; then
-        # shellcheck disable=SC1090
-        set -a
-        . "${INSTALL_DIR}/.env"
-        set +a
+        REID_DATA_DIR="$(grep -E '^REID_DATA_DIR=' "${INSTALL_DIR}/.env" \
+            | head -n1 | cut -d= -f2-)" || true
     fi
     DATA_DIR="${DATA_DIR:-${REID_DATA_DIR:-${INSTALL_DIR}/reid-data}}"
 
