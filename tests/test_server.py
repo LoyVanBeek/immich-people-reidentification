@@ -15,13 +15,14 @@ import pytest
 
 from reid.anchoring import AnchorConfig, build_window
 from reid.config import load_config
-from reid.enums import ProposalStatus
-from reid.server import (
+from reid.core import (
     NEIGHBOUR_OUTLINE_COLOR,
     TARGET_OUTLINE_COLOR,
-    UIServer,
-    serve,
+    CoreServer,
+    serve_core,
 )
+from reid.enums import ProposalStatus
+from reid.server import serve_ui
 from reid.store import Appearance, Proposal, Store
 from tests import library
 from tests.stub_immich import API_KEY, StubImmich
@@ -187,7 +188,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         state = server.get_ui_state()
 
@@ -227,7 +228,7 @@ class TestServerAPI:
         """Cluster numbers repeat across windows: the initial panes must not
         mix windows sharing an index."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # Another day, same cluster number 0, different person — on fresh
         # appearance rows (proposals are keyed by asset+appearance, so each
         # appearance lives in exactly one window).
@@ -297,7 +298,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         # Get evidence for cluster 0
         evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
@@ -317,7 +318,7 @@ class TestServerAPI:
 
     def test_get_people(self, config_with_store: Path, populated_store: Store) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         people = server.get_people()
 
@@ -332,7 +333,7 @@ class TestServerAPI:
         from tests import library
 
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # A real fixture asset the stub serves pixels for, with a box inside it
         server.store.add_appearances(
             library.PHOTO_1_STANDING_ID,
@@ -371,7 +372,7 @@ class TestServerAPI:
         from tests import library
 
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         server.store.add_appearances(
             library.PHOTO_1_STANDING_ID,
             [
@@ -415,7 +416,7 @@ class TestServerAPI:
         from tests import library
 
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         server.store.add_appearances(
             library.PHOTO_1_STANDING_ID,
             [
@@ -460,7 +461,7 @@ class TestServerAPI:
         from tests import library
 
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         server.store.add_appearances(
             library.PHOTO_1_STANDING_ID,
             [
@@ -489,7 +490,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         with pytest.raises(LookupError):
             server.get_crop({"asset_id": ["asset1"], "appearance": ["99"]})
@@ -499,7 +500,7 @@ class TestServerAPI:
     ) -> None:
         """Cards show the appearance's current Immich label when one claims it."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # The stub 404s faces for unknown assets, so use a registry fixture id.
         asset_id = library.PHOTO_1_STANDING_ID
         server.store.add_appearances(
@@ -557,7 +558,7 @@ class TestServerAPI:
     ) -> None:
         """A wrong-label rejection blanks the label on the card."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         asset_id = library.PHOTO_1_STANDING_ID
         server.store.add_appearances(
             asset_id,
@@ -614,7 +615,7 @@ class TestServerAPI:
     ) -> None:
         """A wrong-label face never anchors or marks the appearance labeled."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # The stub 404s faces for unknown assets, so use a registry fixture id.
         asset_id = library.PHOTO_1_STANDING_ID
         ui_stub.faces[asset_id] = [
@@ -704,7 +705,7 @@ class TestServerAPI:
         """Assign records the operator's pin; unpin deletes it; evidence
         cards carry the pinned name."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         result = server.pin_appearance("asset1", 0, "Alice")
         assert result == {"asset_id": "asset1", "appearance": 0, "pin": "Alice"}
@@ -727,7 +728,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         result = server.pin_appearance("asset1", 0, "  ")
 
@@ -738,7 +739,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         server.reject_appearance("asset1", 0, "Alice")
         assert server.store.appearance_rejections() == [("asset1", 0, "Alice")]
 
@@ -759,7 +760,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # The stub 404s faces for unknown assets, so use a registry fixture
         # id with an appearance the face can claim.
         asset_id = library.PHOTO_1_STANDING_ID
@@ -820,7 +821,7 @@ class TestServerAPI:
         """Two different Immich labels claim two appearances of one cluster:
         the cards say which labels conflict."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         asset_id = library.PHOTO_1_STANDING_ID
         server.store.add_appearances(
             asset_id,
@@ -908,7 +909,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store, ui_stub: StubImmich
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         asset_id = library.PHOTO_1_STANDING_ID
         server.store.add_appearances(
             asset_id,
@@ -984,7 +985,7 @@ class TestServerAPI:
         """Ignore records the operator's decision; cards carry it and the
         original file name; unignore clears both."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # The stub 404s unknown assets, so use a registry fixture id.
         asset_id = library.PHOTO_1_STANDING_ID
         server.store.add_appearances(
@@ -1037,7 +1038,7 @@ class TestServerAPI:
     ) -> None:
         """A confirm in the same session cannot write something just ignored."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         asset_id = library.PHOTO_1_STANDING_ID
         server.store.add_appearances(
             asset_id,
@@ -1115,7 +1116,7 @@ class TestServerAPI:
         """Tabs per pending name across clusters; already-labeled matched via
         face claims; unnamed clusters land on the unnamed tab."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # A LABELED row Immich agrees on: informational, matched by name.
         server.store.replace_proposals(
             [
@@ -1164,7 +1165,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         server.set_write_decision("asset1", 0, False)
         assert server.store.write_decisions() == {("asset1", 0): False}
@@ -1186,7 +1187,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # The stub 404s unknown assets; use the registry fixture id. A second
         # appearance on the next day makes a second (name, window, cluster)
         # group.
@@ -1258,7 +1259,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         asset_id = library.PHOTO_1_STANDING_ID
         server.store.add_appearances(
             asset_id,
@@ -1306,7 +1307,7 @@ class TestServerAPI:
         unselected one stays pending, and the batch closes only when
         everything in it is written."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         asset_a = library.PHOTO_1_STANDING_ID
         asset_b = library.PHOTO_2_BLURRED_ID
         for asset_id in (asset_a, asset_b):
@@ -1403,7 +1404,7 @@ class TestServerAPI:
         cluster's evidence, counts and assignment immediately; the review
         page shows it under the pinned person until the next run."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # Pin asset1 app0 to Bob while the cluster anchors Alice.
         server.pin_appearance("asset1", 0, "Bob")
 
@@ -1450,7 +1451,7 @@ class TestServerAPI:
         fully_labeled=True (the queue hides it by default); mixed clusters
         stay visible."""
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
         # Turn cluster 0 into a fully-labeled group (both appearances).
         server.store.update_proposal_status("asset1", 0, ProposalStatus.LABELED)
         server.store.update_proposal_status("asset1", 1, ProposalStatus.LABELED)
@@ -1488,11 +1489,69 @@ class TestServerAPI:
         row0 = next(c for c in state["clusters"] if c["cluster"] == 0)
         assert row0["fully_labeled"] is False
 
+    def test_ui_proxies_api_to_core(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """The UI server forwards /api/* to the core: a request through the
+        UI returns the core's answer (and the core must be running)."""
+        import socket
+        import threading
+
+        from reid.server import serve_ui
+
+        def free_port() -> int:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                return s.getsockname()[1]
+
+        core_port = free_port()
+        ui_port = free_port()
+
+        # Point the UI's [core] url at the core: serve_ui reads it from the
+        # config file.
+        config = config_with_store.read_text()
+        patched = config_with_store.parent / "proxy.toml"
+        patched.write_text(config + f'\n[core]\nurl = "http://127.0.0.1:{core_port}"\n')
+
+        threading.Thread(
+            target=serve_core,
+            args=(patched, "127.0.0.1", core_port),
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=serve_ui,
+            args=(patched, "127.0.0.1", ui_port),
+            daemon=True,
+        ).start()
+
+        # Wait for the core to accept requests before going through the UI.
+        for _ in range(50):
+            try:
+                with urlopen(
+                    f"http://127.0.0.1:{core_port}/api/state", timeout=1
+                ) as resp:
+                    assert resp.status == 200
+                break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.05)
+        else:
+            pytest.fail("core did not start")
+
+        base = f"http://127.0.0.1:{ui_port}"
+        with urlopen(f"{base}/api/state", timeout=10) as resp:
+            assert resp.status == 200
+            data = json.load(resp)
+            assert "clusters" in data
+
+        # Static assets are served by the UI itself.
+        with urlopen(f"{base}/app.js", timeout=10) as resp:
+            assert resp.status == 200
+
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         knobs = server.get_config_knobs()
 
@@ -1506,7 +1565,7 @@ class TestServerAPI:
         self, config_with_store: Path, populated_store: Store
     ) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         proposals = server.get_proposals()
 
@@ -1516,7 +1575,7 @@ class TestServerAPI:
 
     def test_get_summary(self, config_with_store: Path, populated_store: Store) -> None:
         cfg = load_config(config_with_store)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         summary = server.get_summary()
 
@@ -1547,7 +1606,7 @@ class TestServerHTTP:
             port = s.getsockname()[1]
 
         server_thread = threading.Thread(
-            target=serve, args=(config_with_store, "127.0.0.1", port), daemon=True
+            target=serve_core, args=(config_with_store, "127.0.0.1", port), daemon=True
         )
         server_thread.start()
 
@@ -1571,16 +1630,44 @@ class TestServerHTTP:
             assert "clusters" in data
             assert len(data["clusters"]) == 2
 
-    def test_http_static_no_store(self, server_url: str) -> None:
+    @pytest.fixture
+    def ui_server_url(
+        self, config_with_store: Path, populated_store: Store
+    ) -> Iterator[str]:
+        """Start the UI server (static + proxy) for this test."""
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        server_thread = threading.Thread(
+            target=serve_ui, args=(config_with_store, "127.0.0.1", port), daemon=True
+        )
+        server_thread.start()
+
+        base_url = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                urlopen(f"{base_url}/app.js", timeout=1)
+                break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.05)
+        else:
+            pytest.fail("UI server did not start")
+
+        yield base_url
+
+    def test_http_static_no_store(self, ui_server_url: str) -> None:
         """app.js must never be served cacheable: a stale copy makes a
         deploy look like it did nothing."""
-        with urlopen(f"{server_url}/app.js") as resp:
+        with urlopen(f"{ui_server_url}/app.js") as resp:
             assert resp.headers["Cache-Control"] == "no-store"
 
-    def test_http_index_stamps_versioned_asset_urls(self, server_url: str) -> None:
+    def test_http_index_stamps_versioned_asset_urls(self, ui_server_url: str) -> None:
         """Asset URLs carry a content-hash version, so a new build always
         means new URLs and stale cached JS can never run against new HTML."""
-        with urlopen(f"{server_url}/") as resp:
+        with urlopen(f"{ui_server_url}/") as resp:
             html = resp.read().decode()
         assert "__UI_VERSION__" not in html
         assert "app.js?v=" in html
@@ -1618,28 +1705,28 @@ class TestServerHTTP:
             data = json.load(resp)
             assert len(data) == 1
 
-    def test_http_serves_static_files(self, server_url: str) -> None:
-        with urlopen(f"{server_url}/") as resp:
+    def test_http_serves_static_files(self, ui_server_url: str) -> None:
+        with urlopen(f"{ui_server_url}/") as resp:
             assert resp.status == 200
             assert resp.headers.get("content-type", "").startswith("text/html")
 
-        with urlopen(f"{server_url}/index.html") as resp:
+        with urlopen(f"{ui_server_url}/index.html") as resp:
             assert resp.status == 200
 
-        with urlopen(f"{server_url}/style.css") as resp:
+        with urlopen(f"{ui_server_url}/style.css") as resp:
             assert resp.status == 200
             assert resp.headers.get("content-type", "").startswith("text/css")
 
-        with urlopen(f"{server_url}/app.js") as resp:
+        with urlopen(f"{ui_server_url}/app.js") as resp:
             assert resp.status == 200
             # mimetypes.guess_type returns "text/javascript" for .js files
             assert resp.headers.get("content-type", "").startswith("text/javascript")
 
-    def test_http_404_for_missing_static(self, server_url: str) -> None:
+    def test_http_404_for_missing_static(self, ui_server_url: str) -> None:
         import urllib.error
 
         try:
-            urlopen(f"{server_url}/nonexistent.html")
+            urlopen(f"{ui_server_url}/nonexistent.html")
             pytest.fail("Expected 404")
         except urllib.error.HTTPError as e:
             assert e.code == 404
@@ -1666,7 +1753,7 @@ class TestHeadDetectorFallback:
         without invoking the SCRFD detector on the person crop.
         """
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         # Use a real asset ID from the fixture registry
@@ -1755,7 +1842,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         # Spy on the head detector to verify it's NOT called when Immich face is available
         assert server.immich._head_detector is not None
@@ -1796,7 +1883,7 @@ log_level = "info"
     ) -> None:
         """When no Immich unassigned face overlaps, SCRFD runs on the person crop."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         asset_id = library.PHOTO_1_STANDING_ID
@@ -1867,7 +1954,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         result = server.confirm_cluster(
             {
@@ -1892,7 +1979,7 @@ log_level = "info"
     ) -> None:
         """When neither Immich face nor SCRFD yields a head, appearance is skipped."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         asset_id = library.PHOTO_1_STANDING_ID
@@ -1978,7 +2065,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         result = server.confirm_cluster(
             {
@@ -2002,7 +2089,7 @@ log_level = "info"
     ) -> None:
         """The face_overlap knob is the single tunable for face→person containment."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         asset_id = library.PHOTO_1_STANDING_ID
@@ -2088,7 +2175,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         result = server.confirm_cluster(
             {
@@ -2114,7 +2201,7 @@ class TestDryRunBatches:
     ) -> None:
         """A dry-run confirmation persists as a batch with all its actions."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         asset_id = library.PHOTO_1_STANDING_ID
@@ -2198,7 +2285,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         # Dry-run confirm for cluster 0
         result = server.confirm_cluster(
@@ -2234,7 +2321,7 @@ log_level = "info"
     ) -> None:
         """Each dry-run confirmation creates its own batch."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         asset_id = library.PHOTO_1_STANDING_ID
@@ -2317,7 +2404,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         # First dry-run
         result1 = server.confirm_cluster(
@@ -2361,7 +2448,7 @@ log_level = "info"
     ) -> None:
         """Promoting a dry-run batch replays the actions as real writes."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         asset_id = library.PHOTO_1_STANDING_ID
@@ -2446,7 +2533,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         # First, do a dry-run to create a batch
         dry_run_result = server.confirm_cluster(
@@ -2491,7 +2578,7 @@ log_level = "info"
     ) -> None:
         """Promoting the same batch twice produces no duplicate writes."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         asset_id = library.PHOTO_1_STANDING_ID
@@ -2576,7 +2663,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         # Dry-run to create batch
         dry_run_result = server.confirm_cluster(
@@ -2618,7 +2705,7 @@ log_level = "info"
     ) -> None:
         """Promoting a non-existent batch returns an error."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
 
         weights_dir = Path(__file__).parent.parent / "src" / "reid" / "weights"
         config_path = tmp_path / "test_promote_err.toml"
@@ -2653,7 +2740,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         result = server.promote_batch("nonexistent-batch-id")
         assert "error" in result
@@ -2663,7 +2750,7 @@ log_level = "info"
     ) -> None:
         """Dry-run mode produces zero Immich writes - no faces, no person creation."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         asset_id = library.PHOTO_1_STANDING_ID
@@ -2746,7 +2833,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         # Dry-run confirm
         result = server.confirm_cluster(
@@ -2774,7 +2861,7 @@ log_level = "info"
     ) -> None:
         """GET /api/dry-run-batches returns all persisted dry-run batches."""
         from reid.config import load_config
-        from reid.server import UIServer
+        from reid.core import CoreServer
         from reid.store import Appearance, Proposal, Store
 
         asset_id = library.PHOTO_1_STANDING_ID
@@ -2857,7 +2944,7 @@ log_level = "info"
         )
 
         cfg = load_config(config_path)
-        server = UIServer(cfg)
+        server = CoreServer(cfg)
 
         # Create a dry-run batch
         dry_run_result = server.confirm_cluster(

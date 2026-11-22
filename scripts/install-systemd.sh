@@ -118,6 +118,14 @@ path = "/data/reid.sqlite3"
 [run]
 log_level = "info"
 
+[core]
+# The core API server (reid-core) owns the store; the UI proxies /api/*
+# to it. Set REID_CORE_API_KEY in the environment (or api_key here) to
+# require a token on every core request — recommended on any shared
+# network, since the core can trigger pipeline runs.
+url = "http://127.0.0.1:8090"
+api_key = ""
+
 [detection]
 # Person detector thresholds (tuning knobs)
 confidence_floor = 0.35
@@ -157,7 +165,7 @@ log_info "Data directory: ${DATA_DIR}"
 
 # 4. Install systemd service files
 SERVICE_DIR="/etc/systemd/system"
-SERVICES=("reid-batch.service" "reid-batch.timer" "reid-ui.service")
+SERVICES=("reid-core.service" "reid-batch.service" "reid-batch.timer" "reid-ui.service")
 
 for svc in "${SERVICES[@]}"; do
     SRC="${REPO_ROOT}/systemd/${svc}"
@@ -182,11 +190,15 @@ done
 # 5. Reload systemd and enable
 if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "Would run: systemctl daemon-reload"
+    log_info "Would run: systemctl enable --now reid-core.service"
     log_info "Would run: systemctl enable --now reid-batch.timer"
     log_info "Would run: systemctl enable --now reid-ui.service"
 else
     log_info "Reloading systemd..."
     sudo systemctl daemon-reload
+
+    log_info "Enabling reid-core.service (core API server on :8090)..."
+    sudo systemctl enable --now reid-core.service
 
     log_info "Enabling reid-batch.timer (nightly at 02:00)..."
     sudo systemctl enable --now reid-batch.timer
@@ -199,10 +211,11 @@ else
     log_info ""
     log_info "Next steps:"
     log_info "  1. Edit ${CONFIG_FILE} with your Immich API keys"
-    log_info "  2. Check status: systemctl status reid-ui"
+    log_info "  2. Check status: systemctl status reid-core reid-ui"
     log_info "  3. View UI:      http://$(hostname -I | awk '{print $1}'):8080"
     log_info "  4. Run batch manually: systemctl start reid-batch"
     log_info "  5. View batch logs: journalctl -u reid-batch -f"
     log_info "  6. View UI logs:    journalctl -u reid-ui -f"
-    log_info "  7. Check timer:     systemctl list-timers reid-batch.timer"
+    log_info "  7. View core logs:  journalctl -u reid-core -f"
+    log_info "  8. Check timer:     systemctl list-timers reid-batch.timer"
 fi

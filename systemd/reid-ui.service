@@ -22,14 +22,15 @@ WorkingDirectory=/home/pi/immich-person-reidentification
 Environment=GHCR_IMAGE=ghcr.io/loy/immich-person-reidentification:latest
 # Pull latest image on start
 ExecStartPre=/usr/bin/docker pull ${GHCR_IMAGE}
-# Run the UI server — override ENTRYPOINT (image default is reid-batch)
+# Run the UI server — override ENTRYPOINT (image default is reid-batch).
+# No store volume is mounted: the UI proxies /api/* to reid-core and
+# never touches the database itself.
 ExecStart=/usr/bin/docker run --rm \
   --platform linux/arm64 \
   --network host \
   --user "${UID:-1000}:${GID:-1000}" \
   --entrypoint reid-ui \
   -v /home/pi/immich-person-reidentification/reid.toml:/etc/reid/reid.toml:ro \
-  -v /home/pi/immich-person-reidentification/reid-data:/data \
   ${GHCR_IMAGE} \
   --config /etc/reid/reid.toml
 # Restart on failure, but not too aggressively

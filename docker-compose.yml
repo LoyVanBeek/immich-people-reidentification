@@ -2,7 +2,7 @@
 #
 # Profiles (deliberately separate, so `up` can never run a destructive or
 # one-shot service by accident):
-#   local  — run the confirmation UI, built from source on the Pi
+#   local  — run the core API + confirmation UI, built from source on the Pi
 #   remote — run the confirmation UI, image pulled from ghcr.io
 #   batch  — one-shot nightly batch run (trigger explicitly)
 #   wipe   — one-shot store wipe (trigger explicitly; destructive)
@@ -20,6 +20,24 @@
 # UID/GID default to 1000:1000; override via .env or the environment.
 
 services:
+  reid-core:
+    # The core API server owns the store; the UI proxies /api/* to it.
+    profiles: ["local", "remote"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms: ["linux/arm64"]
+    image: reid-batch:local
+    container_name: reid-core
+    network_mode: host
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./reid.toml:/etc/reid/reid.toml:ro
+      - ${REID_DATA_DIR:-./reid-data}:/data
+    entrypoint: ["reid-core"]
+    command: ["--config", "/etc/reid/reid.toml"]
+    restart: unless-stopped
+
   reid-ui:
     profiles: ["local"]
     build:
@@ -31,11 +49,14 @@ services:
     network_mode: host
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
+      # No store volume: the UI never touches the database, it proxies
+      # /api/* to reid-core.
       - ./reid.toml:/etc/reid/reid.toml:ro
-      - ${REID_DATA_DIR:-./reid-data}:/data
     entrypoint: ["reid-ui"]
     command: ["--config", "/etc/reid/reid.toml"]
     restart: unless-stopped
+    depends_on:
+      - reid-core
 
   reid-ui-remote:
     profiles: ["remote"]
@@ -45,10 +66,11 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./reid.toml:/etc/reid/reid.toml:ro
-      - ${REID_DATA_DIR:-./reid-data}:/data
     entrypoint: ["reid-ui"]
     command: ["--config", "/etc/reid/reid.toml"]
     restart: unless-stopped
+    depends_on:
+      - reid-core
 
   reid-batch:
     profiles: ["batch"]

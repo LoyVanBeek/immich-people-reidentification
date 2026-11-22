@@ -38,6 +38,19 @@ class ImmichConfig:
 
 
 @dataclass(frozen=True)
+class CoreConfig:
+    """The core API server (reid-core), which owns the store.
+
+    The UI proxies /api/* to `url`. `api_key` gates the core when set:
+    empty disables the check (fine for local dev), deployments should set
+    it via REID_CORE_API_KEY or the config file.
+    """
+
+    url: str = "http://127.0.0.1:8090"
+    api_key: str = ""
+
+
+@dataclass(frozen=True)
 class DetectionConfig:
     """Quality gates and the pixel source: spec tuning knobs."""
 
@@ -84,6 +97,7 @@ class Config:
     head_detection: HeadDetectionConfig
     clustering: ClusteringConfig
     run: RunConfig
+    core: CoreConfig
 
 
 def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> Config:
@@ -176,6 +190,18 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
         head_detection_raw, "nms_threshold", "[head_detection]", 0.4
     )
 
+    core_raw = raw.get("core", {})
+    if not isinstance(core_raw, dict):
+        raise ConfigError("[core] must be a table")
+    core_url = core_raw.get("url", "http://127.0.0.1:8090")
+    if not isinstance(core_url, str) or not core_url:
+        raise ConfigError("[core] url must be a non-empty string")
+    core_api_key = env.get("REID_CORE_API_KEY", "").strip() or core_raw.get(
+        "api_key", ""
+    )
+    if not isinstance(core_api_key, str):
+        raise ConfigError("[core] api_key must be a string")
+
     return Config(
         immich=ImmichConfig(
             base_url=base_url.rstrip("/"),
@@ -205,6 +231,7 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
             face_overlap=face_overlap,
         ),
         run=RunConfig(log_level=log_level),
+        core=CoreConfig(url=core_url, api_key=core_api_key),
     )
 
 
