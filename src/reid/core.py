@@ -2097,7 +2097,7 @@ class CoreServer:
         ]
 
 
-def serve_core(config_path: Path, host: str = "0.0.0.0", port: int = 8090) -> None:
+def serve_core(config_path: Path, host: str = "127.0.0.1", port: int = 8090) -> None:
     """Run the core API server."""
     cfg = load_config(config_path)
     core_server = CoreServer(cfg, config_path)
@@ -2126,7 +2126,11 @@ def main() -> None:
         required=True,
         type=click.Path(path_type=Path, dir_okay=False),
     )
-    @click.option("--host", default="0.0.0.0", help="Bind address")
+    @click.option(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address (loopback by default: the UI proxies /api/*)",
+    )
     @click.option("--port", default=8090, type=int, help="Port to listen on")
     def core(config_path: Path, host: str, port: int) -> None:
         """Run the core API server."""

@@ -68,8 +68,8 @@ reprocesses every asset.
    docker compose --profile local up -d reid-core reid-ui
    ```
 
-   `reid-core` listens on `:8090`, `reid-ui` on `:8080` (open
-   `http://<pi>:8080`). Both use host networking and run as your UID/GID so the
+   `reid-core` listens on loopback `:8090` (only the UI and the trigger need
+   it), `reid-ui` on `:8080` (open `http://<pi>:8080`). Both use host networking and run as your UID/GID so the
    bind-mounted store stays yours. Set `REID_DATA_DIR=/srv/reid-data` in `.env`
    if the store should live outside the repo, and export `REID_CORE_API_KEY`
    (or set `[core] api_key` in `reid.toml`) to require a token between the UI
