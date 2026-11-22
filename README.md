@@ -84,9 +84,30 @@ reprocesses every asset.
      --config /etc/reid/reid.toml --trigger timer --wait
    ```
 
-   `scripts/install-systemd.sh` installs and enables `reid-core.service`,
-   `reid-ui.service` and the `reid-batch.timer` that runs the trigger nightly.
-   "Run now" in the UI starts the same run on demand.
+   `scripts/install.sh` (mode-aware, idempotent) installs and enables
+   `reid-core.service`, `reid-ui.service` and the `reid-batch.timer` that
+   runs the trigger nightly. "Run now" in the UI starts the same run on demand.
+
+   ```bash
+   # On the Pi: auto-detect compose vs systemd, bring services up
+   ./scripts/install.sh --mode auto --up
+
+   # Or explicitly:
+   ./scripts/install.sh --mode systemd --up   # systemd units
+   ./scripts/install.sh --mode compose --up   # docker compose
+   ```
+
+   Re-running `scripts/install.sh` is safe: it converges whatever is installed
+   and is a no-op when nothing changed. In compose mode it stops/disables any
+   colliding systemd core/UI units (and vice versa), so the two modes never
+   fight over ports 8080/8090.
+
+   The installer writes a `reid.toml` with a generated core API key and sets
+   `[core] host = "0.0.0.0"` so the core is reachable from another machine.
+   Edit `reid.toml` to add your Immich read/write API keys.
+
+   `scripts/install-systemd.sh` is a thin wrapper for
+   `scripts/install.sh --mode systemd`.
 
 4. `reid-batch` remains the ops CLI for one run by hand (it needs the store
    volume and should not run while the core is up — stop the core first, or

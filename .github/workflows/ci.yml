@@ -40,6 +40,18 @@ jobs:
           node --check src/reid/ui/app.js
           echo "app.js parses cleanly"
 
+      - name: Installer dry-run (idempotency, no docker/systemd needed)
+        run: |
+          chmod +x scripts/install.sh scripts/install-systemd.sh
+          bash -n scripts/install.sh
+          bash -n scripts/install-systemd.sh
+          # First dry-run: validate args, detect mode, print plan
+          scripts/install.sh --dry-run --mode systemd > /tmp/install-run1.log
+          # Second dry-run: must be a no-op (same exit code, same output)
+          scripts/install.sh --dry-run --mode systemd > /tmp/install-run2.log
+          diff /tmp/install-run1.log /tmp/install-run2.log
+          echo "Installer dry-run is idempotent"
+
       - name: UI smoke tests (jsdom)
         run: |
           cd tests/ui

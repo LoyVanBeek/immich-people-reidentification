@@ -1,8 +1,9 @@
 # reid-ui.service — Confirmation UI for Immich Person Re-ID
-# Installed by install-systemd.sh to /etc/systemd/system/reid-ui.service
+# Installed by scripts/install.sh to /etc/systemd/system/reid-ui.service
 #
 # This is a long-running service that serves the confirmation UI on
-# port 8080 (by default). It pulls the image from ghcr.io.
+# port 8080 (by default). It proxies /api/* to reid-core. It pulls the image
+# from ghcr.io.
 #
 # To enable: systemctl enable --now reid-ui.service
 # To view logs: journalctl -u reid-ui -f
@@ -20,8 +21,8 @@ User=pi
 Group=pi
 WorkingDirectory=/home/pi/immich-person-reidentification
 Environment=GHCR_IMAGE=ghcr.io/loy/immich-person-reidentification:latest
-# Pull latest image on start
-ExecStartPre=/usr/bin/docker pull ${GHCR_IMAGE}
+# Pull latest image on start; ignore pull failures
+ExecStartPre=-/usr/bin/docker pull ${GHCR_IMAGE}
 # Run the UI server — override ENTRYPOINT (image default is reid-batch).
 # No store volume is mounted: the UI proxies /api/* to reid-core and
 # never touches the database itself.

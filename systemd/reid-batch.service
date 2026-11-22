@@ -1,5 +1,5 @@
 # reid-batch.service — Nightly pipeline trigger for Immich Person Re-ID
-# Installed by install-systemd.sh to /etc/systemd/system/reid-batch.service
+# Installed by scripts/install.sh to /etc/systemd/system/reid-batch.service
 #
 # This service asks the core (reid-core) to start one pipeline run, then
 # exits. The core owns the store and runs the pipeline as a subprocess, so
@@ -23,8 +23,8 @@ User=pi
 Group=pi
 WorkingDirectory=/home/pi/immich-person-reidentification
 Environment=GHCR_IMAGE=ghcr.io/loy/immich-person-reidentification:latest
-# Pull latest image before each run
-ExecStartPre=/usr/bin/docker pull ${GHCR_IMAGE}
+# Pull latest image before each run; ignore pull failures
+ExecStartPre=-/usr/bin/docker pull ${GHCR_IMAGE}
 # Trigger one run on the core and wait for it to finish, so the journal
 # shows the outcome and a failed run marks this unit failed. No store
 # volume: the core owns the store.
