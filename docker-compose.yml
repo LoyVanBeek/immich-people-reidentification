@@ -3,18 +3,20 @@
 # Profiles (deliberately separate, so `up` can never run a destructive or
 # one-shot service by accident):
 #   local  — run the core API + confirmation UI, built from source on the Pi
-#   remote — run the confirmation UI, image pulled from ghcr.io
-#   batch  — one-shot nightly batch run (trigger explicitly)
+#   remote — run the core API + confirmation UI, images pulled from ghcr.io
+#   batch  — ask the core for one pipeline run (the nightly timer's trigger)
+#   ops    — run one pipeline directly, bypassing the core (stop the core first)
 #   wipe   — one-shot store wipe (trigger explicitly; destructive)
 #
 # Usage:
-#   docker compose --profile local build        # build the image from source
-#   docker compose --profile local up -d        # start the confirmation UI
-#   docker compose --profile batch run --rm reid-batch    # run one batch
-#   docker compose --profile wipe run --rm reid-wipe      # wipe the store
+#   docker compose --profile local build           # build the image from source
+#   docker compose --profile local up -d           # start core + UI
+#   docker compose --profile batch run --rm reid-trigger   # run one batch now
+#   docker compose --profile wipe run --rm reid-wipe       # wipe the store
 #
 # Config is read from ./reid.toml (mounted at /etc/reid/reid.toml).
-# Data persists in ${REID_DATA_DIR:-./reid-data} (mounted at /data).
+# Data persists in ${REID_DATA_DIR:-./reid-data} (mounted at /data); only the
+# core, the ops batch run and the wipe mount it — the UI never touches it.
 # Set REID_DATA_DIR in .env to use a shared location, e.g. /srv/reid-data.
 #
 # UID/GID default to 1000:1000; override via .env or the environment.
@@ -22,7 +24,7 @@
 services:
   reid-core:
     # The core API server owns the store; the UI proxies /api/* to it.
-    profiles: ["local", "remote"]
+    profiles: ["local"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -58,6 +60,19 @@ services:
     depends_on:
       - reid-core
 
+  reid-core-remote:
+    profiles: ["remote"]
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-LoyVanBeek}/immich-person-reidentification:latest
+    container_name: reid-core
+    network_mode: host
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./reid.toml:/etc/reid/reid.toml:ro
+      - ${REID_DATA_DIR:-./reid-data}:/data
+    entrypoint: ["reid-core"]
+    command: ["--config", "/etc/reid/reid.toml"]
+    restart: unless-stopped
+
   reid-ui-remote:
     profiles: ["remote"]
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-LoyVanBeek}/immich-person-reidentification:latest
@@ -70,10 +85,30 @@ services:
     command: ["--config", "/etc/reid/reid.toml"]
     restart: unless-stopped
     depends_on:
-      - reid-core
+      - reid-core-remote
+
+  reid-trigger:
+    # Asks the running core for one pipeline run and waits for it. No store
+    # volume: the core owns the store and the job manager.
+    profiles: ["batch"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms: ["linux/arm64"]
+    image: reid-batch:local
+    container_name: reid-trigger
+    network_mode: host
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./reid.toml:/etc/reid/reid.toml:ro
+    entrypoint: ["reid-trigger"]
+    command: ["--config", "/etc/reid/reid.toml", "--trigger", "manual", "--wait"]
+    restart: "no"
 
   reid-batch:
-    profiles: ["batch"]
+    # Ops escape hatch: one pipeline run without the core. The core must be
+    # stopped, or both processes would write the same store.
+    profiles: ["ops"]
     build:
       context: .
       dockerfile: Dockerfile

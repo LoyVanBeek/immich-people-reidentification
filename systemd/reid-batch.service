@@ -1,17 +1,19 @@
-# reid-batch.service — Nightly batch run for Immich Person Re-ID
+# reid-batch.service — Nightly pipeline trigger for Immich Person Re-ID
 # Installed by install-systemd.sh to /etc/systemd/system/reid-batch.service
 #
-# This service runs the batch once and exits. It is triggered by
-# reid-batch.timer (see below) on a nightly schedule.
+# This service asks the core (reid-core) to start one pipeline run, then
+# exits. The core owns the store and runs the pipeline as a subprocess, so
+# this unit never touches the database and never runs two runs at once.
+# It is triggered by reid-batch.timer (see below) on a nightly schedule.
 #
 # The container image is pulled from ghcr.io (see install-systemd.sh
 # for the GHCR_IMAGE variable). If you build locally, change the
 # Image= line to your local tag.
 
 [Unit]
-Description=Immich Person Re-ID batch run
+Description=Immich Person Re-ID nightly run trigger
 Documentation=https://github.com/loy/immich-person-reidentification
-After=network-online.target docker.service
+After=network-online.target docker.service reid-core.service
 Wants=network-online.target
 Requires=docker.service
 
@@ -23,17 +25,20 @@ WorkingDirectory=/home/pi/immich-person-reidentification
 Environment=GHCR_IMAGE=ghcr.io/loy/immich-person-reidentification:latest
 # Pull latest image before each run
 ExecStartPre=/usr/bin/docker pull ${GHCR_IMAGE}
-# Run the batch — the image's ENTRYPOINT is already reid-batch
+# Trigger one run on the core and wait for it to finish, so the journal
+# shows the outcome and a failed run marks this unit failed. No store
+# volume: the core owns the store.
 ExecStart=/usr/bin/docker run --rm \
   --platform linux/arm64 \
   --network host \
   --user "${UID:-1000}:${GID:-1000}" \
+  --entrypoint reid-trigger \
   -v /home/pi/immich-person-reidentification/reid.toml:/etc/reid/reid.toml:ro \
-  -v /home/pi/immich-person-reidentification/reid-data:/data \
   ${GHCR_IMAGE} \
-  --config /etc/reid/reid.toml
-# Timeout after 30 minutes (safety net)
-TimeoutSec=1800
+  --config /etc/reid/reid.toml --trigger timer --wait
+# Timeout after 6 hours: a nightly run on the Pi can be long, and the
+# trigger waits for the whole run. The core still owns its own job state.
+TimeoutSec=21600
 # Log to journald
 StandardOutput=journal
 StandardError=journal

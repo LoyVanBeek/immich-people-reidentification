@@ -10,8 +10,9 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from .enums import DryRunActionStatus, ProposalStatus
 
@@ -234,6 +235,20 @@ class Store:
                     appearance INTEGER NOT NULL,
                     included INTEGER NOT NULL,
                     PRIMARY KEY (asset_id, appearance)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS run_status (
+                    id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    pid INTEGER,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    windows_done INTEGER NOT NULL DEFAULT 0,
+                    error TEXT
                 )
                 """
             )
@@ -811,6 +826,76 @@ class Store:
             "SELECT asset_id, appearance, included FROM write_decision"
         ).fetchall()
         return {(str(r[0]), int(r[1])): bool(r[2]) for r in rows}
+
+    # -- pipeline runs -------------------------------------------------------
+
+    def start_run(
+        self, run_id: str, trigger: str, pid: int | None, started_at: datetime
+    ) -> None:
+        """Record a pipeline run starting (the job manager owns exactly one)."""
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO run_status (id, state, trigger, pid, started_at)
+                VALUES (?, 'running', ?, ?, ?)
+                """,
+                (run_id, trigger, pid, started_at.isoformat()),
+            )
+
+    def update_run_progress(self, run_id: str, windows_done: int) -> None:
+        """Record per-window progress of a running pipeline job."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE run_status SET windows_done = ? WHERE id = ?",
+                (windows_done, run_id),
+            )
+
+    def finish_run(
+        self, run_id: str, state: str, finished_at: datetime, error: str | None = None
+    ) -> None:
+        """Record a run reaching its end state (done/failed/cancelled)."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE run_status SET state = ?, finished_at = ?, error = ? WHERE id = ?",
+                (state, finished_at.isoformat(), error, run_id),
+            )
+
+    def mark_interrupted_runs(self) -> None:
+        """Close runs a previous core process left open (crash/restart).
+
+        A run row only means something while its subprocess is alive; at
+        core startup none is, so a leftover 'running' row is stale.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE run_status SET state = 'interrupted', finished_at = ?
+                WHERE state = 'running'
+                """,
+                (datetime.now(UTC).isoformat(),),
+            )
+
+    def latest_run(self) -> dict[str, Any] | None:
+        """The most recent run, for status display."""
+        row = self._conn.execute(
+            """
+            SELECT id, state, trigger, pid, started_at, finished_at,
+                   windows_done, error
+            FROM run_status ORDER BY started_at DESC LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row[0]),
+            "state": str(row[1]),
+            "trigger": str(row[2]),
+            "pid": row[3],
+            "started_at": str(row[4]),
+            "finished_at": row[5],
+            "windows_done": int(row[6]),
+            "error": row[7],
+        }
 
     def dismiss_cluster(self, window: str, cluster: int, dismissed: bool) -> None:
         """Persist (or clear) 'I don't care about this cluster'."""

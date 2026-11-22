@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import numpy as np
 import pytest
@@ -1623,6 +1624,38 @@ class TestServerHTTP:
 
         yield base_url
 
+    def test_http_jobs_endpoint_reports_idle(self, server_url: str) -> None:
+        with urlopen(f"{server_url}/api/jobs") as resp:
+            assert resp.status == 200
+            data = json.load(resp)
+        assert data["active"] is False
+        assert data["last_run"] is None
+
+    def test_http_start_job_endpoint(
+        self, server_url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reid.core import JobManager
+
+        started: list[str] = []
+
+        def fake_start(self, trigger: str) -> dict[str, object]:
+            started.append(trigger)
+            return {"job_id": "run-1", "pid": 42}
+
+        monkeypatch.setattr(JobManager, "start", fake_start)
+        request = Request(
+            f"{server_url}/api/jobs",
+            data=json.dumps({"trigger": "manual"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request) as resp:
+            assert resp.status == 200
+            data = json.load(resp)
+
+        assert data == {"job_id": "run-1", "pid": 42}
+        assert started == ["manual"]
+
     def test_http_state_endpoint(self, server_url: str) -> None:
         with urlopen(f"{server_url}/api/state") as resp:
             assert resp.status == 200
@@ -2966,3 +2999,141 @@ log_level = "info"
         assert batches[0]["window"] == "2026-11-10"
         assert batches[0]["cluster"] == 0
         assert len(batches[0]["actions"]) == 1
+
+
+class TestJobManager:
+    """The core's job manager: one pipeline subprocess at a time."""
+
+    def _server(self, config_with_store: Path) -> CoreServer:
+        return CoreServer(load_config(config_with_store), config_with_store)
+
+    def test_start_records_a_running_job(
+        self, config_with_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(config_with_store)
+        captured: dict[str, object] = {}
+
+        class FakeProc:
+            pid = 4242
+
+        def fake_popen(args, **kwargs):
+            captured["args"] = args
+            captured["env"] = kwargs["env"]
+            return FakeProc()
+
+        monkeypatch.setattr("reid.core.subprocess.Popen", fake_popen)
+        # Keep the watcher thread out of the way: the run stays "running".
+        monkeypatch.setattr(
+            "reid.core.threading.Thread",
+            lambda **kwargs: type("T", (), {"start": lambda self: None})(),
+        )
+
+        result = server.jobs.start("manual")
+
+        assert "job_id" in result
+        assert result["pid"] == 4242
+        assert server.jobs.active() is True
+        run = server.store.latest_run()
+        assert run is not None
+        assert run["state"] == "running"
+        assert run["trigger"] == "manual"
+        assert run["pid"] == 4242
+        assert run["windows_done"] == 0
+        # The subprocess is the same reid-batch CLI, told which run it is.
+        assert captured["env"]["REID_RUN_ID"] == result["job_id"]  # type: ignore[index]
+        args = captured["args"]
+        assert args[:3] == [sys.executable, "-m", "reid.cli"]  # type: ignore[index]
+        assert str(config_with_store) in args  # type: ignore[operator]
+
+    def test_start_refuses_while_a_run_is_active(
+        self, config_with_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(config_with_store)
+
+        class FakeProc:
+            pid = 4242
+
+        monkeypatch.setattr("reid.core.subprocess.Popen", lambda *a, **k: FakeProc())
+        monkeypatch.setattr(
+            "reid.core.threading.Thread",
+            lambda **kwargs: type("T", (), {"start": lambda self: None})(),
+        )
+
+        assert "job_id" in server.jobs.start("timer")
+        second = server.jobs.start("manual")
+        assert "error" in second
+        assert "already" in second["error"]
+
+    def test_cancel_terminates_and_marks_cancelled(
+        self, config_with_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(config_with_store)
+        events: list[str] = []
+
+        class FakeProc:
+            pid = 4242
+
+            def terminate(self) -> None:
+                events.append("terminate")
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+        monkeypatch.setattr("reid.core.subprocess.Popen", lambda *a, **k: FakeProc())
+        monkeypatch.setattr(
+            "reid.core.threading.Thread",
+            lambda **kwargs: type("T", (), {"start": lambda self: None})(),
+        )
+
+        started = server.jobs.start("manual")
+        result = server.jobs.cancel()
+
+        assert events == ["terminate"]
+        assert result["cancelled"] == started["job_id"]
+        assert server.jobs.active() is False
+        run = server.store.latest_run()
+        assert run is not None
+        assert run["state"] == "cancelled"
+        assert run["finished_at"] is not None
+
+    def test_cancel_without_a_run_is_an_error(self, config_with_store: Path) -> None:
+        server = self._server(config_with_store)
+        assert "error" in server.jobs.cancel()
+
+    def test_confirmations_pause_while_a_run_is_active(
+        self, config_with_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = self._server(config_with_store)
+        monkeypatch.setattr(server.jobs, "active", lambda: True)
+
+        confirm = server.confirm_cluster(
+            {"cluster": 0, "window": "2026-11-10", "name": "Alice", "included": []}
+        )
+        assert "error" in confirm
+        assert "paused" in confirm["error"]
+        assert "error" in server.confirm_all({})
+        assert "error" in server.promote_all()
+        assert "error" in server.write_pending({"items": []})
+        assert "error" in server.promote_batch("nope")
+
+    def test_startup_closes_a_stale_running_row(self, config_with_store: Path) -> None:
+        """A core restart must not leave a phantom run in the UI."""
+        cfg = load_config(config_with_store)
+        first = CoreServer(cfg, config_with_store)
+        first.store.start_run("old-run", "timer", None, datetime.now())
+        assert first.store.latest_run()["state"] == "running"  # type: ignore[index]
+
+        # A new core process means no subprocess is alive: the row closes.
+        CoreServer(cfg, config_with_store)
+        run = first.store.latest_run()
+        assert run is not None
+        assert run["state"] == "interrupted"
+        assert run["finished_at"] is not None
+
+    def test_progress_updates_the_run_row(self, config_with_store: Path) -> None:
+        server = self._server(config_with_store)
+        server.store.start_run("run-1", "timer", None, datetime.now())
+        server.store.update_run_progress("run-1", 3)
+        run = server.store.latest_run()
+        assert run is not None
+        assert run["windows_done"] == 3

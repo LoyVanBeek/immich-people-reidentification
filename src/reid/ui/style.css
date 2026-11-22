@@ -74,6 +74,12 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 }
 .banner.dry { background: var(--warn); color: #000; }
 .banner.real { background: var(--bad); color: #fff; }
+/* A pipeline run is in progress: confirmations pause until it finishes. */
+.banner.run { background: var(--accent); color: #000; }
+.banner.run button { margin-left: 12px; }
+/* The core is unreachable: retry in the background, say so plainly. */
+.banner.down { background: var(--bad); color: #fff; }
+button[disabled] { opacity: .45; cursor: not-allowed; }
 
 /* Layout: 4-pane Finder-column workspace: days · clusters · appearances · actions */
 #app {

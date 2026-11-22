@@ -8,6 +8,25 @@ Status: early development — the batch container and checkpointed new-asset
 feed are the first slice. See `.scratch/person-reid-v1/` for the spec and
 tickets.
 
+## Architecture
+
+Three processes, one owner of the store:
+
+| process | role |
+| --- | --- |
+| `reid-core` | Always-on API server. **The only process that touches the store** (`/data/reid.sqlite3`): reads for the UI and every write (confirmations, pins, ignores, write decisions). It also owns the job manager: it runs `reid-batch` as a subprocess, one run at a time, and records progress in the store's `run_status` table. |
+| `reid-ui` | Serves the browser assets and proxies every `/api/*` request to the core, injecting the core token server-side. It has **no store volume** and holds no state. |
+| `reid-trigger` | One-shot client used by the nightly systemd timer: asks the core to start a run (`--wait` follows it to completion). |
+
+The core is reachable only through `X-API-Key` when `[core] api_key` (or
+`REID_CORE_API_KEY`) is set — do set it on a shared network, because the core
+can start pipeline runs. The browser talks only to the UI, which is still
+unauthenticated (full user auth is future work), so keep the UI on your LAN.
+
+Confirmations pause while a pipeline run is active: the core refuses them
+(the proposals it would write are about to be rebuilt) and the UI disables the
+buttons and shows the run's progress.
+
 ## What works today
 
 `reid-batch` runs one batch: it connects to Immich with a read-scoped API key,
@@ -41,21 +60,38 @@ reprocesses every asset.
 2. Copy `config/reid.example.toml`, edit the Immich base URL and the
    `[detection]` settings, and either put the API key in the file or
    (recommended) export `IMMICH_API_KEY`.
-3. Build and run (the image is ARM64; build on the Pi 5 itself or with
-   `docker buildx`):
+3. Run the core and the UI (the image is ARM64; build on the Pi 5 itself or
+   with `docker buildx`):
 
    ```bash
-   docker buildx build --platform linux/arm64 -t reid-batch .
-   docker run --rm --user "$(id -u):$(id -g)" \
-     -v "$PWD/reid.toml:/etc/reid/reid.toml:ro" \
-     -v /srv/reid-data:/data \
-     reid-batch --config /etc/reid/reid.toml
+   docker compose --profile local build
+   docker compose --profile local up -d reid-core reid-ui
    ```
 
-   `--user` makes the container write the store in `/data` as the host user —
-   needed for bind mounts. Schedule the same command nightly via cron or a
-   systemd timer.
-4. To reset the store, run the wipe entry point with the same config:
+   `reid-core` listens on `:8090`, `reid-ui` on `:8080` (open
+   `http://<pi>:8080`). Both use host networking and run as your UID/GID so the
+   bind-mounted store stays yours. Set `REID_DATA_DIR=/srv/reid-data` in `.env`
+   if the store should live outside the repo, and export `REID_CORE_API_KEY`
+   (or set `[core] api_key` in `reid.toml`) to require a token between the UI
+   and the core.
+
+   The nightly timer triggers a run on the core instead of running the
+   pipeline itself:
+
+   ```bash
+   docker run --rm --network host --entrypoint reid-trigger \
+     -v "$PWD/reid.toml:/etc/reid/reid.toml:ro" reid-batch:local \
+     --config /etc/reid/reid.toml --trigger timer --wait
+   ```
+
+   `scripts/install-systemd.sh` installs and enables `reid-core.service`,
+   `reid-ui.service` and the `reid-batch.timer` that runs the trigger nightly.
+   "Run now" in the UI starts the same run on demand.
+
+4. `reid-batch` remains the ops CLI for one run by hand (it needs the store
+   volume and should not run while the core is up — stop the core first, or
+   use "Run now"). To reset the store, run the wipe entry point with the same
+   config:
 
    ```bash
    docker run --rm --entrypoint reid-wipe --user "$(id -u):$(id -g)" \

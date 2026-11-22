@@ -18,6 +18,10 @@ let state = {
   view: "queue", // "queue" | "review" — remembered across reloads
   review: null, // /api/write-review payload
   reviewTab: null, // active person tab on the review page
+  jobActive: false, // a pipeline run is in progress (confirmations pause)
+  jobWindows: 0, // windows the running pipeline has finished
+  jobLast: null, // most recent run row, for a "last run failed" hint
+  coreDown: false, // the core is unreachable (banner + retry)
 };
 let keyHandler = null;
 let evidenceToken = 0; // discards stale fetches when the selection moves on
@@ -39,9 +43,34 @@ function visibleClusters() {
 
 /* ---------- API ---------- */
 async function fetchJson(path) {
-  const res = await fetch(`${API_BASE}${path}`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`);
+  } catch (err) {
+    noteCoreDown();
+    throw err;
+  }
+  if (!res.ok) {
+    // The UI proxies /api/* to the core: a 502 means the core is down.
+    if (res.status === 502) noteCoreDown();
+    throw new Error(`${res.status} ${res.statusText}`);
+  }
+  noteCoreUp();
   return res.json();
+}
+
+// The core going away must be visible, not a silently stale page: a banner
+// says so and the poll keeps retrying until it comes back.
+function noteCoreDown() {
+  if (state.coreDown) return;
+  state.coreDown = true;
+  render();
+}
+
+function noteCoreUp() {
+  if (!state.coreDown) return;
+  state.coreDown = false;
+  render();
 }
 
 async function loadInitialState() {
@@ -119,6 +148,7 @@ function render() {
     <div class="top">
       <strong>Review</strong>
       <span class="chip acc">${visibleClusters().filter(c => c.status === "open").length} open</span>
+      ${lastRunChipHTML()}
       <span class="spacer"></span>
       <div class="knobs">
         <label><input type="checkbox" id="dryToggle" ${state.dryRun ? "checked" : ""}>review before writing</label>
@@ -127,6 +157,7 @@ function render() {
         <button id="gearBtn" title="Settings">⚙</button>
       </div>
       <button id="viewReview" title="Review everything about to be written, per person">Write review</button>
+      <button id="runNow" ${state.jobActive ? "disabled" : ""} title="Run the pipeline now: look for new photos and regroup everything">${state.jobActive ? "Running…" : "Run now"}</button>
       <span class="muted"><kbd class="kbd">j</kbd>/<kbd class="kbd">k</kbd> move · <kbd class="kbd">c</kbd> confirm · <kbd class="kbd">s</kbd> skip</span>
       <div class="cfgpop" id="cfgPop">${configPopoverHTML()}</div>
     </div>
@@ -153,9 +184,27 @@ function render() {
 }
 
 function bannerHTML() {
+  if (state.coreDown) {
+    return `<div class="banner down">Can't reach the server — is the core running? Retrying…</div>`;
+  }
+  if (state.jobActive) {
+    const n = state.jobWindows;
+    return `<div class="banner run"><span id="jobProgressText">Pipeline running — ${n} ${n === 1 ? "day" : "days"} done</span> · confirmations are paused <button id="cancelRun">Cancel run</button></div>`;
+  }
   return state.dryRun
     ? `<div class="banner dry">PREVIEW — approving only records; you choose when to write to Immich</div>`
     : `<div class="banner real">LIVE — confirmations write real faces to Immich</div>`;
+}
+
+// A run that failed, was cancelled or was interrupted leaves a visible
+// trace; a successful run needs no badge (the refreshed queue shows it).
+function lastRunChipHTML() {
+  const run = state.jobLast;
+  if (state.jobActive || !run || run.state === "done") return "";
+  const label =
+    run.state === "cancelled" ? "last run cancelled" :
+    run.state === "interrupted" ? "last run interrupted" : "last run failed";
+  return `<span class="chip bad" title="${esc(run.error || label)}">${label}</span>`;
 }
 
 function configPopoverHTML() {
@@ -227,7 +276,7 @@ function dryBatchesHTML() {
   return `
     <div class="dry-batches">
       <div class="batch-id" style="margin-bottom:8px">Pending writes — approved, not yet in Immich</div>
-      ${pending > 1 ? `<button id="promoteAll" class="primary" style="width:100%;margin-bottom:8px" title="Write every approved change to Immich in one go">Write all to Immich (${pending} groups)</button>` : ""}
+      ${pending > 1 ? `<button id="promoteAll" class="primary" style="width:100%;margin-bottom:8px" ${state.jobActive ? "disabled" : ""} title="Write every approved change to Immich in one go">Write all to Immich (${pending} groups)</button>` : ""}
       ${dryBatches.map(b => {
         // Server shape: {id, name, window, cluster, timestamp, promoted_at,
         // actions: [{asset_id, appearance, head_box, status, message}]}
@@ -242,7 +291,7 @@ function dryBatchesHTML() {
         <div class="dry-batch">
           <div class="batch-id" title="${esc(b.id)}">Approved ${b.timestamp ? new Date(b.timestamp).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : ""} — ${esc(b.name || "?")} · ${esc(b.window || "")}</div>
           <div class="batch-entries">${esc(summary || "no actions")}</div>
-          ${b.promoted_at ? '<span class="chip ok">written to Immich</span>' : `<button class="primary" data-promote="${b.id}">Write to Immich</button>`}
+          ${b.promoted_at ? '<span class="chip ok">written to Immich</span>' : `<button class="primary" data-promote="${b.id}" ${state.jobActive ? "disabled" : ""}>Write to Immich</button>`}
         </div>
       `;
       }).join("")}
@@ -283,7 +332,7 @@ function paneHTML() {
     </div>
     <div class="actions">
       ${state.activeKey !== null ? `
-        <button class="b-ok primary">
+        <button class="b-ok primary" ${state.jobActive ? "disabled" : ""}>
           ${state.dryRun ? `Approve ${a.writable || 0} for review` : `Write ${a.writable || 0} faces`}
         </button>
         <button class="b-skip">Skip cluster</button>
@@ -458,11 +507,13 @@ function renderReviewShell(root) {
     <div class="top review-top">
       <strong>Write review</strong>
       <span class="chip acc">${(state.review?.total_writable ?? 0)} writes pending</span>
+      ${lastRunChipHTML()}
       <span class="spacer"></span>
       <div class="knobs">
         <label><input type="checkbox" id="dryToggle" ${state.dryRun ? "checked" : ""}>review before writing</label>
       </div>
       <button id="viewQueue" class="primary">Back to queue</button>
+      <button id="runNow" ${state.jobActive ? "disabled" : ""} title="Run the pipeline now: look for new photos and regroup everything">${state.jobActive ? "Running…" : "Run now"}</button>
       <div class="cfgpop" id="cfgPop">${configPopoverHTML()}</div>
     </div>
     <div class="rvwrap">
@@ -570,7 +621,7 @@ function renderPersonPane(tab) {
   ` : "";
   const globalBar = `
     <div class="rv-global">
-      <button id="rvConfirm" class="primary" ${tab.writable ? "" : "disabled"}>
+      <button id="rvConfirm" class="primary" ${tab.writable && !state.jobActive ? "" : "disabled"}>
         ${state.dryRun ? `Approve ${tab.writable} writes for review` : `Write ${tab.writable} faces`}
       </button>
       <button id="rvAll">All</button>
@@ -611,7 +662,7 @@ function renderPendingPane() {
   const selected = pending.filter(p => state.pendingSelected.has(pendingKey(p)));
   const globalBar = `
     <div class="rv-global">
-      <button id="rvWritePending" class="primary" ${selected.length ? "" : "disabled"}>
+      <button id="rvWritePending" class="primary" ${selected.length && !state.jobActive ? "" : "disabled"}>
         Write ${selected.length} selected to Immich
       </button>
       <button id="rvSelAll">Select all</button>
@@ -674,6 +725,7 @@ function togglePending(key) {
 }
 
 async function writeSelectedPending() {
+  if (pausedByRun()) return;
   const pending = state.review?.pending || [];
   const items = pending
     .filter(p => state.pendingSelected.has(pendingKey(p)))
@@ -720,6 +772,7 @@ function wireReviewEvents() {
     });
   });
   document.getElementById("cfgSave")?.addEventListener("click", saveConfig);
+  wireRunButtons();
 }
 
 function wireReviewBodyEvents() {
@@ -772,6 +825,7 @@ async function toggleAllWrites(included) {
 }
 
 async function confirmAllWrites() {
+  if (pausedByRun()) return;
   try {
     const res = await fetch("/api/confirm-all", {
       method: "POST",
@@ -794,6 +848,103 @@ async function confirmAllWrites() {
   } catch (err) {
     toast(`confirm failed: ${err.message}`);
   }
+}
+
+/* ---------- Pipeline runs ---------- */
+// The core runs the pipeline as one job at a time; the UI polls its status
+// and pauses confirmations while a run is rebuilding proposals.
+function pausedByRun() {
+  if (!state.jobActive) return false;
+  toast("A pipeline run is in progress — confirmations are paused until it finishes.");
+  return true;
+}
+
+async function pollJobs() {
+  let data;
+  try {
+    data = await fetchJson("/api/jobs");
+  } catch (err) {
+    return; // noteCoreDown already showed the banner; keep retrying
+  }
+  const wasActive = state.jobActive;
+  const wasWindows = state.jobWindows;
+  const prevLastState = state.jobLast?.state ?? null;
+  const run = data.last_run || null;
+  state.jobActive = !!data.active;
+  state.jobLast = run;
+  state.jobWindows = state.jobActive ? (run?.windows_done ?? 0) : 0;
+
+  if (wasActive && !state.jobActive) {
+    toast(run?.state === "done" ? "Pipeline run finished — the queue is up to date." : "Pipeline run stopped.");
+    render();
+    await refreshAfterRun();
+    return;
+  }
+  if (!wasActive && state.jobActive) {
+    render(); // banner + disabled confirmations
+    return;
+  }
+  if (state.jobActive && wasWindows !== state.jobWindows) {
+    const el = document.getElementById("jobProgressText");
+    if (el) {
+      const n = state.jobWindows;
+      el.textContent = `Pipeline running — ${n} ${n === 1 ? "day" : "days"} done`;
+    }
+    return;
+  }
+  // First poll after boot, or a run outcome we have not shown yet: the
+  // last-run badge lives in the top bar, so re-render to show it.
+  if (!state.jobActive && prevLastState !== (run?.state ?? null)) render();
+}
+
+async function refreshAfterRun() {
+  try {
+    await loadInitialState();
+    await loadDryRunBatches();
+    if (state.view === "review") await loadReview();
+  } catch (err) {
+    toast(`could not refresh after the run: ${err.message}`);
+  }
+}
+
+async function runNow() {
+  try {
+    const res = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trigger: "manual" }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      toast(data.error);
+      return;
+    }
+    toast("Pipeline started — this can take a while.");
+    await pollJobs();
+  } catch (err) {
+    toast(`could not start a run: ${err.message}`);
+  }
+}
+
+async function cancelRun() {
+  if (!window.confirm("Stop the pipeline run? Finished work is kept and the next run continues from there.")) return;
+  try {
+    const res = await fetch("/api/jobs/cancel", { method: "POST" });
+    const data = await res.json();
+    if (data.error) {
+      toast(data.error);
+      return;
+    }
+    toast("Stopping the pipeline run…");
+    await pollJobs();
+  } catch (err) {
+    toast(`could not stop the run: ${err.message}`);
+  }
+}
+
+function wireRunButtons() {
+  document.getElementById("runNow")?.addEventListener("click", runNow);
+  document.getElementById("cancelRun")?.addEventListener("click", cancelRun);
 }
 
 /* ---------- Event wiring ---------- */
@@ -860,6 +1011,9 @@ function wireEvents() {
     });
   });
   document.getElementById("promoteAll")?.addEventListener("click", promoteAll);
+
+  // Pipeline runs
+  wireRunButtons();
 
   // Keyboard navigation
   if (keyHandler) document.removeEventListener("keydown", keyHandler);
@@ -1020,6 +1174,7 @@ async function loadDryRunBatches() {
 }
 
 async function promoteBatch(id) {
+  if (pausedByRun()) return;
   try {
     const res = await fetch(`/api/promote/${id}`, { method: "POST" });
     const data = await res.json();
@@ -1035,6 +1190,7 @@ async function promoteBatch(id) {
 }
 
 async function promoteAll() {
+  if (pausedByRun()) return;
   try {
     const res = await fetch("/api/promote-all", { method: "POST" });
     const data = await res.json();
@@ -1396,6 +1552,7 @@ function buildAssignment(clusterRow) {
 
 async function doConfirm(key) {
   if (key === null) return;
+  if (pausedByRun()) return;
   const c = state.clusters.find(x => keyOf(x) === key);
   if (!c || c.status !== "open") return;
   if (state.evidenceLoading) {
@@ -1595,6 +1752,10 @@ async function boot() {
   await loadInitialState();
   if (state.view === "review") await loadReview();
   await loadDryRunBatches();
+  // Poll the core's job status: progress while a run is going, a refresh
+  // when it finishes, and a banner when the core is unreachable.
+  await pollJobs();
+  setInterval(pollJobs, 5000);
 }
 boot().catch(err => {
   console.error("Failed to load UI state:", err);

@@ -24,8 +24,11 @@ Single-context: root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md`.
 ### Source layout
 - `src/reid/` — main package
   - `batch.py` — batch run entry point (checkpointed feed, embed, cluster, anchor)
-  - `cli.py` — `reid-batch`, `reid-wipe`, `reid-ui` Click commands
-  - `server.py` — confirmation UI HTTP API (`/api/*`)
+  - `cli.py` — `reid-batch` Click command (one pipeline run)
+  - `core.py` — `reid-core`: core API server, the single store owner; also the
+    job manager (one pipeline subprocess at a time, `run_status` progress)
+  - `server.py` — `reid-ui`: static assets + a thin proxy of `/api/*` to the core
+  - `trigger.py` — `reid-trigger`: asks the core to start a run (systemd timer)
   - `store.py` — SQLite persistence (checkpoint, embeddings, proposals, write ledger, tombstones, dry-run batches)
   - `immich.py` — Immich API client (read + write scoped)
   - `detector.py` — YOLO11n person detection

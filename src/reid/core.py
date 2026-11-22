@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
 import sys
+import threading
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -167,6 +171,15 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
 
         if path == "/api/state":
             self._send_json(self.core_server.get_ui_state())  # type: ignore[union-attr]
+        elif path == "/api/jobs":
+            server = self.core_server
+            assert server is not None
+            self._send_json(
+                {
+                    "active": server.jobs.active(),
+                    "last_run": server.store.latest_run(),
+                }
+            )
         elif path == "/api/write-review":
             self._send_json(self.core_server.get_write_review())  # type: ignore[union-attr]
         elif path == "/api/evidence":
@@ -263,6 +276,23 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
                 str(body.get("name", "")).strip(),
             )
             self._send_json(result)
+        elif path == "/api/jobs":
+            # A bare POST (no body) triggers with the default label.
+            body = (
+                self._read_json()
+                if self.headers.get("content-length", "0") != "0"
+                else {}
+            )
+            if body is None:
+                return
+            server = self.core_server
+            assert server is not None
+            result = server.jobs.start(str(body.get("trigger", "manual")))
+            self._send_json(result)
+        elif path == "/api/jobs/cancel":
+            server = self.core_server
+            assert server is not None
+            self._send_json(server.jobs.cancel())
         elif path == "/api/write-decision":
             body = self._read_json()
             if body is None:
@@ -361,15 +391,114 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
         return not key or self.headers.get("x-api-key") == key
 
 
+class JobManager:
+    """Runs the pipeline as an isolated subprocess, one job at a time.
+
+    The subprocess is the same `reid-batch` CLI the nightly timer used to
+    run directly — one code path, isolated so a pipeline crash can never
+    take the core (or the UI) down. Progress lands in the run_status
+    table via the REID_RUN_ID env var.
+    """
+
+    def __init__(self, store: Store, config_path: Path) -> None:
+        self._store = store
+        self._config_path = config_path
+        # No subprocess survives a core restart: close stale run rows so the
+        # UI never shows a run that is not actually happening.
+        store.mark_interrupted_runs()
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._job_id: str | None = None
+        # The watcher thread cannot touch SQLite (the connection belongs to
+        # the thread that created it), so it only records the exit code; the
+        # next call from the server thread finalizes the run row.
+        self._pending_exit: tuple[str, int] | None = None
+
+    def active(self) -> bool:
+        """True while a pipeline subprocess is running."""
+        self._finalize()
+        return self._proc is not None
+
+    def _finalize(self) -> None:
+        """Write the watcher's exit code to the store, on the server thread."""
+        pending = self._pending_exit
+        if pending is None:
+            return
+        self._pending_exit = None
+        run_id, code = pending
+        if run_id != self._job_id:
+            return  # cancelled or superseded: cancel() already recorded it
+        state = "done" if code == 0 else "failed"
+        error = None if code == 0 else f"pipeline exited with code {code}"
+        self._store.finish_run(run_id, state, datetime.now(UTC), error)
+        self._proc = None
+        self._job_id = None
+
+    def start(self, trigger: str) -> dict[str, Any]:
+        """Start one pipeline run; refuses while another is active."""
+        if self.active():
+            return {"error": "a pipeline run is already in progress"}
+        run_id = str(uuid.uuid4())
+        env = {**os.environ, "REID_RUN_ID": run_id}
+        proc = subprocess.Popen(
+            # `python -m reid.cli` runs the batch entry point itself (the
+            # module has no subcommands); using -m avoids PATH assumptions.
+            [
+                sys.executable,
+                "-m",
+                "reid.cli",
+                "--config",
+                str(self._config_path),
+            ],
+            env=env,
+            # Inherit the core's stdout/stderr so `docker logs reid-core`
+            # shows the pipeline's own log lines alongside the core's.
+        )
+        self._proc = proc
+        self._job_id = run_id
+        self._store.start_run(run_id, trigger, proc.pid, datetime.now(UTC))
+        threading.Thread(target=self._watch, args=(proc, run_id), daemon=True).start()
+        return {"job_id": run_id, "pid": proc.pid}
+
+    def _watch(self, proc: subprocess.Popen[bytes], run_id: str) -> None:
+        """Record the subprocess exit; the server thread writes it to the store.
+
+        No SQLite here: the connection is thread-bound to the server thread.
+        """
+        code = proc.wait()
+        self._pending_exit = (run_id, code)
+
+    def cancel(self) -> dict[str, Any]:
+        """Terminate the running job; checkpointing makes it resumable."""
+        if self._proc is None or self._job_id is None:
+            return {"error": "no pipeline run in progress"}
+        proc, run_id = self._proc, self._job_id
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        # Drop any exit the watcher recorded: this run is cancelled, and the
+        # row must not flip to failed afterwards.
+        self._pending_exit = None
+        self._store.finish_run(run_id, "cancelled", datetime.now(UTC))
+        self._proc = None
+        self._job_id = None
+        return {"cancelled": run_id}
+
+
 class CoreServer:
     """The core API server: the single owner of the store."""
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, config_path: Path | None = None) -> None:
         self.cfg = cfg
+        self.config_path = config_path
         self.store = Store(cfg.store_path)
         # Original file names, fetched once per asset and cached for the
         # process lifetime: the review UI shows file names, not UUIDs.
         self._asset_names: dict[str, str] = {}
+        # The pipeline runs as an isolated subprocess, one at a time.
+        self.jobs = JobManager(self.store, config_path or Path("reid.toml"))
         head_cfg = HeadDetectorConfig(
             weights_path=cfg.head_detection.weights_path,
             input_size=cfg.head_detection.input_size,
@@ -831,6 +960,12 @@ class CoreServer:
             "included": included,
         }
 
+    def _require_idle(self) -> dict[str, Any] | None:
+        """Confirmations pause while a pipeline run is rebuilding proposals."""
+        if self.jobs.active():
+            return {"error": "a pipeline run is in progress — confirmations are paused"}
+        return None
+
     def confirm_all(self, body: dict[str, Any]) -> dict[str, Any]:
         """Confirm every pending write in one go, grouped by name/window/cluster.
 
@@ -839,6 +974,9 @@ class CoreServer:
         this composes the existing per-cluster confirm, nothing new writes
         outside it.
         """
+        paused = self._require_idle()
+        if paused:
+            return paused
         dry_run = bool(body.get("dry_run", True))
         review = self.get_write_review()
         groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
@@ -885,6 +1023,9 @@ class CoreServer:
         Batches whose promote reports an error are not counted as promoted
         and stay in the list for another try.
         """
+        paused = self._require_idle()
+        if paused:
+            return paused
         results = []
         for batch in self.store.get_dry_run_batches():
             if batch.promoted_at is not None:
@@ -1515,6 +1656,9 @@ class CoreServer:
 
         Returns a dict with the results of the confirmation.
         """
+        paused = self._require_idle()
+        if paused:
+            return paused
         cluster = int(body.get("cluster", -1))
         window = str(body.get("window", ""))
         name = str(body.get("name", "")).strip()
@@ -1715,6 +1859,9 @@ class CoreServer:
         Idempotent: promoting an already-promoted batch returns success with
         promoted: true and the original person_id.
         """
+        paused = self._require_idle()
+        if paused:
+            return paused
 
         # Get the dry-run batch
         batch = self.store.get_dry_run_batch(batch_id)
@@ -1824,6 +1971,9 @@ class CoreServer:
         and a batch whose actions are all written closes automatically —
         unselected items stay pending for a later pass.
         """
+        paused = self._require_idle()
+        if paused:
+            return paused
         items = body.get("items", [])
         if not items:
             return {"error": "no items selected"}
@@ -1950,7 +2100,7 @@ class CoreServer:
 def serve_core(config_path: Path, host: str = "0.0.0.0", port: int = 8090) -> None:
     """Run the core API server."""
     cfg = load_config(config_path)
-    core_server = CoreServer(cfg)
+    core_server = CoreServer(cfg, config_path)
 
     CoreAPIHandler.core_server = core_server
 

@@ -169,6 +169,8 @@ const REVIEW = {
   total_writable: 2,
 };
 
+const DOMS = [];
+
 function makeDom(opts = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>
     <div id="app"></div><div id="modalhost"></div><div id="toasthost"></div>
@@ -176,6 +178,9 @@ function makeDom(opts = {}) {
   const fetchLog = [];
   dom.window.fetch = async path => {
     fetchLog.push(path);
+    if (opts.coreDown && path.startsWith(opts.coreDown)) {
+      throw new TypeError("fetch failed");
+    }
     let json;
     if (path === "/api/state") {
       json = {
@@ -236,6 +241,10 @@ function makeDom(opts = {}) {
       if (delay) await new Promise(r => setTimeout(r, delay));
     } else if (path === "/api/dry-run-batches") {
       json = [DRY_BATCH];
+    } else if (path === "/api/jobs") {
+      json = opts.jobs || { active: false, last_run: null };
+    } else if (path === "/api/jobs/cancel") {
+      json = { cancelled: "run-1" };
     } else if (path === "/api/write-review") {
       json = opts.emptyPending
         ? { ...REVIEW, pending: [] }
@@ -253,6 +262,7 @@ function makeDom(opts = {}) {
     }
     return { ok: true, json: async () => json };
   };
+  DOMS.push(dom);
   dom.window.eval(APP_JS);
   return { dom, fetchLog, window: dom.window, document: dom.window.document };
 }
@@ -808,6 +818,78 @@ async function testPendingWritesTabCardsAndWrite() {
   assert.ok(fetchLog.includes("/api/write-pending"), "no /api/write-pending request");
 }
 
+
+async function testRunNowStartsAJob() {
+  // "Run now" asks the core for a run; the core owns the pipeline, so the
+  // UI only posts the trigger.
+  const { window, document, fetchLog } = makeDom();
+  await window.eval("boot()");
+  await flush(window);
+
+  const btn = document.getElementById("runNow");
+  assert.ok(btn, "no Run now button");
+  btn.dispatchEvent(new window.Event("click", { bubbles: true }));
+  await flush(window, 20);
+
+  assert.ok(fetchLog.includes("/api/jobs"), "Run now did not POST to /api/jobs");
+  assert.match(document.getElementById("toasthost").textContent, /started/i);
+}
+
+async function testRunningPipelineBannerPausesConfirmations() {
+  // While a run is active the banner says so and the confirm button is
+  // disabled — the server refuses those writes too.
+  const { window, document } = makeDom({
+    jobs: {
+      active: true,
+      last_run: { id: "run-1", state: "running", windows_done: 2 },
+    },
+  });
+  await window.eval("boot()");
+  await flush(window);
+
+  const banner = document.querySelector(".banner.run");
+  assert.ok(banner, "no running banner");
+  assert.match(banner.textContent, /2 days done/);
+  assert.match(banner.textContent, /confirmations are paused/);
+  assert.ok(document.querySelector(".b-ok")?.disabled, "confirm button not disabled");
+
+  // Cancelling asks the core to stop the run.
+  const { window: w2, document: d2, fetchLog } = makeDom({
+    jobs: { active: true, last_run: { id: "run-1", state: "running", windows_done: 0 } },
+  });
+  w2.confirm = () => true;
+  await w2.eval("boot()");
+  await flush(w2);
+  d2.getElementById("cancelRun").dispatchEvent(new w2.Event("click", { bubbles: true }));
+  await flush(w2, 20);
+  assert.ok(fetchLog.includes("/api/jobs/cancel"), "cancel did not reach the core");
+}
+
+async function testFailedRunLeavesAVisibleChip() {
+  // A failed nightly run must not vanish silently: the top bar says so.
+  const { window, document } = makeDom({
+    jobs: {
+      active: false,
+      last_run: { id: "run-1", state: "failed", error: "pipeline exited with code 1" },
+    },
+  });
+  await window.eval("boot()");
+  await flush(window);
+  const chip = document.querySelector(".top .chip.bad");
+  assert.ok(chip, "no failed-run chip");
+  assert.match(chip.textContent, /last run failed/);
+  assert.match(chip.title, /code 1/);
+}
+
+async function testCoreDownBanner() {
+  // An unreachable core must be visible, not a silently stale page.
+  const { window, document } = makeDom({ coreDown: "/api/jobs" });
+  await window.eval("boot()");
+  await flush(window);
+  assert.ok(document.querySelector(".banner.down"), "no core-down banner");
+  assert.match(document.querySelector(".banner.down").textContent, /can't reach the server/i);
+}
+
 const tests = [
   testBootRendersWithDryRunBatchPresent,
   testDayClickSelectsAndLoads,
@@ -830,9 +912,16 @@ const tests = [
   testPendingWritesTabCardsAndWrite,
   testReviewTabClicksSwitchPanes,
   testFullyLabeledClustersHiddenBehindToggle,
+  testRunNowStartsAJob,
+  testRunningPipelineBannerPausesConfirmations,
+  testCoreDownBanner,
+  testFailedRunLeavesAVisibleChip,
 ];
 for (const test of tests) {
   await test();
+  // The app polls /api/jobs every 5s; close each jsdom window so its
+  // timers don't keep this process alive.
+  for (const dom of DOMS.splice(0)) dom.window.close();
   console.log(`ok - ${test.name}`);
 }
 console.log(`\n${tests.length} UI tests passed`);

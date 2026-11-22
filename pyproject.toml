@@ -24,6 +24,7 @@ reid-batch = "reid.cli:batch"
 reid-wipe = "reid.wipe:main"
 reid-ui = "reid.server:main"
 reid-core = "reid.core:main"
+reid-trigger = "reid.trigger:main"
 
 [dependency-groups]
 dev = [

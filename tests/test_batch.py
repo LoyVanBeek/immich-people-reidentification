@@ -6,12 +6,14 @@ the stub Immich HTTP server, which records every request.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from click.testing import CliRunner, Result
 
 from reid.cli import batch
-from reid.config import API_KEY_ENV
+from reid.config import API_KEY_ENV, load_config
+from reid.store import Store
 
 from . import library
 from .conftest import run_batch
@@ -185,3 +187,28 @@ def test_fixture_photos_are_served_through_the_asset_endpoints(
             assert response.status_code == 200, endpoint
             assert response.headers["content-type"] == "image/jpeg"
             assert response.content == expected, f"fixture bytes differ for {endpoint}"
+
+
+def test_run_reports_window_progress_to_the_job_manager(
+    stub: StubImmich, make_config: Any, monkeypatch: Any
+) -> None:
+    """A core-launched run records how many windows it has finished.
+
+    The UI polls this to show progress; without REID_RUN_ID the same code
+    path does nothing (ops runs keep working unchanged).
+    """
+    config = make_config(stub)
+    cfg = load_config(config)
+    Store(cfg.store_path).start_run("run-1", "timer", None, datetime.now(UTC))
+    monkeypatch.setenv("REID_RUN_ID", "run-1")
+
+    result = run_batch(config)
+    assert result.exit_code == 0, result.output
+
+    windows = [
+        line for line in result.output.splitlines() if line.startswith("window ")
+    ]
+    assert windows, "run reported no windows"
+    run = Store(cfg.store_path).latest_run()
+    assert run is not None
+    assert run["windows_done"] == len(windows)

@@ -68,6 +68,17 @@ face_overlap = 0.5
 # debug | info | warning | error
 log_level = "info"
 
+[core]
+# The core API server (reid-core) is the single owner of the store; the UI
+# (reid-ui) serves the browser assets and proxies /api/* to it.
+url = "http://127.0.0.1:8090"
+
+# Token the UI (and the nightly trigger) must present. Leave empty for local
+# development; on any shared network set it here or, better, export
+# REID_CORE_API_KEY. The core can start pipeline runs, so treat it as a
+# secret.
+api_key = ""
+
 # Resetting: `reid-wipe` erases all stored embeddings and resets the batch
 # checkpoint so the next run reprocesses every asset from scratch. Run it
 # only at a batch/configuration boundary (e.g. after changing detection

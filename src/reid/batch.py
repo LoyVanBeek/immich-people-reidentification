@@ -16,6 +16,7 @@ store. Nothing is written to Immich — proposals exist only locally.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -309,7 +310,10 @@ def _cluster_and_anchor(
     )
     proposals: list[Proposal] = []
     summaries: list[WindowSummary] = []
-    for window in sorted(windows):
+    # When the core's job manager launched this run, report per-window
+    # progress so the UI can show how far along it is.
+    run_id = os.environ.get("REID_RUN_ID")
+    for windows_processed, window in enumerate(sorted(windows), start=1):
         members = sorted(
             windows[window],
             key=lambda appearance: (appearance.asset_id, appearance.appearance),
@@ -336,6 +340,8 @@ def _cluster_and_anchor(
         )
         proposals.extend(outcome.proposals)
         summaries.append(outcome.summary)
+        if run_id:
+            store.update_run_progress(run_id, windows_processed)
         _log.info(
             "window %s: clusters=%d anchored=%d conflicted=%d anchor_less=%d "
             "singletons=%d proposals=%d ask_for_name=%d",

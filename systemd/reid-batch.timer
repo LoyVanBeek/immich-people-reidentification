@@ -1,15 +1,15 @@
 # reid-batch.timer — Nightly trigger for Immich Person Re-ID batch
 # Installed by install-systemd.sh to /etc/systemd/system/reid-batch.timer
 #
-# Runs daily at 02:00 (adjust OnCalendar as needed). The batch run
-# itself is the reid-batch.service (oneshot).
+# Runs daily at 02:00 (adjust OnCalendar as needed). reid-batch.service
+# is a oneshot trigger: it asks the core for a run and waits for it.
 #
 # To enable: systemctl enable --now reid-batch.timer
 # To check:  systemctl list-timers reid-batch.timer
 # To run now: systemctl start reid-batch.service
 
 [Unit]
-Description=Nightly Immich Person Re-ID batch run
+Description=Nightly Immich Person Re-ID run trigger
 Requires=reid-batch.service
 
 [Timer]
