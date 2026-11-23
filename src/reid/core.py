@@ -2086,7 +2086,11 @@ class CoreServer:
                     {
                         "asset_id": action.asset_id,
                         "appearance": action.appearance,
-                        "head_box": action.head_box,
+                        "head_box": (
+                            [float(v) for v in action.head_box]
+                            if action.head_box is not None
+                            else None
+                        ),
                         "status": action.status.value,
                         "message": action.message,
                     }

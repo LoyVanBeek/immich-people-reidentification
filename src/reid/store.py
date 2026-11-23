@@ -531,7 +531,7 @@ class Store:
             )
             for action in actions:
                 head_box_json = (
-                    json.dumps(list(action.head_box))
+                    json.dumps([float(v) for v in action.head_box])
                     if action.head_box is not None
                     else None
                 )
