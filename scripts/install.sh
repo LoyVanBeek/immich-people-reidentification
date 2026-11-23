@@ -378,10 +378,15 @@ WorkingDirectory=@@INSTALL_DIR@@
 Environment=GHCR_IMAGE=@@IMAGE@@
 # Pull latest image on start; ignore pull failures (offline Pi, etc.)
 ExecStartPre=-/usr/bin/docker pull ${GHCR_IMAGE}
+# Stop and remove any previously running container with the same name so a
+# restart never leaves two containers bound to port 8090.
+ExecStartPre=-/usr/bin/docker stop reid-core
+ExecStartPre=-/usr/bin/docker rm reid-core
 # Run the core API server — override ENTRYPOINT (image default is reid-batch)
 ExecStart=/usr/bin/docker run --rm \
   --platform linux/arm64 \
   --network host \
+  --name reid-core \
   --user @@UID_GID@@ \
   --entrypoint reid-core \
   -v @@INSTALL_DIR@@/reid.toml:/etc/reid/reid.toml:ro \
@@ -391,6 +396,8 @@ ExecStart=/usr/bin/docker run --rm \
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=30
+# Clean up the named container after the service stops.
+ExecStopPost=-/usr/bin/docker rm reid-core
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=reid-core
@@ -428,12 +435,17 @@ WorkingDirectory=@@INSTALL_DIR@@
 Environment=GHCR_IMAGE=@@IMAGE@@
 # Pull latest image on start; ignore pull failures
 ExecStartPre=-/usr/bin/docker pull ${GHCR_IMAGE}
+# Stop and remove any previously running container with the same name so a
+# restart never leaves two containers bound to port 8080.
+ExecStartPre=-/usr/bin/docker stop reid-ui
+ExecStartPre=-/usr/bin/docker rm reid-ui
 # Run the UI server — override ENTRYPOINT (image default is reid-batch).
 # No store volume: the UI proxies /api/* to reid-core and never touches the
 # database itself.
 ExecStart=/usr/bin/docker run --rm \
   --platform linux/arm64 \
   --network host \
+  --name reid-ui \
   --user @@UID_GID@@ \
   --entrypoint reid-ui \
   -v @@INSTALL_DIR@@/reid.toml:/etc/reid/reid.toml:ro \
@@ -442,6 +454,8 @@ ExecStart=/usr/bin/docker run --rm \
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=30
+# Clean up the named container after the service stops.
+ExecStopPost=-/usr/bin/docker rm reid-ui
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=reid-ui
