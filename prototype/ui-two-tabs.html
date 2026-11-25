@@ -195,7 +195,6 @@ function cardHTML(a, cluster) {
     ${S.expanded === akey(a) ? fullPhotoHTML(a) : cropHTML(a)}
     <div class="checks">
       <label title="select for bulk actions"><input type="checkbox" ${sel ? "checked" : ""} onchange="toggleSel('${akey(a)}')"> select</label>
-      ${a.status === "will_write" ? `<label title="include in the confirmed write"><input type="checkbox" ${a.included ? "checked" : ""} onchange="toggleInc('${akey(a)}')"> write</label>` : ""}
     </div>
     <div class="inforow"><b>Immich:</b> <span>${a.immich_label ? esc(a.immich_label) : '<span class="muted">—</span>'}</span></div>
     <div class="inforow"><b>ReID:</b> <span>${cluster.proposed_name ? esc(cluster.proposed_name) : '<span class="muted">unnamed cluster</span>'} <span class="chip ${cc}">${ct}</span></span></div>
@@ -210,7 +209,6 @@ function cardHTML(a, cluster) {
   </div>`;
 }
 function toggleSel(k) { S.selected.has(k) ? S.selected.delete(k) : S.selected.add(k); render(); }
-function toggleInc(k) { const c = activeCluster(); const a = c.appearances.find(x => akey(x) === k); if (a) a.included = !a.included; render(); }
 function act(k, what) {
   const name = what === "pin" ? (prompt("Pin as which person? (existing: " + PEOPLE.join(", ") + ")") || "").trim() : null;
   if (what === "pin" && !name) return;
@@ -244,7 +242,7 @@ function proposalsHTML() {
   const rows = visibleClusters().filter(c => c.window === S.activeDay);
   const c = activeCluster();
   const selCount = S.selected.size;
-  const writable = c ? c.appearances.filter(a => a.status === "will_write" && a.included).length : 0;
+  const writable = c ? c.appearances.filter(a => a.status === "will_write").length : 0;
   return `<div class="work">
     <div class="days">${days.map(d => {
       const cs = visibleClusters().filter(x => x.window === d);
@@ -311,7 +309,7 @@ function finalHTML() {
     </div>
     <div style="overflow-y:auto">
       <div class="writebar">
-        <button class="primary" ${!sel ? "disabled" : ""} onclick="writePerson('${esc(person.name)}')">Write ${sel} selected to Immich</button>
+        <button class="primary" ${!sel ? "disabled" : ""} onclick="writePerson('${esc(person.name)}')">Write ${sel} selected as “${esc(person.name)}” to Immich</button>
         <button onclick="selAllPerson(true)">Select all</button>
         <button onclick="selAllPerson(false)">Deselect all</button>
         <button ${!sel ? "disabled" : ""} onclick="reassignSel()">Write selected as…</button>
