@@ -2,7 +2,7 @@
 
 Part of: [UI Two Tabs — Map](../map.md)
 Type: task
-Status: open
+Status: claimed
 Blocked by: 06
 
 ## Question

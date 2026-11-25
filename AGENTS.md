@@ -38,7 +38,7 @@ Single-context: root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md`.
   - `pipeline.py` — detect → gate → embed per asset
   - `head_detector.py` — SCRFD face detection fallback
   - `config.py` — TOML config + env overrides
-  - `enums.py` — `ProposalStatus`, `EvidenceCardStatus`, `DryRunActionStatus`, `WriteResultStatus`
+  - `enums.py` — `ProposalStatus`, `EvidenceCardStatus`, `WriteResultStatus`
   - `wipe.py` — store wipe CLI
 
 ### Tests
@@ -48,7 +48,7 @@ Single-context: root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md`.
 
 ### Key conventions
 - **Datetimes**: `datetime` objects in dataclasses; parse at boundaries (`fromisoformat`), serialize at egress (`isoformat` with `Z`).
-- **Status enums**: `ProposalStatus`, `EvidenceCardStatus`, `DryRunActionStatus`, `WriteResultStatus` — never raw strings.
+- **Status enums**: `ProposalStatus`, `EvidenceCardStatus`, `WriteResultStatus` — never raw strings.
 - **Pre-commit**: `ruff` (lint/format), `mypy` (strict), `pytest` — see `.pre-commit-config.yaml`.
 - **Config**: `reid.toml` with env override `IMMICH_API_KEY` — see `config.py`.
 

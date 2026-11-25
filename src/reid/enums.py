@@ -16,14 +16,6 @@ class ProposalStatus(str, Enum):
     REJECTED = "rejected"  # operator: this appearance is not this person
 
 
-class DryRunActionStatus(str, Enum):
-    """Status of an action in a dry-run batch."""
-
-    WOULD_WRITE = "would_write"
-    SKIPPED = "skipped"
-    ERROR = "error"
-
-
 class ClusterOutcomeStatus(str, Enum):
     """Outcome status of a cluster after anchoring."""
 
@@ -53,9 +45,8 @@ class EvidenceCardStatus(str, Enum):
 
 
 class WriteResultStatus(str, Enum):
-    """Result status from a confirm/promote operation."""
+    """Result status from a write-faces operation."""
 
-    WOULD_WRITE = "would_write"
     SKIPPED = "skipped"
     WRITTEN = "written"
     ERROR = "error"

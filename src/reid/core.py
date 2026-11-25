@@ -28,7 +28,6 @@ from .anchoring import claim_face, face_person_overlap
 from .config import Config, load_config
 from .enums import (
     ClusterRowStatus,
-    DryRunActionStatus,
     EvidenceCardStatus,
     ProposalStatus,
     WriteResultStatus,
@@ -37,7 +36,6 @@ from .head_detector import HeadDetectorConfig
 from .immich import Face, ImmichClient, ImmichError, isoformat_z
 from .store import (
     Appearance,
-    DryRunAction,
     Proposal,
     Store,
     WriteLedgerEntry,
@@ -150,7 +148,6 @@ class UIState:
     stats: list[StatsPane]
     config_knobs: UIConfigKnobs
     people: list[str]  # existing Immich people for autocomplete
-    dry_run: bool
     immich_url: str  # base URL for "open in Immich" viewer links
 
 
@@ -186,8 +183,6 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
                     "last_run": server.store.latest_run(),
                 }
             )
-        elif path == "/api/write-review":
-            self._send_json(self.core_server.get_write_review())  # type: ignore[union-attr]
         elif path == "/api/final-check":
             self._send_json(self.core_server.get_final_check())  # type: ignore[union-attr]
         elif path == "/api/evidence":
@@ -200,8 +195,6 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
             self._send_json(self.core_server.get_proposals())  # type: ignore[union-attr]
         elif path == "/api/summary":
             self._send_json(self.core_server.get_summary())  # type: ignore[union-attr]
-        elif path == "/api/dry-run-batches":
-            self._send_json(self.core_server.get_dry_run_batches())  # type: ignore[union-attr]
         elif path == "/api/crop":
             try:
                 data, ctype = self.core_server.get_crop(parse_qs(parsed.query))  # type: ignore[union-attr]
@@ -225,17 +218,7 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == "/api/confirm":
-            content_length = int(self.headers.get("content-length", "0"))
-            body_bytes = self.rfile.read(content_length)
-            try:
-                body = json.loads(body_bytes)
-            except json.JSONDecodeError:
-                self.send_error(400, "Invalid JSON")
-                return
-            result = self.core_server.confirm_cluster(body)  # type: ignore[union-attr]
-            self._send_json(result)
-        elif path == "/api/skip":
+        if path == "/api/skip":
             body = self._read_json()
             if body is None:
                 return
@@ -336,30 +319,6 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
             server = self.core_server
             assert server is not None
             self._send_json(server.jobs.cancel())
-        elif path == "/api/write-decision":
-            body = self._read_json()
-            if body is None:
-                return
-            result = self.core_server.set_write_decision(  # type: ignore[union-attr]
-                str(body.get("asset_id", "")),
-                int(body.get("appearance", -1)),
-                bool(body.get("included", True)),
-            )
-            self._send_json(result)
-        elif path == "/api/confirm-all":
-            body = self._read_json()
-            if body is None:
-                return
-            result = self.core_server.confirm_all(body)  # type: ignore[union-attr]
-            self._send_json(result)
-        elif path == "/api/promote-all":
-            self._send_json(self.core_server.promote_all())  # type: ignore[union-attr]
-        elif path == "/api/write-pending":
-            body = self._read_json()
-            if body is None:
-                return
-            result = self.core_server.write_pending(body)  # type: ignore[union-attr]
-            self._send_json(result)
         elif path == "/api/ignore":
             body = self._read_json()
             if body is None:
@@ -383,13 +342,6 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
             if body is None:
                 return
             self._send_json(self.core_server.save_config_knobs(body))  # type: ignore[union-attr]
-        elif path.startswith("/api/promote/"):
-            batch_id = path[len("/api/promote/") :]
-            if not batch_id:
-                self.send_error(400, "Missing batch ID")
-                return
-            result = self.core_server.promote_batch(batch_id)  # type: ignore[union-attr]
-            self._send_json(result)
         else:
             self.send_error(405, "Method not allowed")
 
@@ -557,7 +509,6 @@ class CoreServer:
             timeout=cfg.immich.timeout_seconds,
             head_detector_cfg=head_cfg,
         )
-        self._dry_run = True  # default to dry-run; toggled via UI
 
     def get_ui_state(self) -> dict[str, Any]:
         """Assemble the complete UI state for the initial page load."""
@@ -596,7 +547,6 @@ class CoreServer:
             stats=stats,
             config_knobs=config_knobs,
             people=people,
-            dry_run=self._dry_run,
             immich_url=self.cfg.immich.base_url.rstrip("/"),
         )
         return asdict(state)
@@ -870,226 +820,11 @@ class CoreServer:
         self.store.unignore_appearance(asset_id, appearance)
         return {"asset_id": asset_id, "appearance": appearance, "ignored": False}
 
-    def get_write_review(self) -> dict[str, Any]:
-        """Person-centric review of everything about to be written.
-
-        One tab per name with pending writes (across all days and clusters),
-        that person's already-labeled appearances alongside (matched via
-        face claims), and an "unnamed" tab for clusters still needing a
-        name. Cards carry the effective write decision (persisted choice,
-        defaulting to the proposal's writability). The pending section
-        lists approved-but-unwritten items from dry-run batches for the
-        per-item write flow.
-        """
-        proposals = self.store.proposals()
-        # Approved-but-unwritten items: un-promoted batches, un-written actions.
-        pending: list[dict[str, Any]] = []
-        for batch in self.store.get_dry_run_batches():
-            if batch.promoted_at is not None:
-                continue
-            for action in batch.actions:
-                if action.written_at is not None:
-                    continue
-                pending.append(
-                    {
-                        "batch_id": batch.id,
-                        "name": batch.name,
-                        "window": batch.window,
-                        "cluster": batch.cluster,
-                        "asset_id": action.asset_id,
-                        "appearance": action.appearance,
-                        "asset_name": self._asset_name(action.asset_id),
-                        "status": action.status.value,
-                        "default_included": (
-                            action.status == DryRunActionStatus.WOULD_WRITE
-                        ),
-                    }
-                )
-        if not proposals:
-            return {
-                "tabs": [],
-                "unnamed": [],
-                "total_writable": 0,
-                "pending": pending,
-                "total_pending": len(pending),
-            }
-        appearances_by_asset = self.store.appearances_by_asset()
-        decisions = self.store.write_decisions()
-        rejected = set(self.store.appearance_rejections())
-
-        faces_by_asset: dict[str, list[Face]] = {}
-        for asset_id in sorted({p.asset_id for p in proposals}):
-            try:
-                faces_by_asset[asset_id] = self.immich.fetch_faces(asset_id)
-            except Exception as exc:  # noqa: BLE001
-                _log.warning("failed to fetch faces for %s: %s", asset_id, exc)
-                faces_by_asset[asset_id] = []
-
-        # Build cards with the per-cluster logic, then regroup by person.
-        all_cards: list[dict[str, Any]] = []
-        groups: dict[tuple[str, int], list[Proposal]] = {}
-        for p in proposals:
-            groups.setdefault((p.window, p.cluster), []).append(p)
-        for window, cluster in sorted(groups):
-            cards = self._build_evidence_for_cluster(
-                cluster,
-                proposals,
-                appearances_by_asset,
-                window=window,
-                faces_by_asset=faces_by_asset,
-                rejected=rejected,
-                include_pin_divergent=True,
-            )
-            for card in map(asdict, cards):
-                # The persisted decision, if any, wins over the default.
-                card["included"] = decisions.get(
-                    (card["asset_id"], card["appearance"]), card["included"]
-                )
-                card["pinned_elsewhere"] = (
-                    card["pin"] is not None and card["pin"] != card["proposed_name"]
-                )
-                all_cards.append(card)
-
-        writable_by_name: dict[str, list[dict[str, Any]]] = {}
-        pinned_by_name: dict[str, list[dict[str, Any]]] = {}
-        labeled_by_name: dict[str, list[dict[str, Any]]] = {}
-        unnamed: dict[tuple[str, int], list[dict[str, Any]]] = {}
-        for card in all_cards:
-            if card["pinned_elsewhere"]:
-                # Pinned to another person: shown under that person, not
-                # writable until the next batch run regroups it.
-                pinned_by_name.setdefault(card["pin"], []).append(card)
-                continue
-            if card["proposed_name"]:
-                writable_by_name.setdefault(card["proposed_name"], []).append(card)
-            elif card["status"] == "already_labeled" and card["immich_label"]:
-                labeled_by_name.setdefault(card["immich_label"], []).append(card)
-            elif card["status"] == "ask_for_name" or (
-                card["status"] == "will_write" and not card["proposed_name"]
-            ):
-                # Nameless proposals (unnamed clusters, or a degenerate
-                # proposed row) need a name before they are writable: the
-                # unnamed tab hands them to the queue for naming.
-                unnamed.setdefault((card["window"], card["cluster"]), []).append(card)
-
-        tab_names = set(writable_by_name) | set(labeled_by_name) | set(pinned_by_name)
-        tabs = []
-        for name in sorted(tab_names):
-            writable_cards = writable_by_name.get(name, [])
-            labeled_cards = labeled_by_name.get(name, [])
-            pinned_cards = pinned_by_name.get(name, [])
-            tabs.append(
-                {
-                    "name": name,
-                    "writable_cards": writable_cards,
-                    "labeled_cards": labeled_cards,
-                    "pinned_cards": pinned_cards,
-                    "writable": sum(
-                        1
-                        for c in writable_cards
-                        if c["status"] == "will_write" and c["included"]
-                    ),
-                    "labeled": len(labeled_cards),
-                    "pinned": len(pinned_cards),
-                }
-            )
-        unnamed_list = [
-            {"window": window, "cluster": cluster, "cards": cards}
-            for (window, cluster), cards in sorted(unnamed.items())
-        ]
-        return {
-            "tabs": tabs,
-            "unnamed": unnamed_list,
-            "total_writable": sum(t["writable"] for t in tabs),
-            "pending": pending,
-            "total_pending": len(pending),
-        }
-
-    def set_write_decision(
-        self, asset_id: str, appearance: int, included: bool
-    ) -> dict[str, Any]:
-        """Persist the operator's write/skip choice for one appearance."""
-        self.store.set_write_decision(asset_id, appearance, included)
-        return {
-            "asset_id": asset_id,
-            "appearance": appearance,
-            "included": included,
-        }
-
     def _require_idle(self) -> dict[str, Any] | None:
         """Confirmations pause while a pipeline run is rebuilding proposals."""
         if self.jobs.active():
             return {"error": "a pipeline run is in progress — confirmations are paused"}
         return None
-
-    def confirm_all(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Confirm every pending write in one go, grouped by name/window/cluster.
-
-        Dry-run records one batch per (name, window, cluster); live writes
-        them all. Write decisions, rejections and ignores are respected —
-        this composes the existing per-cluster confirm, nothing new writes
-        outside it.
-        """
-        paused = self._require_idle()
-        if paused:
-            return paused
-        dry_run = bool(body.get("dry_run", True))
-        review = self.get_write_review()
-        groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
-        for tab in review["tabs"]:
-            for card in tab["writable_cards"]:
-                if card["status"] == "will_write" and card["included"]:
-                    key = (tab["name"], card["window"], card["cluster"])
-                    groups.setdefault(key, []).append(
-                        {"asset_id": card["asset_id"], "appearance": card["appearance"]}
-                    )
-        if not groups:
-            return {"error": "nothing to write"}
-
-        results: list[dict[str, Any]] = []
-        for (name, window, cluster), included in sorted(groups.items()):
-            group_result = self.confirm_cluster(
-                {
-                    "cluster": cluster,
-                    "window": window,
-                    "name": name,
-                    "included": included,
-                    "dry_run": dry_run,
-                }
-            )
-            results.append(
-                {
-                    "name": name,
-                    "window": window,
-                    "cluster": cluster,
-                    "result": group_result,
-                }
-            )
-        return {
-            "groups": results,
-            "count": sum(len(g) for g in groups.values()),
-            "batch_ids": [
-                r["result"]["batch_id"] for r in results if "batch_id" in r["result"]
-            ],
-        }
-
-    def promote_all(self) -> dict[str, Any]:
-        """Promote every un-promoted dry-run batch, one click.
-
-        Batches whose promote reports an error are not counted as promoted
-        and stay in the list for another try.
-        """
-        paused = self._require_idle()
-        if paused:
-            return paused
-        results = []
-        for batch in self.store.get_dry_run_batches():
-            if batch.promoted_at is not None:
-                continue
-            outcome = self.promote_batch(batch.id)
-            if "error" not in outcome:
-                results.append({"batch_id": batch.id, **outcome})
-        return {"promoted": len(results), "results": results}
 
     def unreject_appearance(
         self, asset_id: str, appearance: int, proposed_name: str
@@ -1337,8 +1072,7 @@ class CoreServer:
                     cluster,
                     window,
                     timestamp,
-                    dry_run=False,
-                    expected_head_box=head_box,
+                    head_box=head_box,
                 )
             )
         written = sum(
@@ -1518,10 +1252,9 @@ class CoreServer:
         cluster: int,
         window: str,
         timestamp: datetime,
-        dry_run: bool = False,
-        expected_head_box: tuple[float, float, float, float] | None = None,
+        head_box: tuple[float, float, float, float] | None = None,
     ) -> dict[str, Any]:
-        """Shared write logic for one appearance (used by confirm and promote)."""
+        """Shared write logic for one appearance (used by /api/write-faces)."""
         try:
             return self._write_appearance_checked(
                 write_client,
@@ -1531,8 +1264,7 @@ class CoreServer:
                 cluster,
                 window,
                 timestamp,
-                dry_run,
-                expected_head_box,
+                head_box,
             )
         except ImmichError as exc:
             # Immich hiccups (missing pixels, transient errors) are per-item
@@ -1553,8 +1285,7 @@ class CoreServer:
         cluster: int,
         window: str,
         timestamp: datetime,
-        dry_run: bool = False,
-        expected_head_box: tuple[float, float, float, float] | None = None,
+        head_box: tuple[float, float, float, float] | None = None,
     ) -> dict[str, Any]:
         # Check if already written (via write ledger) - idempotency
         if self.store.has_write_ledger_entry(asset_id, person_id):
@@ -1582,16 +1313,15 @@ class CoreServer:
 
         if already_labeled:
             # Already has this person's face - skip and journal
-            if not dry_run:
-                self.store.add_write_ledger_entry(
-                    WriteLedgerEntry(
-                        asset_id=asset_id,
-                        person_id=person_id,
-                        cluster=cluster,
-                        window=window,
-                        timestamp=timestamp,
-                    )
+            self.store.add_write_ledger_entry(
+                WriteLedgerEntry(
+                    asset_id=asset_id,
+                    person_id=person_id,
+                    cluster=cluster,
+                    window=window,
+                    timestamp=timestamp,
                 )
+            )
             return {
                 "asset_id": asset_id,
                 "appearance": appearance.appearance,
@@ -1608,28 +1338,13 @@ class CoreServer:
                 "message": "conflict: different person's overlapping face",
             }
 
-        # Resolve head box
-        if dry_run:
-            head_box = write_client.resolve_head_box(
-                asset_id, person_box, self.cfg.clustering.face_overlap
-            )
-        else:
-            # Promote: use the recorded head box (replay recorded actions)
-            head_box = expected_head_box
+        # The caller resolves the head box (lazy, at write time).
         if head_box is None:
             return {
                 "asset_id": asset_id,
                 "appearance": appearance.appearance,
                 "status": WriteResultStatus.SKIPPED.value,
-                "message": "no head found" + (" (recorded)" if not dry_run else ""),
-            }
-
-        if dry_run:
-            return {
-                "asset_id": asset_id,
-                "appearance": appearance.appearance,
-                "status": WriteResultStatus.WOULD_WRITE.value,
-                "head_box": head_box,
+                "message": "no head found",
             }
 
         # Real write
@@ -2064,462 +1779,6 @@ class CoreServer:
                 )
             )
         return stats
-
-    def confirm_cluster(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Confirm a cluster: write head boxes to Immich for included appearances.
-
-        The body should contain:
-        - cluster: int (cluster index)
-        - window: str (window key)
-        - name: str (person name, existing or new)
-        - included: list[dict] with asset_id, appearance for included appearances
-        - dry_run: bool (whether this is a dry-run)
-
-        Returns a dict with the results of the confirmation.
-        """
-        paused = self._require_idle()
-        if paused:
-            return paused
-        cluster = int(body.get("cluster", -1))
-        window = str(body.get("window", ""))
-        name = str(body.get("name", "")).strip()
-        included = body.get("included", [])
-
-        if cluster < 0 or not window or not name:
-            return {"error": "missing required fields"}
-
-        if not included:
-            return {"error": "no appearances included"}
-
-        # Get the proposals for this cluster. Anchored clusters propose
-        # (PROPOSED); ask-for-name clusters become writable once the operator
-        # supplies the name — that is the ask-for-name feature.
-        writable_statuses = {ProposalStatus.PROPOSED, ProposalStatus.ASK_NAME}
-        proposals = self.store.proposals()
-        target_props = [
-            p
-            for p in proposals
-            if p.cluster == cluster
-            and p.window == window
-            and p.status in writable_statuses
-        ]
-
-        if not target_props:
-            return {"error": "no writable proposals found for this cluster"}
-
-        # Operator rejections: an appearance marked "not this person" for this
-        # name is never written, and the pair is skipped with a clear reason.
-        rejected = {
-            (asset_id, appearance)
-            for asset_id, appearance, rejected_name in self.store.appearance_rejections()
-            if rejected_name == name
-        }
-        # Operator ignores: "this detection is wrong" skips the write even in
-        # the same session, before the next run drops it from the queue.
-        ignored = self.store.appearance_ignores()
-
-        # Build a set of included (asset_id, appearance) for quick lookup
-        included_set = {
-            (item["asset_id"], item["appearance"])
-            for item in included
-            if "asset_id" in item and "appearance" in item
-        }
-
-        # Filter to only included proposals
-        write_props = [
-            p
-            for p in target_props
-            if (p.asset_id, p.appearance) in included_set
-            and (p.asset_id, p.appearance) not in rejected
-            and (p.asset_id, p.appearance) not in ignored
-        ]
-
-        if not write_props:
-            return {"error": "none of the included appearances are writable"}
-
-        # Resolve the target person (for dry-run we still need the real person_id
-        # to check ledger/tombstones correctly)
-        existing_person = self.immich.find_person_by_name(name)
-        if existing_person is not None:
-            person_id = existing_person.id
-        else:
-            # No existing person; use a placeholder that won't match any real ledger entry
-            # The shared helper uses person_id for ledger/tombstone checks, so this
-            # ensures dry-run correctly shows "would_write" for new people
-            person_id = f"new-person:{name}"
-
-        results = []
-        dry_run_actions = []
-        timestamp = datetime.now(UTC)
-
-        for prop in write_props:
-            appearances_by_asset = self.store.appearances_by_asset()
-            app_list = appearances_by_asset.get(prop.asset_id, [])
-            appearance = next(
-                (a for a in app_list if a.appearance == prop.appearance), None
-            )
-            if appearance is None:
-                result = {
-                    "asset_id": prop.asset_id,
-                    "appearance": prop.appearance,
-                    "status": WriteResultStatus.ERROR.value,
-                    "message": "appearance not found",
-                }
-                results.append(result)
-                dry_run_actions.append(
-                    DryRunAction(
-                        asset_id=prop.asset_id,
-                        appearance=prop.appearance,
-                        head_box=None,
-                        status=DryRunActionStatus.ERROR,
-                        message="appearance not found",
-                    )
-                )
-                continue
-
-            # Use shared write logic (dry_run=True)
-            result = self._write_appearance(
-                write_client=self.immich,  # read client has head detector
-                asset_id=prop.asset_id,
-                appearance=appearance,
-                person_id=person_id,
-                cluster=cluster,
-                window=window,
-                timestamp=timestamp,
-                dry_run=True,
-            )
-            results.append(result)
-            dry_run_actions.append(
-                DryRunAction(
-                    asset_id=prop.asset_id,
-                    appearance=prop.appearance,
-                    head_box=result.get("head_box"),  # type: ignore[arg-type]
-                    status=DryRunActionStatus(result["status"]),
-                    message=result.get("message"),  # type: ignore[arg-type]
-                )
-            )
-
-        # Persist the dry-run batch
-        batch_id = self.store.add_dry_run_batch(
-            name, window, cluster, timestamp, dry_run_actions
-        )
-
-        return {
-            "cluster": cluster,
-            "window": window,
-            "name": name,
-            "dry_run": True,
-            "batch_id": batch_id,
-            "results": results,
-        }
-
-        # Real write path: need write-scoped API key
-        write_api_key = self.cfg.immich.write_api_key
-        if not write_api_key:
-            return {"error": "write-scoped API key not configured"}
-
-        # Create a write-scoped client (with head detector for fallback)
-        write_client = self._make_write_client()
-
-        # Find or create the person
-        existing_person = write_client.find_person_by_name(name)
-        if existing_person is not None:
-            person_id = existing_person.id
-        else:
-            try:
-                created = write_client.create_person(name)
-                person_id = created.id
-            except ImmichError as exc:
-                return {"error": f"failed to create person: {exc.message}"}
-
-        results = []
-        timestamp = datetime.now(UTC)
-
-        for prop in write_props:
-            appearances_by_asset = self.store.appearances_by_asset()
-            app_list = appearances_by_asset.get(prop.asset_id, [])
-            appearance = next(
-                (a for a in app_list if a.appearance == prop.appearance), None
-            )
-            if appearance is None:
-                results.append(
-                    {
-                        "asset_id": prop.asset_id,
-                        "appearance": prop.appearance,
-                        "status": WriteResultStatus.ERROR.value,
-                        "message": "appearance not found",
-                    }
-                )
-                continue
-
-            # Use shared write logic (dry_run=False)
-            result = self._write_appearance(
-                write_client=write_client,
-                asset_id=prop.asset_id,
-                appearance=appearance,
-                person_id=person_id,
-                cluster=cluster,
-                window=window,
-                timestamp=timestamp,
-                dry_run=False,
-            )
-            results.append(result)
-
-        return {
-            "cluster": cluster,
-            "window": window,
-            "name": name,
-            "person_id": person_id,
-            "dry_run": False,
-            "results": results,
-        }
-
-    def promote_batch(self, batch_id: str) -> dict[str, Any]:
-        """Promote a dry-run batch: replay its actions as real writes to Immich.
-
-        Idempotent: promoting an already-promoted batch returns success with
-        promoted: true and the original person_id.
-        """
-        paused = self._require_idle()
-        if paused:
-            return paused
-
-        # Get the dry-run batch
-        batch = self.store.get_dry_run_batch(batch_id)
-        if batch is None:
-            return {"error": f"batch not found: {batch_id}"}
-
-        if batch.promoted_at is not None:
-            # Already promoted - return success with the original person_id for idempotency
-            return {
-                "batch_id": batch_id,
-                "promoted": True,
-                "person_id": batch.person_id or batch.name,
-                "name": batch.name,
-                "window": batch.window,
-                "cluster": batch.cluster,
-                "already_promoted": True,
-            }
-
-        # Need write-scoped API key
-        write_api_key = self.cfg.immich.write_api_key
-        if not write_api_key:
-            return {"error": "write-scoped API key not configured"}
-
-        # Create a write-scoped client (with head detector for fallback)
-        write_client = self._make_write_client()
-
-        # Find or create the person
-        existing_person = write_client.find_person_by_name(batch.name)
-        if existing_person is not None:
-            person_id = existing_person.id
-        else:
-            try:
-                created = write_client.create_person(batch.name)
-                person_id = created.id
-            except ImmichError as exc:
-                return {"error": f"failed to create person: {exc.message}"}
-
-        results = []
-        timestamp = datetime.now(UTC)
-
-        for action in batch.actions:
-            # Only replay actions that would_write
-            if action.status != DryRunActionStatus.WOULD_WRITE:
-                results.append(
-                    {
-                        "asset_id": action.asset_id,
-                        "appearance": action.appearance,
-                        "status": WriteResultStatus.SKIPPED.value,
-                        "message": action.message or "not a writable action",
-                    }
-                )
-                continue
-
-            # Get the appearance for the person box
-            appearances_by_asset = self.store.appearances_by_asset()
-            app_list = appearances_by_asset.get(action.asset_id, [])
-            appearance = next(
-                (a for a in app_list if a.appearance == action.appearance), None
-            )
-            if appearance is None:
-                results.append(
-                    {
-                        "asset_id": action.asset_id,
-                        "appearance": action.appearance,
-                        "status": WriteResultStatus.ERROR.value,
-                        "message": "appearance not found",
-                    }
-                )
-                continue
-
-            # Use shared write logic (dry_run=False, replay recorded head box)
-            result = self._write_appearance(
-                write_client=write_client,
-                asset_id=action.asset_id,
-                appearance=appearance,
-                person_id=person_id,
-                cluster=batch.cluster,
-                window=batch.window,
-                timestamp=timestamp,
-                dry_run=False,
-                expected_head_box=action.head_box,
-            )
-            results.append(result)
-            if result["status"] == WriteResultStatus.WRITTEN.value:
-                self.store.mark_dry_run_action_written(
-                    batch_id, action.asset_id, action.appearance, timestamp
-                )
-
-        # Mark the batch as promoted with the person_id
-        self.store.mark_dry_run_batch_promoted(batch_id, timestamp, person_id)
-
-        return {
-            "batch_id": batch_id,
-            "promoted": True,
-            "person_id": person_id,
-            "name": batch.name,
-            "window": batch.window,
-            "cluster": batch.cluster,
-            "results": results,
-        }
-
-    def write_pending(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Write exactly the selected pending items, one click on the review page.
-
-        Each item identifies an action of an un-promoted dry-run batch. The
-        write reuses the batch promote path; every written action is marked,
-        and a batch whose actions are all written closes automatically —
-        unselected items stay pending for a later pass.
-        """
-        paused = self._require_idle()
-        if paused:
-            return paused
-        items = body.get("items", [])
-        if not items:
-            return {"error": "no items selected"}
-
-        by_batch: dict[str, list[tuple[str, int]]] = {}
-        for item in items:
-            batch_id = str(item.get("batch_id", ""))
-            asset_id = str(item.get("asset_id", ""))
-            try:
-                appearance = int(item.get("appearance", -1))
-            except (TypeError, ValueError):
-                return {"error": "invalid item in selection"}
-            if not batch_id or not asset_id:
-                return {"error": "invalid item in selection"}
-            by_batch.setdefault(batch_id, []).append((asset_id, appearance))
-
-        results: list[dict[str, Any]] = []
-        timestamp = datetime.now(UTC)
-        for batch_id, wanted in by_batch.items():
-            batch = self.store.get_dry_run_batch(batch_id)
-            if batch is None:
-                results.append(
-                    {"batch_id": batch_id, "error": f"batch not found: {batch_id}"}
-                )
-                continue
-            if batch.promoted_at is not None:
-                results.append({"batch_id": batch_id, "error": "batch already written"})
-                continue
-
-            write_api_key = self.cfg.immich.write_api_key
-            if not write_api_key:
-                return {"error": "write-scoped API key not configured"}
-            write_client = self._make_write_client()
-            existing_person = write_client.find_person_by_name(batch.name)
-            if existing_person is not None:
-                person_id = existing_person.id
-            else:
-                try:
-                    person_id = write_client.create_person(batch.name).id
-                except ImmichError as exc:
-                    results.append(
-                        {
-                            "batch_id": batch_id,
-                            "error": f"failed to create person: {exc.message}",
-                        }
-                    )
-                    continue
-
-            wanted_set = set(wanted)
-            appearances_by_asset = self.store.appearances_by_asset()
-            for action in batch.actions:
-                if (action.asset_id, action.appearance) not in wanted_set:
-                    continue  # stays pending for a later pass
-                if action.written_at is not None:
-                    continue  # already written
-                app_list = appearances_by_asset.get(action.asset_id, [])
-                appearance_row = next(
-                    (a for a in app_list if a.appearance == action.appearance),
-                    None,
-                )
-                if (
-                    action.status != DryRunActionStatus.WOULD_WRITE
-                    or appearance_row is None
-                ):
-                    result = {
-                        "asset_id": action.asset_id,
-                        "appearance": action.appearance,
-                        "status": WriteResultStatus.SKIPPED.value,
-                        "message": action.message or "not a writable action",
-                    }
-                else:
-                    result = self._write_appearance(
-                        write_client=write_client,
-                        asset_id=action.asset_id,
-                        appearance=appearance_row,
-                        person_id=person_id,
-                        cluster=batch.cluster,
-                        window=batch.window,
-                        timestamp=timestamp,
-                        dry_run=False,
-                        expected_head_box=action.head_box,
-                    )
-                results.append({"batch_id": batch_id, **result})
-                if result["status"] == WriteResultStatus.WRITTEN.value:
-                    self.store.mark_dry_run_action_written(
-                        batch_id, action.asset_id, action.appearance, timestamp
-                    )
-            # The batch closes once nothing in it is left un-written.
-            self.store.close_dry_run_batch_if_complete(batch_id, timestamp)
-
-        written = sum(
-            1 for r in results if r.get("status") == WriteResultStatus.WRITTEN.value
-        )
-        return {"count": len(items), "written": written, "results": results}
-
-    def get_dry_run_batches(self) -> list[dict[str, Any]]:
-        """Return all persisted dry-run batches as dicts."""
-        batches = self.store.get_dry_run_batches()
-        return [
-            {
-                "id": batch.id,
-                "name": batch.name,
-                "window": batch.window,
-                "cluster": batch.cluster,
-                "timestamp": batch.timestamp.isoformat(),
-                "promoted_at": batch.promoted_at.isoformat()
-                if batch.promoted_at
-                else None,
-                "actions": [
-                    {
-                        "asset_id": action.asset_id,
-                        "appearance": action.appearance,
-                        "head_box": (
-                            [float(v) for v in action.head_box]
-                            if action.head_box is not None
-                            else None
-                        ),
-                        "status": action.status.value,
-                        "message": action.message,
-                    }
-                    for action in batch.actions
-                ],
-            }
-            for batch in batches
-        ]
 
 
 def serve_core(

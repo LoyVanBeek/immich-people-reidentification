@@ -13,7 +13,7 @@ This document captures the project's coding conventions and standards. These rul
 - **Never store ISO strings in dataclasses** — the `Appearance.captured_at`, `WriteLedgerEntry.timestamp`, `DryRunBatch.timestamp` fields are `datetime`, not `str`.
 
 ### Enums over Strings
-- **Status fields must use `str, Enum`** — e.g., `ProposalStatus`, `EvidenceCardStatus`, `DryRunActionStatus`, `WriteResultStatus`.
+- **Status fields must use `str, Enum`** — e.g., `ProposalStatus`, `EvidenceCardStatus`, `WriteResultStatus`.
 - **Never use raw strings for status** — `status: ProposalStatus` not `status: str`.
 - **Enum values are the wire format** — `ProposalStatus.PROPOSED == "proposed"` works for JSON serialization.
 

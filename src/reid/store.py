@@ -6,15 +6,13 @@ embeddings, proposals, dry-run batches, the write ledger, and tombstones.
 
 from __future__ import annotations
 
-import json
 import sqlite3
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .enums import DryRunActionStatus, ProposalStatus
+from .enums import ProposalStatus
 
 # The checkpoint for the checkpointed new-asset feed.
 NEW_ASSET_FEED = "new-assets"
@@ -73,32 +71,6 @@ class Tombstone:
 
     asset_id: str
     person_id: str
-
-
-@dataclass(frozen=True)
-class DryRunAction:
-    """One action in a dry-run batch: what would be written for one appearance."""
-
-    asset_id: str
-    appearance: int
-    head_box: tuple[float, float, float, float] | None
-    status: DryRunActionStatus
-    message: str | None = None
-    written_at: datetime | None = None  # set once the write actually happened
-
-
-@dataclass(frozen=True)
-class DryRunBatch:
-    """A collection of dry-run confirmations that can be promoted as a unit."""
-
-    id: str
-    name: str
-    window: str
-    cluster: int
-    timestamp: datetime  # wall-clock UTC instant when the batch was recorded
-    actions: list[DryRunAction]
-    promoted_at: datetime | None = None  # set when the batch has been promoted
-    person_id: str | None = None  # set when the batch is promoted
 
 
 class Store:
@@ -165,33 +137,6 @@ class Store:
             )
             self._conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS dry_run_batch (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    window TEXT NOT NULL,
-                    cluster INTEGER NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    promoted_at TEXT,
-                    person_id TEXT
-                )
-                """
-            )
-            self._conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS dry_run_action (
-                    batch_id TEXT NOT NULL,
-                    asset_id TEXT NOT NULL,
-                    appearance INTEGER NOT NULL,
-                    head_box TEXT,  -- JSON array [x1, y1, x2, y2] or null
-                    status TEXT NOT NULL,
-                    message TEXT,
-                    PRIMARY KEY (batch_id, asset_id, appearance),
-                    FOREIGN KEY (batch_id) REFERENCES dry_run_batch(id) ON DELETE CASCADE
-                )
-                """
-            )
-            self._conn.execute(
-                """
                 CREATE TABLE IF NOT EXISTS appearance_rejection (
                     asset_id TEXT NOT NULL,
                     appearance INTEGER NOT NULL,
@@ -239,16 +184,6 @@ class Store:
             )
             self._conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS write_decision (
-                    asset_id TEXT NOT NULL,
-                    appearance INTEGER NOT NULL,
-                    included INTEGER NOT NULL,
-                    PRIMARY KEY (asset_id, appearance)
-                )
-                """
-            )
-            self._conn.execute(
-                """
                 CREATE TABLE IF NOT EXISTS run_status (
                     id TEXT PRIMARY KEY,
                     state TEXT NOT NULL,
@@ -290,20 +225,11 @@ class Store:
             self._conn.execute(
                 "ALTER TABLE appearance ADD COLUMN captured_at TEXT NOT NULL DEFAULT ''"
             )
-        batch_columns = {
-            str(row[1])
-            for row in self._conn.execute("PRAGMA table_info(dry_run_batch)")
-        }
-        if "promoted_at" not in batch_columns:
-            self._conn.execute("ALTER TABLE dry_run_batch ADD COLUMN promoted_at TEXT")
-        if "person_id" not in batch_columns:
-            self._conn.execute("ALTER TABLE dry_run_batch ADD COLUMN person_id TEXT")
-        action_columns = {
-            str(row[1])
-            for row in self._conn.execute("PRAGMA table_info(dry_run_action)")
-        }
-        if "written_at" not in action_columns:
-            self._conn.execute("ALTER TABLE dry_run_action ADD COLUMN written_at TEXT")
+        # Retired tables (dry-run batches, write decisions) are dropped, not
+        # migrated: their contents were ephemeral approvals, and the proposals
+        # they were built from survive in the proposal table.
+        for table in ("dry_run_batch", "dry_run_action", "write_decision"):
+            self._conn.execute(f"DROP TABLE IF EXISTS {table}")
 
     def get_checkpoint(self, feed: str) -> str | None:
         row = self._conn.execute(
@@ -387,13 +313,10 @@ class Store:
         """Persist one run's proposals, replacing any previous run's.
 
         Clusters are rebuilt from scratch every run, so the proposal table
-        always mirrors the most recent run's conclusions. The write/skip
-        decisions from the previous review cycle are cleared with them:
-        every new proposal comes back fresh for review.
+        always mirrors the most recent run's conclusions.
         """
         with self._conn:
             self._conn.execute("DELETE FROM proposal")
-            self._conn.execute("DELETE FROM write_decision")
             self._conn.executemany(
                 """
                 INSERT INTO proposal (asset_id, appearance, window, cluster, status, proposed_name)
@@ -518,166 +441,6 @@ class Store:
         ).fetchall()
         return [Tombstone(asset_id=str(row[0]), person_id=str(row[1])) for row in rows]
 
-    # -- dry-run batches ------------------------------------------------------
-
-    def add_dry_run_batch(
-        self,
-        name: str,
-        window: str,
-        cluster: int,
-        timestamp: datetime,
-        actions: list[DryRunAction],
-    ) -> str:
-        """Persist a dry-run batch and return its ID."""
-        batch_id = str(uuid.uuid4())
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO dry_run_batch (id, name, window, cluster, timestamp)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (batch_id, name, window, cluster, timestamp.isoformat()),
-            )
-            for action in actions:
-                head_box_json = (
-                    json.dumps([float(v) for v in action.head_box])
-                    if action.head_box is not None
-                    else None
-                )
-                self._conn.execute(
-                    """
-                    INSERT INTO dry_run_action (batch_id, asset_id, appearance, head_box, status, message)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        batch_id,
-                        action.asset_id,
-                        action.appearance,
-                        head_box_json,
-                        action.status.value,
-                        action.message,
-                    ),
-                )
-        return batch_id
-
-    def get_dry_run_batch(self, batch_id: str) -> DryRunBatch | None:
-        """Get a dry-run batch by ID, or None if not found."""
-        row = self._conn.execute(
-            "SELECT id, name, window, cluster, timestamp, promoted_at, person_id "
-            "FROM dry_run_batch WHERE id = ?",
-            (batch_id,),
-        ).fetchone()
-        if row is None:
-            return None
-
-        action_rows = self._conn.execute(
-            "SELECT asset_id, appearance, head_box, status, message, written_at FROM dry_run_action WHERE batch_id = ? ORDER BY ROWID",
-            (batch_id,),
-        ).fetchall()
-
-        actions = []
-        for arow in action_rows:
-            head_box = json.loads(arow[2]) if arow[2] is not None else None
-            if head_box is not None:
-                head_box = tuple(head_box)
-            actions.append(
-                DryRunAction(
-                    asset_id=str(arow[0]),
-                    appearance=int(arow[1]),
-                    head_box=head_box,
-                    status=DryRunActionStatus(str(arow[3])),
-                    message=arow[4] if arow[4] is not None else None,
-                    written_at=(
-                        datetime.fromisoformat(str(arow[5]))
-                        if arow[5] is not None
-                        else None
-                    ),
-                )
-            )
-
-        promoted_at_str = row[5]
-        person_id_str = row[6] if len(row) > 6 else None
-        return DryRunBatch(
-            id=str(row[0]),
-            name=str(row[1]),
-            window=str(row[2]),
-            cluster=int(row[3]),
-            timestamp=datetime.fromisoformat(str(row[4])),
-            actions=actions,
-            promoted_at=(
-                datetime.fromisoformat(str(promoted_at_str))
-                if promoted_at_str is not None
-                else None
-            ),
-            person_id=person_id_str,
-        )
-
-    def get_dry_run_batches(self) -> list[DryRunBatch]:
-        """List all dry-run batches, newest first."""
-        rows = self._conn.execute(
-            "SELECT id FROM dry_run_batch ORDER BY timestamp DESC"
-        ).fetchall()
-        batches = [
-            batch
-            for batch in (self.get_dry_run_batch(str(row[0])) for row in rows)
-            if batch is not None
-        ]
-        return batches
-
-    def mark_dry_run_batch_promoted(
-        self, batch_id: str, timestamp: datetime, person_id: str
-    ) -> None:
-        """Record that a dry-run batch has been promoted."""
-        with self._conn:
-            self._conn.execute(
-                "UPDATE dry_run_batch SET promoted_at = ?, person_id = ? WHERE id = ?",
-                (timestamp.isoformat(), person_id, batch_id),
-            )
-
-    def mark_dry_run_action_written(
-        self, batch_id: str, asset_id: str, appearance: int, timestamp: datetime
-    ) -> None:
-        """Record that one action of a batch has actually been written.
-
-        Lets the write-review page track partial progress: a batch is done
-        when every action carries a written_at.
-        """
-        with self._conn:
-            self._conn.execute(
-                """
-                UPDATE dry_run_action SET written_at = ?
-                WHERE batch_id = ? AND asset_id = ? AND appearance = ?
-                """,
-                (timestamp.isoformat(), batch_id, asset_id, appearance),
-            )
-
-    def close_dry_run_batch_if_complete(
-        self, batch_id: str, timestamp: datetime
-    ) -> None:
-        """Mark the batch promoted once every action has been written.
-
-        Called after partial writes: a batch whose remaining actions were
-        all written (or which had none left) closes automatically, so the
-        pending list only shows what is genuinely left.
-        """
-        row = self._conn.execute(
-            """
-            SELECT count(*) FROM dry_run_action
-            WHERE batch_id = ? AND written_at IS NULL
-            """,
-            (batch_id,),
-        ).fetchone()
-        if int(row[0]) > 0:
-            return
-        batch = self.get_dry_run_batch(batch_id)
-        if batch is None or batch.promoted_at is not None:
-            return
-        with self._conn:
-            self._conn.execute(
-                "UPDATE dry_run_batch SET promoted_at = ? WHERE id = ?",
-                (timestamp.isoformat(), batch_id),
-            )
-
     # -- wipe ----------------------------------------------------------------
 
     def wipe(self) -> int:
@@ -698,8 +461,6 @@ class Store:
             self._conn.execute("DELETE FROM proposal")
             self._conn.execute("DELETE FROM write_ledger")
             self._conn.execute("DELETE FROM tombstone")
-            self._conn.execute("DELETE FROM dry_run_action")
-            self._conn.execute("DELETE FROM dry_run_batch")
             self._conn.execute("DELETE FROM checkpoint")
         return int(removed)
 
@@ -808,33 +569,6 @@ class Store:
             "SELECT asset_id, appearance FROM appearance_ignore"
         ).fetchall()
         return {(str(r[0]), int(r[1])) for r in rows}
-
-    def set_write_decision(
-        self, asset_id: str, appearance: int, included: bool
-    ) -> None:
-        """Persist the operator's write/skip choice for one appearance.
-
-        Covers exactly one review cycle: the table is cleared whenever
-        proposals are replaced by a batch run, so a fresh proposal is never
-        silently suppressed by an old decision.
-        """
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO write_decision (asset_id, appearance, included)
-                VALUES (?, ?, ?)
-                ON CONFLICT(asset_id, appearance) DO UPDATE
-                SET included = excluded.included
-                """,
-                (asset_id, appearance, int(included)),
-            )
-
-    def write_decisions(self) -> dict[tuple[str, int], bool]:
-        """Persisted write/skip decisions as (asset_id, appearance) -> included."""
-        rows = self._conn.execute(
-            "SELECT asset_id, appearance, included FROM write_decision"
-        ).fetchall()
-        return {(str(r[0]), int(r[1])): bool(r[2]) for r in rows}
 
     # -- pipeline runs -------------------------------------------------------
 
