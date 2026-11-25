@@ -381,7 +381,7 @@ ExecStartPre=-/usr/bin/docker pull ${GHCR_IMAGE}
 # Stop and remove any previously running container with the same name so a
 # restart never leaves two containers bound to port 8090.
 ExecStartPre=-/usr/bin/docker stop reid-core
-ExecStartPre=-/usr/bin/docker rm reid-core
+ExecStartPre=-/usr/bin/docker rm -f reid-core
 # Run the core API server — override ENTRYPOINT (image default is reid-batch)
 ExecStart=/usr/bin/docker run --rm \
   --platform linux/arm64 \
@@ -395,9 +395,12 @@ ExecStart=/usr/bin/docker run --rm \
   --config /etc/reid/reid.toml
 Restart=on-failure
 RestartSec=30
-TimeoutStopSec=30
-# Clean up the named container after the service stops.
-ExecStopPost=-/usr/bin/docker rm reid-core
+TimeoutStopSec=15
+# Stop the named container gracefully BEFORE systemd signals the docker run
+# client; without this the container keeps running after the client dies.
+ExecStop=/usr/bin/docker stop -t 10 reid-core
+# Force-remove any leftover container (running or stopped).
+ExecStopPost=-/usr/bin/docker rm -f reid-core
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=reid-core
@@ -438,7 +441,7 @@ ExecStartPre=-/usr/bin/docker pull ${GHCR_IMAGE}
 # Stop and remove any previously running container with the same name so a
 # restart never leaves two containers bound to port 8080.
 ExecStartPre=-/usr/bin/docker stop reid-ui
-ExecStartPre=-/usr/bin/docker rm reid-ui
+ExecStartPre=-/usr/bin/docker rm -f reid-ui
 # Run the UI server — override ENTRYPOINT (image default is reid-batch).
 # No store volume: the UI proxies /api/* to reid-core and never touches the
 # database itself.
@@ -453,9 +456,12 @@ ExecStart=/usr/bin/docker run --rm \
   --config /etc/reid/reid.toml
 Restart=on-failure
 RestartSec=30
-TimeoutStopSec=30
-# Clean up the named container after the service stops.
-ExecStopPost=-/usr/bin/docker rm reid-ui
+TimeoutStopSec=15
+# Stop the named container gracefully BEFORE systemd signals the docker run
+# client; without this the container keeps running after the client dies.
+ExecStop=/usr/bin/docker stop -t 10 reid-ui
+# Force-remove any leftover container (running or stopped).
+ExecStopPost=-/usr/bin/docker rm -f reid-ui
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=reid-ui
