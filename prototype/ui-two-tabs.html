@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<!--
+  PROTOTYPE — throwaway, do not ship. Ticket 02 of .scratch/ui-two-tabs/.
+
+  Question: does the decided two-tab design (see issues/01, decisions 1-11) read and
+  behave right as a concrete UI? Assumption: ONE structural variant (the decisions are
+  settled), in the app's existing dark theme, with mock data — the open fog is the
+  visual design direction and whether the two-checkboxes-per-card pattern reads clearly.
+
+  Run: open this file in a browser. No server, no Immich.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PROTOTYPE — two-tab UI (ticket 02)</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1d2026; --panel2: #23272f; --line: #333943;
+  --text: #e8eaf0; --dim: #9aa3b2; --accent: #4f8cff; --ok: #37b26c;
+  --warn: #e0a33a; --bad: #e05252; --chip: #2b303a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--panel2); color: var(--text); border-radius: 8px; padding: 5px 10px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button:disabled { opacity: .45; cursor: default; }
+input[type="text"] { font: inherit; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; width: 100%; }
+input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px; background: var(--chip); color: var(--dim); }
+.chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--bad); } .chip.acc { color: var(--accent); }
+.muted { color: var(--dim); } .mono { font-family: ui-monospace, monospace; font-size: 11px; }
+
+/* top bar + tabs */
+.top { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+.tabs { display: flex; gap: 4px; margin-right: 8px; }
+.tab { padding: 6px 16px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--dim); font-weight: 600; }
+.tab.sel { background: var(--panel2); color: var(--text); border-color: var(--line); }
+.spacer { flex: 1; }
+.banner { padding: 6px 12px; background: var(--panel2); border-bottom: 1px solid var(--line); color: var(--dim); font-size: 12px; }
+
+/* proposals layout */
+.work { display: grid; grid-template-columns: 170px 250px 1fr 290px; gap: 0; height: calc(100vh - 90px); }
+.days, .clusters, .pane { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
+.dayrow, .item { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.dayrow.sel, .item.sel { background: var(--panel2); box-shadow: inset 3px 0 0 var(--accent); }
+.item.done { opacity: .55; }
+.item-row { display: flex; gap: 8px; align-items: center; }
+.strip { display: flex; gap: 2px; }
+.main { overflow-y: auto; padding: 12px; }
+.evgrid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+
+/* evidence card */
+.evcard { width: 190px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.evcard.selected { border-color: var(--accent); }
+.crop { position: relative; height: 150px; border-radius: 8px; overflow: hidden; background: var(--panel2); }
+.crop img, .crop .ph { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ph { display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 11px; }
+.photobtn { position: absolute; top: 4px; right: 4px; font-size: 11px; padding: 2px 7px; background: rgba(0,0,0,.55); color: #fff; border: none; border-radius: 6px; }
+.fullphoto { position: relative; width: 100%; aspect-ratio: 4/3; border-radius: 8px; overflow: hidden; }
+.pbox { position: absolute; border: 2px dashed var(--dim); border-radius: 4px; }
+.pbox.self { border: 2px solid var(--accent); background: rgba(79,140,255,.12); }
+.pbox .tag { position: absolute; top: -18px; left: 0; font-size: 10px; color: var(--accent); white-space: nowrap; }
+.checks { display: flex; gap: 10px; align-items: center; font-size: 11px; color: var(--dim); }
+.inforow { font-size: 12px; display: flex; gap: 6px; }
+.inforow b { color: var(--dim); font-weight: 600; min-width: 44px; }
+.url { font-size: 10px; color: var(--dim); word-break: break-all; }
+.url a { color: var(--accent); text-decoration: none; }
+.cardbtns { display: flex; flex-wrap: wrap; gap: 4px; }
+.cardbtns button { font-size: 11px; padding: 3px 8px; }
+
+/* actions pane */
+.pane { padding: 12px; }
+.pane h3 { margin: 0 0 8px; font-size: 14px; }
+.bulkbar { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.bulkbar .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.hint { font-size: 11px; color: var(--dim); margin-top: 6px; }
+
+/* final check */
+.final { display: grid; grid-template-columns: 240px 1fr; height: calc(100vh - 90px); }
+.personrow { padding: 10px; cursor: pointer; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+.personrow.sel { background: var(--panel2); box-shadow: inset 3px 0 0 var(--accent); }
+.writebar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; flex-wrap: wrap; }
+.fcard { width: 170px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.fcard.selected { border-color: var(--ok); }
+
+/* toast */
+#toasthost { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 50; display: flex; flex-direction: column; gap: 6px; }
+.toast { background: var(--panel2); border: 1px solid var(--accent); color: var(--text); padding: 8px 14px; border-radius: 8px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+.cfgpop { display: none; position: absolute; right: 12px; top: 44px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; width: 280px; z-index: 20; }
+.cfgpop.open { display: block; }
+.cfgpop label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toasthost"></div>
+<script>
+"use strict";
+/* ---------- mock data ---------- */
+const IMMICH = "https://immich.local";
+const PEOPLE = ["Alice", "Bob", "Carol"];
+// box = [x, y, w, h] as fractions of the photo. siblings = all stored appearances of the asset.
+function app(asset_id, asset_name, appearance, date, confidence, status, immich_label, you, box, siblings, included) {
+  return { asset_id, asset_name, appearance, date, confidence, status, immich_label, you, box, siblings, included: included !== false };
+}
+const CLUSTERS = [
+  { window: "2026-11-25", cluster: 3, proposed_name: "Alice", anchor: "Immich label: Alice", confidence: 0.93, status: "open", fully_labeled: false,
+    appearances: [
+      app("01JW2A0001", "IMG_1042.jpg", 0, "2026-11-25 14:03", 0.98, "will_write", null, null,
+          [0.10, 0.08, 0.28, 0.88], [{appearance:0,box:[0.10,0.08,0.28,0.88]},{appearance:1,box:[0.55,0.12,0.30,0.82]}]),
+      app("01JW2A0002", "IMG_1043.jpg", 0, "2026-11-25 15:47", 0.91, "already_labeled", "Alice", null, [0.30,0.10,0.35,0.85], [{appearance:0,box:[0.30,0.10,0.35,0.85]}], false),
+      app("01JW2A0003", "IMG_1051.jpg", 0, "2026-11-25 18:22", 0.87, "conflict_skip", "Bob", null, [0.15,0.15,0.30,0.80], [{appearance:0,box:[0.15,0.15,0.30,0.80]}]),
+      app("01JW2A0004", "IMG_1055.jpg", 0, "2026-11-25 19:05", 0.95, "will_write", null, "ignored", [0.60,0.10,0.25,0.85], [{appearance:0,box:[0.60,0.10,0.25,0.85]}], false),
+    ] },
+  { window: "2026-11-25", cluster: 5, proposed_name: null, anchor: "no Immich label found", confidence: 0.81, status: "open", fully_labeled: false,
+    appearances: [
+      app("01JW2A0005", "IMG_1060.jpg", 0, "2026-11-25 20:11", 0.83, "ask_name", null, null, [0.20,0.10,0.30,0.85], [{appearance:0,box:[0.20,0.10,0.30,0.85]}]),
+      app("01JW2A0006", "IMG_1061.jpg", 0, "2026-11-25 20:30", 0.79, "ask_name", null, "pinned: Carol", [0.45,0.08,0.28,0.88], [{appearance:0,box:[0.45,0.08,0.28,0.88]}]),
+    ] },
+  { window: "2026-11-24", cluster: 1, proposed_name: "Bob", anchor: "Immich label: Bob", confidence: 0.90, status: "open", fully_labeled: true,
+    appearances: [
+      app("01JW29Z001", "IMG_0990.jpg", 0, "2026-11-24 12:00", 0.97, "already_labeled", "Bob", null, [0.25,0.10,0.30,0.85], [{appearance:0,box:[0.25,0.10,0.30,0.85]}], false),
+      app("01JW29Z002", "IMG_0991.jpg", 1, "2026-11-24 12:31", 0.92, "already_labeled", "Bob", null, [0.55,0.12,0.30,0.82], [{appearance:0,box:[0.10,0.08,0.28,0.88]},{appearance:1,box:[0.55,0.12,0.30,0.82]}], false),
+    ] },
+];
+// Final check: per person, all appearances assigned to them (proposal / pin / pending write)
+const FINAL = [
+  { name: "Alice", items: [
+      { asset_id: "01JW2A0001", asset_name: "IMG_1042.jpg", appearance: 0, window: "2026-11-25", cluster: 3, source: "proposal", written: false, box: [0.10,0.08,0.28,0.88], siblings: [{appearance:0,box:[0.10,0.08,0.28,0.88]},{appearance:1,box:[0.55,0.12,0.30,0.82]}] },
+      { asset_id: "01JW2A0007", asset_name: "IMG_1070.jpg", appearance: 0, window: "2026-11-25", cluster: 3, source: "proposal", written: false, box: [0.20,0.10,0.30,0.85], siblings: [{appearance:0,box:[0.20,0.10,0.30,0.85]}] },
+      { asset_id: "01JW2A0008", asset_name: "IMG_1071.jpg", appearance: 0, window: "2026-11-24", cluster: 2, source: "pin", written: false, box: [0.40,0.12,0.28,0.82], siblings: [{appearance:0,box:[0.40,0.12,0.28,0.82]}] },
+      { asset_id: "01JW2A0009", asset_name: "IMG_0950.jpg", appearance: 0, window: "2026-11-23", cluster: 1, source: "pending", written: false, box: [0.30,0.10,0.30,0.85], siblings: [{appearance:0,box:[0.30,0.10,0.30,0.85]}] },
+  ] },
+  { name: "Bob", items: [
+      { asset_id: "01JW2A0003", asset_name: "IMG_1051.jpg", appearance: 0, window: "2026-11-25", cluster: 3, source: "conflict", written: false, box: [0.15,0.15,0.30,0.80], siblings: [{appearance:0,box:[0.15,0.15,0.30,0.80]}] },
+      { asset_id: "01JW29Z003", asset_name: "IMG_0995.jpg", appearance: 0, window: "2026-11-24", cluster: 1, source: "proposal", written: true, box: [0.50,0.10,0.30,0.85], siblings: [{appearance:0,box:[0.50,0.10,0.30,0.85]}] },
+  ] },
+  { name: "Carol", items: [
+      { asset_id: "01JW2A0006", asset_name: "IMG_1061.jpg", appearance: 0, window: "2026-11-25", cluster: 5, source: "pin", written: false, box: [0.45,0.08,0.28,0.88], siblings: [{appearance:0,box:[0.45,0.08,0.28,0.88]}] },
+  ] },
+];
+
+/* ---------- state ---------- */
+const S = {
+  view: "proposals",
+  activeDay: "2026-11-25",
+  activeKey: "2026-11-25:3",
+  showLabeled: false,
+  expanded: null,          // card key showing the full-photo overlay
+  selected: new Set(),     // proposal-card selection keys "asset:appearance"
+  finalPerson: "Alice",
+  finalSelected: new Set(),// final-check item keys, default OFF
+  cfgOpen: false,
+};
+const keyOf = c => `${c.window}:${c.cluster}`;
+const akey = a => `${a.asset_id}:${a.appearance}`;
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function toast(msg) {
+  const el = document.createElement("div");
+  el.className = "toast"; el.textContent = msg;
+  document.getElementById("toasthost").appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+// deterministic fake "photo" per asset: gradient hue + silhouette for the appearance box
+function photoSVG(seed, hue) {
+  const body = `<rect width="100%" height="100%" fill="hsl(${hue} 30% 22%)"/>
+    <rect y="55%" width="100%" height="45%" fill="hsl(${hue} 25% 16%)"/>`;
+  return "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">${body}</svg>`);
+}
+function cropHTML(a, h) {
+  const hue = (a.asset_id.charCodeAt(6) * 40) % 360;
+  return `<div class="crop" style="height:${h || 150}px;background:url('${photoSVG(0, hue)}') center/cover">
+    <button class="photobtn" onclick="togglePhoto('${akey(a)}')">${S.expanded === akey(a) ? "crop" : "full photo"}</button>
+  </div>`;
+}
+function fullPhotoHTML(a) {
+  const hue = (a.asset_id.charCodeAt(6) * 40) % 360;
+  const boxes = (a.siblings || []).map(s => {
+    const self = s.appearance === a.appearance;
+    return `<div class="pbox ${self ? "self" : ""}" style="left:${s.box[0]*100}%;top:${s.box[1]*100}%;width:${s.box[2]*100}%;height:${s.box[3]*100}%">${self ? '<span class="tag">this appearance</span>' : ""}</div>`;
+  }).join("");
+  return `<div class="fullphoto" style="background:url('${photoSVG(0, hue)}') center/cover">${boxes}
+    <button class="photobtn" onclick="togglePhoto('${akey(a)}')">crop</button></div>`;
+}
+function togglePhoto(k) { S.expanded = S.expanded === k ? null : k; render(); }
+
+/* ---------- evidence card (shared by Proposals grid) ---------- */
+const STATUS_CHIP = { will_write: ["acc", "will write"], already_labeled: ["ok", "already labeled"], conflict_skip: ["bad", "conflict — skip"], ask_name: ["warn", "ask for name"], rejected: ["bad", "excluded"] };
+function cardHTML(a, cluster) {
+  const [cc, ct] = STATUS_CHIP[a.status] || ["", a.status];
+  const sel = S.selected.has(akey(a));
+  const link = `${IMMICH}/photos/${a.asset_id}`;
+  return `<div class="evcard ${sel ? "selected" : ""}">
+    ${S.expanded === akey(a) ? fullPhotoHTML(a) : cropHTML(a)}
+    <div class="checks">
+      <label title="select for bulk actions"><input type="checkbox" ${sel ? "checked" : ""} onchange="toggleSel('${akey(a)}')"> select</label>
+      ${a.status === "will_write" ? `<label title="include in the confirmed write"><input type="checkbox" ${a.included ? "checked" : ""} onchange="toggleInc('${akey(a)}')"> write</label>` : ""}
+    </div>
+    <div class="inforow"><b>Immich:</b> <span>${a.immich_label ? esc(a.immich_label) : '<span class="muted">—</span>'}</span></div>
+    <div class="inforow"><b>ReID:</b> <span>${cluster.proposed_name ? esc(cluster.proposed_name) : '<span class="muted">unnamed cluster</span>'} <span class="chip ${cc}">${ct}</span></span></div>
+    <div class="inforow"><b>You:</b> <span>${a.you ? esc(a.you) : '<span class="muted">—</span>'}</span></div>
+    <div class="muted">${esc(a.date)} · ${(a.confidence*100).toFixed(0)}%</div>
+    <div class="url"><a href="${link}" target="_blank" rel="noopener">${esc(link)}</a></div>
+    <div class="cardbtns">
+      ${a.you === "ignored" ? `<button onclick="act('${akey(a)}','unignore')">Undo ignore</button>` : `<button onclick="act('${akey(a)}','ignore')">Ignore</button>`}
+      <button onclick="act('${akey(a)}','pin')">Pin as… for next run</button>
+      ${a.status !== "rejected" ? `<button onclick="act('${akey(a)}','reject')">Not this person</button>` : ""}
+    </div>
+  </div>`;
+}
+function toggleSel(k) { S.selected.has(k) ? S.selected.delete(k) : S.selected.add(k); render(); }
+function toggleInc(k) { const c = activeCluster(); const a = c.appearances.find(x => akey(x) === k); if (a) a.included = !a.included; render(); }
+function act(k, what) {
+  const name = what === "pin" ? (prompt("Pin as which person? (existing: " + PEOPLE.join(", ") + ")") || "").trim() : null;
+  if (what === "pin" && !name) return;
+  if (what === "pin") toast(`Pinned ${akey(k)} as “${name}” — applies on the NEXT pipeline run`);
+  if (what === "ignore") toast(`Ignored ${k} — excluded from clustering, never labeled`);
+  if (what === "unignore") toast(`Un-ignored ${k}`);
+  if (what === "reject") toast(`Marked ${k} as not “${activeCluster().proposed_name}” — excluded from this proposal`);
+  render();
+}
+
+/* ---------- proposals view ---------- */
+function activeCluster() { return CLUSTERS.find(c => keyOf(c) === S.activeKey) || null; }
+function visibleClusters() { return CLUSTERS.filter(c => S.showLabeled || !c.fully_labeled); }
+function topbarHTML() {
+  const isP = S.view === "proposals";
+  return `<div class="top">
+    <div class="tabs">
+      <button class="tab ${isP ? "sel" : ""}" onclick="setView('proposals')">Proposals</button>
+      <button class="tab ${!isP ? "sel" : ""}" onclick="setView('final')">Final check</button>
+    </div>
+    ${isP ? `
+      <label class="muted"><input type="checkbox" ${S.showLabeled ? "checked" : ""} onchange="S.showLabeled=this.checked;render()"> show already labeled</label>
+      <button onclick="toast('Settings are a stub in the prototype')">⚙</button>` : ""}
+    <span class="spacer"></span>
+    <button onclick="toast('Pipeline run started (stub)')">Run now</button>
+  </div>
+  <div class="banner">Prototype — mock data. Banners (core down / run progress) render here in both tabs.</div>`;
+}
+function proposalsHTML() {
+  const days = [...new Set(visibleClusters().map(c => c.window))].sort().reverse();
+  const rows = visibleClusters().filter(c => c.window === S.activeDay);
+  const c = activeCluster();
+  const selCount = S.selected.size;
+  const writable = c ? c.appearances.filter(a => a.status === "will_write" && a.included).length : 0;
+  return `<div class="work">
+    <div class="days">${days.map(d => {
+      const cs = visibleClusters().filter(x => x.window === d);
+      const open = cs.filter(x => x.status === "open").length;
+      return `<div class="dayrow ${d === S.activeDay ? "sel" : ""}" onclick="S.activeDay='${d}';render()"><b>${d}</b> <span class="chip ${open ? "acc" : ""}">${open}/${cs.length}</span></div>`;
+    }).join("") || '<div class="muted" style="padding:10px">no clusters</div>'}</div>
+    <div class="clusters">${rows.map(x => `<div class="item ${keyOf(x) === S.activeKey ? "sel" : ""} ${x.status !== "open" ? "done" : ""}" onclick="S.activeKey='${keyOf(x)}';render()">
+      <div class="item-row"><div class="strip">${x.appearances.slice(0,3).map(a => `<div style="width:22px;height:30px;border-radius:4px;background:url('${photoSVG(0,(a.asset_id.charCodeAt(6)*40)%360)}') center/cover"></div>`).join("")}</div>
+      <div><div>${x.proposed_name ? esc(x.proposed_name) : '<span class="muted">unnamed</span>'}</div>
+      <div class="muted mono">group ${x.cluster} · ${(x.confidence*100).toFixed(0)}% · ${x.appearances.length} photos</div></div></div></div>`).join("") || '<div class="muted" style="padding:10px">select a day</div>'}</div>
+    <div class="main">
+      ${c ? `<span class="mono muted">${c.window} / ${c.cluster}</span><h3 style="margin:4px 0">${c.proposed_name ? esc(c.proposed_name) : '<span class="muted">unnamed cluster</span>'}</h3>
+      <div class="muted">${esc(c.anchor)} · group confidence ${(c.confidence*100).toFixed(0)}%</div>
+      <div class="evgrid">${c.appearances.map(a => cardHTML(a, c)).join("")}</div>` : '<div class="muted">Select a cluster</div>'}
+    </div>
+    <div class="pane">
+      ${c ? `<h3>${c.proposed_name ? esc(c.proposed_name) : "Name this cluster"}</h3>
+      <input type="text" list="people" placeholder="Type or pick an existing person…" value="${c.proposed_name ? esc(c.proposed_name) : ""}">
+      <datalist id="people">${PEOPLE.map(p => `<option value="${p}">`).join("")}</datalist>
+      <div class="hint">existing person → attach · new name → creates person on write</div>
+      <div class="hint">${c.appearances.length} appearances · ${writable} to write</div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="primary" onclick="toast('Proposal confirmed — the write itself happens in Final check')">Confirm proposal (${writable})</button>
+        <button onclick="toast('Cluster skipped')">Skip cluster</button>
+      </div>
+      <div class="bulkbar">
+        <b>${selCount} selected</b>
+        <div class="row">
+          <button ${!selCount ? "disabled" : ""} onclick="bulk('ignore')">Ignore selected</button>
+          <button ${!selCount ? "disabled" : ""} onclick="bulk('unignore')">Undo ignore</button>
+          <button ${!selCount ? "disabled" : ""} onclick="bulk('reject')">Not this person</button>
+        </div>
+        <div class="row">
+          <input type="text" list="people" id="bulkName" placeholder="person…" style="width:110px">
+          <button ${!selCount ? "disabled" : ""} onclick="bulk('pin')">Pin selected as… for next run</button>
+        </div>
+        <div class="hint">Bulk actions apply to the visible cards only. “Pin as X” takes effect on the next pipeline run; reassigning in Final check writes as X now.</div>
+      </div>` : '<div class="muted">Select a cluster</div>'}
+    </div>
+  </div>`;
+}
+function bulk(what) {
+  const n = S.selected.size;
+  if (what === "pin") {
+    const name = (document.getElementById("bulkName").value || "").trim();
+    if (!name) return toast("pick a person first");
+    toast(`Pinned ${n} selected as “${name}” — applies on the NEXT pipeline run`);
+  } else if (what === "ignore") toast(`Ignored ${n} selected — never labeled`);
+  else if (what === "unignore") toast(`Un-ignored ${n} selected`);
+  else if (what === "reject") toast(`Marked ${n} selected as not “${activeCluster().proposed_name ?? "?"}”`);
+  S.selected.clear(); render();
+}
+
+/* ---------- final check view ---------- */
+function finalHTML() {
+  const person = FINAL.find(p => p.name === S.finalPerson) || FINAL[0];
+  const sel = [...S.finalSelected].length;
+  const totalSel = FINAL.reduce((n, p) => n + p.items.filter(i => S.finalSelected.has(akey(i))).length, 0);
+  const srcChip = { proposal: ["acc", "ReID proposal"], pin: ["acc", "your pin"], pending: ["warn", "pending write"], conflict: ["bad", "conflict"] };
+  return `<div class="final">
+    <div class="days">
+      ${FINAL.map(p => `<div class="personrow ${p.name === person.name ? "sel" : ""}" onclick="S.finalPerson='${p.name}';render()">
+        <b>${esc(p.name)}</b> <span class="chip acc">${p.items.length}</span></div>`).join("")}
+    </div>
+    <div style="overflow-y:auto">
+      <div class="writebar">
+        <button class="primary" ${!sel ? "disabled" : ""} onclick="writePerson('${esc(person.name)}')">Write ${sel} selected to Immich</button>
+        <button onclick="selAllPerson(true)">Select all</button>
+        <button onclick="selAllPerson(false)">Deselect all</button>
+        <button ${!sel ? "disabled" : ""} onclick="reassignSel()">Write selected as…</button>
+        <span class="spacer"></span>
+        <button class="primary" ${!totalSel ? "disabled" : ""} onclick="writeAll()">Write all selected across people (${totalSel})</button>
+      </div>
+      <div class="main" style="height:auto">
+        <h3 style="margin:4px 0">${esc(person.name)}</h3>
+        <div class="hint" style="margin-bottom:8px">Every appearance assigned to ${esc(person.name)} — ReID proposals, your pins, pending writes. Checkboxes default OFF; checked items are written on confirm.</div>
+        <div class="evgrid">${person.items.map(i => {
+          const [cc, ct] = srcChip[i.source] || ["", i.source];
+          const k = akey(i);
+          const on = S.finalSelected.has(k);
+          return `<div class="fcard ${on ? "selected" : ""}">
+            <a href="${IMMICH}/photos/${i.asset_id}" target="_blank" rel="noopener">${cropHTML(i, 120)}</a>
+            <label class="checks"><input type="checkbox" ${on ? "checked" : ""} onchange="toggleFinal('${k}')"> write to Immich</label>
+            <div class="mono muted">${esc(i.asset_name)} · ${i.window} · group ${i.cluster}</div>
+            <div><span class="chip ${cc}">${ct}</span> ${i.written ? '<span class="chip ok">written</span>' : ""}</div>
+            <div class="cardbtns"><button onclick="reassignOne('${k}')">Write as…</button></div>
+          </div>`;
+        }).join("")}</div>
+      </div>
+    </div>
+  </div>`;
+}
+function toggleFinal(k) { S.finalSelected.has(k) ? S.finalSelected.delete(k) : S.finalSelected.add(k); render(); }
+function selAllPerson(v) { const p = FINAL.find(x => x.name === S.finalPerson); for (const i of p.items) v ? S.finalSelected.add(akey(i)) : S.finalSelected.delete(akey(i)); render(); }
+function writePerson(name) { const n = FINAL.find(p => p.name === name).items.filter(i => S.finalSelected.has(akey(i))).length; toast(`Wrote ${n} faces to Immich as “${name}” (stub)`); render(); }
+function writeAll() { const n = FINAL.reduce((s, p) => s + p.items.filter(i => S.finalSelected.has(akey(i))).length, 0); toast(`Wrote ${n} faces to Immich across all people (stub)`); render(); }
+function reassignOne(k) { const name = (prompt("Write as which person? (existing: " + PEOPLE.join(", ") + ")") || "").trim(); if (name) toast(`“${k}” will be WRITTEN as “${name}” now — not just pinned`); }
+function reassignSel() { const name = (prompt("Write all selected as which person?") || "").trim(); if (name) toast(`${S.finalSelected.size} selected will be WRITTEN as “${name}” now`); }
+
+/* ---------- shell ---------- */
+function setView(v) { S.view = v; render(); }
+function render() {
+  document.getElementById("app").innerHTML = topbarHTML() + (S.view === "proposals" ? proposalsHTML() : finalHTML());
+}
+render();
+</script>
+</body>
+</html>
