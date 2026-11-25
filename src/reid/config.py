@@ -67,9 +67,11 @@ class UiConfig:
     """
 
     core: CoreConfig
-    # Optional override for the Immich URL used by "open in Immich" links:
-    # the core reports its own base_url, which may be a localhost address
-    # that means nothing on another machine.
+    # Override for the Immich URL used by "open in Immich" links: the core
+    # reports its own base_url, which may be a localhost address that means
+    # nothing on another machine. When unset, load_ui_config falls back to
+    # [immich] base_url so you only enter the URL twice when they actually
+    # differ (UI on another machine).
     immich_url: str | None = None
 
 
@@ -253,9 +255,11 @@ def load_ui_config(
 ) -> UiConfig:
     """Load only what `reid-ui` needs: the [core] section and [ui] overrides.
 
-    A full reid.toml works unchanged; the Immich and store sections are
-    ignored. With no path, defaults apply (localhost core, no token), and
-    environment variables still win over file values.
+    A full reid.toml works unchanged; the Immich section is only consulted
+    for [immich] base_url as a fallback when [ui] immich_url is unset, so
+    viewer links work without entering the URL twice. With no path, defaults
+    apply (localhost core, no token), and environment variables still win
+    over file values.
     """
     env = os.environ if env is None else env
     raw: dict[str, Any] = {}
@@ -282,6 +286,15 @@ def load_ui_config(
         if not isinstance(immich_url, str) or not immich_url:
             raise ConfigError("[ui] immich_url must be a non-empty string")
         immich_url = immich_url.rstrip("/")
+    else:
+        # Fall back to the core's Immich base_url so viewer links work
+        # without entering the URL twice. A UI on another machine can still
+        # override with [ui] immich_url when the core reports localhost.
+        immich_raw = raw.get("immich", {})
+        if isinstance(immich_raw, dict):
+            base_url = immich_raw.get("base_url")
+            if isinstance(base_url, str) and base_url:
+                immich_url = base_url.rstrip("/")
 
     return UiConfig(core=_parse_core(raw, env), immich_url=immich_url)
 

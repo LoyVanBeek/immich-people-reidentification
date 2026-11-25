@@ -157,6 +157,31 @@ def test_load_ui_config_reads_only_core_section(tmp_path: Path) -> None:
     assert cfg.core.api_key == "abc123"
     assert cfg.core.host == "0.0.0.0"
     assert cfg.core.port == 8090
+    # immich_url falls back to [immich] base_url when [ui] immich_url unset
+    assert cfg.immich_url == "http://x"
+
+
+def test_load_ui_config_immich_url_explicit_wins_over_base_url(
+    tmp_path: Path,
+) -> None:
+    cfg = load_ui_config(
+        write_config(
+            tmp_path,
+            CORE_ONLY_BODY()
+            + """
+[immich]
+base_url = "http://x"
+
+[ui]
+immich_url = "http://immich.laptop:2283"
+""",
+        )
+    )
+    assert cfg.immich_url == "http://immich.laptop:2283"
+
+
+def test_load_ui_config_immich_url_none_when_neither_set(tmp_path: Path) -> None:
+    cfg = load_ui_config(write_config(tmp_path, CORE_ONLY_BODY()))
     assert cfg.immich_url is None
 
 

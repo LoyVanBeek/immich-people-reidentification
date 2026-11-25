@@ -86,10 +86,10 @@ port = 8090
 # secret.
 api_key = ""
 
-# [ui] is only read by reid-ui, never by the core. It lets a UI on another
-# machine override the Immich URL used by "open in Immich" links: the core
-# reports its own base_url, which on the Pi is usually localhost and means
-# nothing on a laptop.
+# [ui] is only read by reid-ui, never by the core. immich_url is optional:
+# when unset it defaults to [immich] base_url, so you only set it when the
+# UI runs on another machine and the core's own base_url (e.g. localhost)
+# doesn't resolve there.
 [ui]
 # immich_url = "http://<pi>:2283"
 
