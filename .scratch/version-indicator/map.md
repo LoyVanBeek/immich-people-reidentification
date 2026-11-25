@@ -24,7 +24,7 @@ core's — in the top bar, and `scripts/install.sh` rebuilds the local image
 
 ## Decisions so far
 
-- [Version indicator + installer rebuild](issues/01-version-indicator-and-installer-rebuild.md):
+- [Version indicator + installer rebuild](issues/01-version-indicator-and-installer-rebuild.md) (`5e48d74`):
   baked GIT_COMMIT build-arg + `version.git_commit()` fallback chain; `core_commit`
   in /api/state; `__REID_UI__.commit` injection; top-bar chip; install.sh
   `ensure_local_image` rebuilds reid-batch:local on HEAD change (marker

@@ -14,7 +14,7 @@ ghcr image.)
 
 ## Answer
 
-Implemented and committed (see map):
+Implemented and committed as `5e48d74` on main (2026-11-25):
 
 - `src/reid/version.py`: `git_commit()` — baked `GIT_COMMIT.txt` (Dockerfile
   build-arg, written into site-packages), else `git rev-parse --short HEAD` in a
