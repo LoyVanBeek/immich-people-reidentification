@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -89,6 +89,12 @@ class EvidenceCard:
     asset_name: str = ""  # original file name, for human-readable review
     ignored: bool = False  # operator flagged this detection as wrong
     proposed_name: str | None = None  # name this proposal would write
+    # All stored appearances of the asset (self included), pixel-space boxes
+    # matching /api/crop?full=1, so the UI can draw the full-photo overlay.
+    siblings: list[dict[str, Any]] = field(default_factory=list)
+    sibling_count: int = 0  # badge: how many OTHER appearances share the photo
+    rejected_name: str | None = None  # operator said "not this person" for this name
+    dismissed: bool = False  # the cluster this card belongs to is dismissed
 
 
 @dataclass(frozen=True)
@@ -182,6 +188,8 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
             )
         elif path == "/api/write-review":
             self._send_json(self.core_server.get_write_review())  # type: ignore[union-attr]
+        elif path == "/api/final-check":
+            self._send_json(self.core_server.get_final_check())  # type: ignore[union-attr]
         elif path == "/api/evidence":
             self._send_json(self.core_server.get_evidence(parse_qs(parsed.query)))  # type: ignore[union-attr]
         elif path == "/api/people":
@@ -237,6 +245,41 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
                 bool(body.get("dismissed", True)),
             )
             self._send_json(result)
+        elif path == "/api/confirm-cluster":
+            body = self._read_json()
+            if body is None:
+                return
+            self._send_json(self.core_server.set_cluster_confirmed(body))  # type: ignore[union-attr]
+        elif path == "/api/write-faces":
+            body = self._read_json()
+            if body is None:
+                return
+            self._send_json(self.core_server.write_faces(body))  # type: ignore[union-attr]
+        elif path == "/api/retarget":
+            body = self._read_json()
+            if body is None:
+                return
+            self._send_json(self.core_server.retarget(body))  # type: ignore[union-attr]
+        elif path == "/api/bulk-ignore":
+            body = self._read_json()
+            if body is None:
+                return
+            self._send_json(self.core_server.bulk_set_ignore(body, True))  # type: ignore[union-attr]
+        elif path == "/api/bulk-unignore":
+            body = self._read_json()
+            if body is None:
+                return
+            self._send_json(self.core_server.bulk_set_ignore(body, False))  # type: ignore[union-attr]
+        elif path == "/api/bulk-pin":
+            body = self._read_json()
+            if body is None:
+                return
+            self._send_json(self.core_server.bulk_pin(body))  # type: ignore[union-attr]
+        elif path == "/api/bulk-reject":
+            body = self._read_json()
+            if body is None:
+                return
+            self._send_json(self.core_server.bulk_reject(body))  # type: ignore[union-attr]
         elif path == "/api/reject":
             body = self._read_json()
             if body is None:
@@ -566,6 +609,10 @@ class CoreServer:
         coordinate mapping.
 
         Optional params:
+        - ``full``: serve the whole pixel-source image at native resolution (no
+          crop, no outlines). The evidence payload carries every appearance's
+          pixel-space box, so the UI draws the overlay client-side with
+          viewBox = the image's natural size and the boxes map 1:1.
         - ``expand``: fraction of the box size to grow on each side, for
           context around the person (e.g. 0.6 = 60% margin).
         - ``outline``: draw the person's box as a border inside the crop, so
@@ -578,9 +625,10 @@ class CoreServer:
 
         asset_id = (query.get("asset_id") or [""])[0]
         appearance_raw = (query.get("appearance") or [""])[0]
-        if not asset_id or not appearance_raw:
+        full = (query.get("full") or ["0"])[0].lower() not in ("0", "", "false")
+        if not asset_id or (not appearance_raw and not full):
             raise ValueError("asset_id and appearance are required")
-        appearance_no = int(appearance_raw)
+        appearance_no = int(appearance_raw) if appearance_raw else -1
         expand = float((query.get("expand") or ["0"])[0] or 0)
         outline = (query.get("outline") or ["0"])[0].lower() not in ("0", "", "false")
         neighbours = (query.get("neighbours") or ["0"])[0].lower() not in (
@@ -591,7 +639,7 @@ class CoreServer:
 
         app_list = self.store.appearances_by_asset().get(asset_id, [])
         appearance = next((a for a in app_list if a.appearance == appearance_no), None)
-        if appearance is None:
+        if appearance is None and not full:
             raise LookupError(f"appearance not found: {asset_id}#{appearance_no}")
 
         pixels = self.immich.fetch_pixels(
@@ -601,6 +649,14 @@ class CoreServer:
         if image is None:
             raise ValueError("pixels are not a decodable image")
 
+        if full:
+            # Native resolution, no outlines: the UI overlays the boxes itself.
+            ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok:
+                raise ValueError("could not encode the photo as JPEG")
+            return buf.tobytes(), "image/jpeg"
+
+        assert appearance is not None  # full mode returned above
         left, top, right, bottom = (int(v) for v in appearance.box)
         height, width = image.shape[:2]
         if expand > 0:
@@ -1096,6 +1152,334 @@ class CoreServer:
             return ProposalStatus.PROPOSED
         return ProposalStatus.ASK_NAME
 
+    # -- Final check tab (two-tab UI) ------------------------------------------
+
+    def get_final_check(self) -> dict[str, Any]:
+        """Person-centric Final check payload: every appearance assigned to a person.
+
+        Persons are derived from proposals, operator pins and the write ledger.
+        Each item is an evidence card (with sibling boxes for the photo overlay)
+        plus ``source`` (proposal | pin | conflict | written), ``written`` and
+        ``name``. Unnamed (ask-for-name, unpinned) clusters stay in the
+        Proposals tab — they need a name first.
+        """
+        proposals = self.store.proposals()
+        if not proposals:
+            return {"persons": []}
+        appearances_by_asset = self.store.appearances_by_asset()
+        rejected = set(self.store.appearance_rejections())
+
+        faces_by_asset: dict[str, list[Face]] = {}
+        for asset_id in sorted({p.asset_id for p in proposals}):
+            try:
+                faces_by_asset[asset_id] = self.immich.fetch_faces(asset_id)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("failed to fetch faces for %s: %s", asset_id, exc)
+                faces_by_asset[asset_id] = []
+
+        # Map person name -> Immich id so ledger entries can mark items written.
+        try:
+            name_to_id = {p.name: p.id for p in self.immich.fetch_people()}
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("failed to fetch people: %s", exc)
+            name_to_id = {}
+
+        groups: dict[tuple[str, int], list[Proposal]] = {}
+        for p in proposals:
+            groups.setdefault((p.window, p.cluster), []).append(p)
+
+        persons: dict[str, list[dict[str, Any]]] = {}
+        for window, cluster in sorted(groups):
+            cards = self._build_evidence_for_cluster(
+                cluster,
+                proposals,
+                appearances_by_asset,
+                window=window,
+                faces_by_asset=faces_by_asset,
+                rejected=rejected,
+                include_pin_divergent=True,
+            )
+            for card in cards:
+                item = asdict(card)
+                name: str | None
+                source: str
+                if card.pin and card.pin != card.proposed_name:
+                    name, source = card.pin, "pin"
+                elif card.status == EvidenceCardStatus.CONFLICT_SKIP:
+                    name, source = card.proposed_name, "conflict"
+                elif card.status == EvidenceCardStatus.ALREADY_LABELED:
+                    name, source = card.immich_label or card.proposed_name, "written"
+                else:
+                    name, source = card.proposed_name, "proposal"
+                if not name:
+                    continue  # ask-for-name without a pin: stays in Proposals
+                person_id = name_to_id.get(name)
+                written = card.status == EvidenceCardStatus.ALREADY_LABELED or (
+                    person_id is not None
+                    and self.store.has_write_ledger_entry(card.asset_id, person_id)
+                )
+                item["source"] = source
+                item["written"] = written
+                item["name"] = name
+                persons.setdefault(name, []).append(item)
+
+        return {
+            "persons": [
+                {"name": name, "count": len(items), "items": items}
+                for name, items in sorted(persons.items())
+            ]
+        }
+
+    def write_faces(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Write exactly the given appearances to Immich, each as a named person.
+
+        The only write path in the two-tab UI (the Final check write bars).
+        Per item: resolve the person by name (create if new, write-scoped key),
+        respect operator rejections/ignores, ledger/tombstone and conflict
+        checks, resolve the head box lazily, POST /faces, journal the ledger.
+        """
+        paused = self._require_idle()
+        if paused:
+            return paused
+        writes = body.get("writes", [])
+        if not writes:
+            return {"error": "no writes requested"}
+        if not self.cfg.immich.write_api_key:
+            # Development safety: without a write-scoped key nothing can write.
+            return {"error": "write-scoped API key not configured"}
+        write_client = self._make_write_client()
+        appearances_by_asset = self.store.appearances_by_asset()
+        proposals = self.store.proposals()
+        rejected = set(self.store.appearance_rejections())
+        ignored = self.store.appearance_ignores()
+        timestamp = datetime.now(UTC)
+        results: list[dict[str, Any]] = []
+        for w in writes:
+            asset_id = str(w.get("asset_id", ""))
+            name = str(w.get("name", "")).strip()
+            try:
+                appearance_no = int(w.get("appearance", -1))
+            except (TypeError, ValueError):
+                return {"error": "invalid write item"}
+            if not asset_id or not name or appearance_no < 0:
+                return {"error": "each write needs asset_id, appearance and name"}
+            base = {"asset_id": asset_id, "appearance": appearance_no, "name": name}
+            appearance = next(
+                (
+                    a
+                    for a in appearances_by_asset.get(asset_id, [])
+                    if a.appearance == appearance_no
+                ),
+                None,
+            )
+            if appearance is None:
+                results.append(
+                    {
+                        **base,
+                        "status": WriteResultStatus.ERROR.value,
+                        "message": "appearance not found",
+                    }
+                )
+                continue
+            if (asset_id, appearance_no) in ignored:
+                results.append(
+                    {
+                        **base,
+                        "status": WriteResultStatus.SKIPPED.value,
+                        "message": "ignored by operator",
+                    }
+                )
+                continue
+            if (asset_id, appearance_no, name) in rejected:
+                results.append(
+                    {
+                        **base,
+                        "status": WriteResultStatus.SKIPPED.value,
+                        "message": "rejected by operator",
+                    }
+                )
+                continue
+            prop = next(
+                (
+                    p
+                    for p in proposals
+                    if p.asset_id == asset_id and p.appearance == appearance_no
+                ),
+                None,
+            )
+            cluster = prop.cluster if prop else -1
+            window = prop.window if prop else ""
+            try:
+                person = write_client.find_person_by_name(name)
+                person_id = (
+                    person.id
+                    if person is not None
+                    else write_client.create_person(name).id
+                )
+            except ImmichError as exc:
+                results.append(
+                    {
+                        **base,
+                        "status": WriteResultStatus.ERROR.value,
+                        "message": f"person resolution failed: {exc.message}",
+                    }
+                )
+                continue
+            head_box = write_client.resolve_head_box(
+                asset_id, appearance.box, self.cfg.clustering.face_overlap
+            )
+            results.append(
+                self._write_appearance(
+                    write_client,
+                    asset_id,
+                    appearance,
+                    person_id,
+                    cluster,
+                    window,
+                    timestamp,
+                    dry_run=False,
+                    expected_head_box=head_box,
+                )
+            )
+        written = sum(
+            1 for r in results if r.get("status") == WriteResultStatus.WRITTEN.value
+        )
+        return {"results": results, "written": written}
+
+    def retarget(self, body: dict[str, Any]) -> dict[str, Any]:
+        """'Write as X' in Final check: pin every item to X.
+
+        The pin persists, so the next run's proposal agrees; the write itself
+        targets X because /api/write-faces carries the name per item.
+        """
+        name = str(body.get("name", "")).strip()
+        if not name:
+            return {"error": "a person name is required to retarget"}
+        items, err = self._parse_bulk_items(body)
+        if err:
+            return err
+        results = []
+        for asset_id, appearance_no in items:
+            self.store.set_pin(asset_id, appearance_no, name)
+            results.append(
+                {"asset_id": asset_id, "appearance": appearance_no, "pin": name}
+            )
+        return {"results": results, "count": len(results), "name": name}
+
+    def _parse_bulk_items(
+        self, body: dict[str, Any]
+    ) -> tuple[list[tuple[str, int]], dict[str, Any] | None]:
+        """Parse and validate a bulk ``items`` list: stored appearances only."""
+        raw = body.get("items", [])
+        if not raw:
+            return [], {"error": "no items given"}
+        appearances_by_asset = self.store.appearances_by_asset()
+        known = {
+            (a.asset_id, a.appearance)
+            for apps in appearances_by_asset.values()
+            for a in apps
+        }
+        items: list[tuple[str, int]] = []
+        for item in raw:
+            asset_id = str(item.get("asset_id", ""))
+            try:
+                appearance_no = int(item.get("appearance", -1))
+            except (TypeError, ValueError):
+                return [], {"error": "invalid item in selection"}
+            if (asset_id, appearance_no) not in known:
+                return [], {
+                    "error": f"not a stored appearance: {asset_id}#{appearance_no}"
+                }
+            items.append((asset_id, appearance_no))
+        return items, None
+
+    def bulk_set_ignore(self, body: dict[str, Any], ignored: bool) -> dict[str, Any]:
+        """Ignore (or un-ignore) every selected appearance in one call."""
+        items, err = self._parse_bulk_items(body)
+        if err:
+            return err
+        for asset_id, appearance_no in items:
+            if ignored:
+                self.store.ignore_appearance(asset_id, appearance_no)
+            else:
+                self.store.unignore_appearance(asset_id, appearance_no)
+        return {
+            "results": [
+                {"asset_id": a, "appearance": n, "ignored": ignored} for a, n in items
+            ],
+            "count": len(items),
+        }
+
+    def bulk_pin(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Pin every selected appearance to a person (applies on the next run)."""
+        name = str(body.get("name", "")).strip()
+        if not name:
+            return {"error": "a person name is required to pin"}
+        items, err = self._parse_bulk_items(body)
+        if err:
+            return err
+        for asset_id, appearance_no in items:
+            self.store.set_pin(asset_id, appearance_no, name)
+        return {
+            "results": [
+                {"asset_id": a, "appearance": n, "pin": name} for a, n in items
+            ],
+            "count": len(items),
+            "name": name,
+        }
+
+    def bulk_reject(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Mark every selected appearance as not-the-given-person."""
+        name = str(body.get("name", "")).strip()
+        if not name:
+            return {"error": "a person name is required to reject"}
+        items, err = self._parse_bulk_items(body)
+        if err:
+            return err
+        for asset_id, appearance_no in items:
+            self.store.add_appearance_rejection(asset_id, appearance_no, name)
+            self.store.update_proposal_status(
+                asset_id, appearance_no, ProposalStatus.REJECTED
+            )
+        return {
+            "results": [
+                {"asset_id": a, "appearance": n, "status": "rejected"} for a, n in items
+            ],
+            "count": len(items),
+            "name": name,
+        }
+
+    def set_cluster_confirmed(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Mark a cluster confirmed: it leaves the open queue.
+
+        No write happens here — the cluster's appearances surface in the
+        Final check tab, which is the only write path.
+        """
+        window = str(body.get("window", ""))
+        try:
+            cluster = int(body.get("cluster", -1))
+        except (TypeError, ValueError):
+            return {"error": "invalid cluster"}
+        confirmed = bool(body.get("confirmed", True))
+        if cluster < 0 or not window:
+            return {"error": "window and cluster are required"}
+        self.store.confirm_cluster(window, cluster, confirmed)
+        # Naming an (unnamed) cluster at confirm time is the ask-for-name
+        # answer: pin the cluster's appearances to the name so the next run
+        # proposes it, and the appearances surface under that person in the
+        # Final check tab.
+        name = str(body.get("name", "")).strip()
+        if confirmed and name:
+            for p in self.store.proposals():
+                if p.window == window and p.cluster == cluster:
+                    self.store.set_pin(p.asset_id, p.appearance, name)
+        return {
+            "window": window,
+            "cluster": cluster,
+            "confirmed": confirmed,
+            "name": name or None,
+        }
+
     def get_proposals(self) -> list[dict[str, Any]]:
         """Return all proposals as raw dicts."""
         return [asdict(p) for p in self.store.proposals()]
@@ -1324,6 +1708,7 @@ class CoreServer:
 
         rows: list[ClusterRow] = []
         dismissed = self.store.dismissed_clusters()
+        confirmed = self.store.confirmed_clusters()
         for (window, cluster_id), all_props in sorted(groups.items()):
             # Proposals pinned to another person have left this cluster.
             props, _moved = self._pin_divergent_props(all_props)
@@ -1358,9 +1743,12 @@ class CoreServer:
                     conflicted=conflicted,
                     ask_for_name=no_head,
                     labeled=labeled,
-                    # Operator dismissal persists; everything else is open.
+                    # Operator decisions persist: confirmed and dismissed
+                    # clusters leave the open queue; everything else is open.
                     status=(
-                        ClusterRowStatus.SKIPPED
+                        ClusterRowStatus.CONFIRMED
+                        if (window, cluster_id) in confirmed
+                        else ClusterRowStatus.SKIPPED
                         if (window, cluster_id) in dismissed
                         else ClusterRowStatus.OPEN
                     ),
@@ -1431,6 +1819,8 @@ class CoreServer:
         pins = self.store.appearance_pins()
         # Operator ignores: "this detection is wrong"; the batch run drops them.
         ignored = self.store.appearance_ignores()
+        # Cluster dismissal: surfaced per card for the "You:" row.
+        dismissed_clusters = self.store.dismissed_clusters()
 
         target_props = [
             p
@@ -1526,6 +1916,33 @@ class CoreServer:
                 else "unknown"
             )
 
+            # All stored appearances of the asset, pixel-space boxes in the
+            # configured pixel source — the same space /api/crop?full=1 serves,
+            # so the UI's SVG overlay (viewBox = natural image size) maps 1:1.
+            asset_apps = appearances_by_asset.get(prop.asset_id, [])
+            siblings = [
+                {
+                    "appearance": a.appearance,
+                    "box": [a.box_left, a.box_top, a.box_right, a.box_bottom],
+                    "confidence": a.confidence,
+                }
+                for a in asset_apps
+            ]
+            # The name the operator rejected for this appearance, if any —
+            # prefer the one matching this proposal's name.
+            rejected_names = sorted(
+                name
+                for (aid, app_no, name) in rejected
+                if aid == prop.asset_id and app_no == prop.appearance
+            )
+            rejected_name = None
+            if rejected_names:
+                rejected_name = (
+                    prop.proposed_name
+                    if prop.proposed_name in rejected_names
+                    else rejected_names[0]
+                )
+
             cards.append(
                 EvidenceCard(
                     asset_id=prop.asset_id,
@@ -1547,6 +1964,10 @@ class CoreServer:
                     asset_name=self._asset_name(prop.asset_id),
                     ignored=(prop.asset_id, prop.appearance) in ignored,
                     proposed_name=prop.proposed_name,
+                    siblings=siblings,
+                    sibling_count=max(0, len(siblings) - 1),
+                    rejected_name=rejected_name,
+                    dismissed=(prop.window, prop.cluster) in dismissed_clusters,
                 )
             )
         return cards

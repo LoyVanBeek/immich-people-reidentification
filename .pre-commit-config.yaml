@@ -12,13 +12,15 @@ repos:
     rev: v2.4.1
     hooks:
       - id: mypy
-        additional_dependencies: [types-requests, types-click, types-PyYAML]
+        # Keep this aligned with [tool.mypy] in pyproject.toml: no extra
+        # --disable-error-code flags (they make existing type: ignore comments
+        # "unused" and fail the hook) and no stub packages for libraries that
+        # pyproject lists under ignore_missing_imports (click).
+        additional_dependencies: [types-requests, types-PyYAML]
         args: [
           --strict,
           --config-file=pyproject.toml,
           "--disable-error-code=untyped-decorator",
-          "--disable-error-code=misc",
-          "--disable-error-code=union-attr",
         ]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks

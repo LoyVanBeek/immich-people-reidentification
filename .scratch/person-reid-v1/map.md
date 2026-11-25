@@ -16,6 +16,7 @@ A buildable spec for Re-ID v1: a Python (uv-packaged) Docker container on the Pi
 - Nightly manual/batch trigger. Embeddings are stored incrementally (new photos only) with UI buttons to erase the store; cluster assignments are rebuilt from scratch every run.
 - The timespan window is a configurable parameter, default same calendar day.
 - Immich face labels are ground truth, taken as-is in v1. Human confirmation is required before any write-back; dry-run mode exists from day one.
+- 2026-11-25 — **Superseded** by the [UI Two Tabs](../ui-two-tabs/map.md) effort: the dry-run toggle/promote flow is retired; the Final check tab is the human write gate, and development safety = no write-scoped API key. See [Destination and UI decisions](../ui-two-tabs/issues/01-destination-and-ui-decisions.md).
 - The assumption "every cluster contains at least one Immich-recognized face" is a prediction to validate with real data; anchor-less clusters get an ask-for-name fallback in the UI.
 - Skills per ticket type: grilling tickets run `grilling` + `domain-modeling`; research tickets run `research`; the prototype ticket runs `prototype`.
 

@@ -211,6 +211,15 @@ class Store:
             )
             self._conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS cluster_confirmation (
+                    window TEXT NOT NULL,
+                    cluster INTEGER NOT NULL,
+                    PRIMARY KEY (window, cluster)
+                )
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS appearance_pin (
                     asset_id TEXT NOT NULL,
                     appearance INTEGER NOT NULL,
@@ -919,6 +928,36 @@ class Store:
         """All (window, cluster) pairs the operator dismissed."""
         rows = self._conn.execute(
             "SELECT window, cluster FROM cluster_dismissal"
+        ).fetchall()
+        return {(str(r[0]), int(r[1])) for r in rows}
+
+    def confirm_cluster(self, window: str, cluster: int, confirmed: bool) -> None:
+        """Persist (or clear) 'this proposal is confirmed' — a review decision.
+
+        Survives batch runs and wipes, like dismissals: the cluster leaves the
+        open queue, and its appearances surface in the Final check tab for the
+        actual write.
+        """
+        with self._conn:
+            if confirmed:
+                self._conn.execute(
+                    """
+                    INSERT INTO cluster_confirmation (window, cluster)
+                    VALUES (?, ?)
+                    ON CONFLICT(window, cluster) DO NOTHING
+                    """,
+                    (window, cluster),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM cluster_confirmation WHERE window = ? AND cluster = ?",
+                    (window, cluster),
+                )
+
+    def confirmed_clusters(self) -> set[tuple[str, int]]:
+        """All (window, cluster) pairs the operator confirmed."""
+        rows = self._conn.execute(
+            "SELECT window, cluster FROM cluster_confirmation"
         ).fetchall()
         return {(str(r[0]), int(r[1])) for r in rows}
 

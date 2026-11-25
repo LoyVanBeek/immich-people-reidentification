@@ -1,44 +1,51 @@
-/** Confirmation UI — variant B (3-pane workspace).
- *  Primary behavioral source: prototype/confirmation-ui commit 4d529a2.
+/** Two-tab confirmation UI.
+ *  "Proposals" — review and edit proposals from anchored clusters.
+ *  "Final check" — person-centric last look before anything is written to Immich
+ *  (the only write path; development safety = no write-scoped API key configured).
+ *  Behavioral source: branch prototype/ui-two-tabs (ticket 02 verdict).
  */
 
 const API_BASE = "";
 let state = {
+  view: "proposals", // "proposals" | "final"
   clusters: [],
-  activeDay: null, // which day's clusters the second pane shows
+  activeDay: null,
   activeKey: null, // "window:cluster" — cluster numbers repeat across windows
   evidence: [],
-  evidenceLoading: false, // evidence fetch in flight for the active cluster
+  evidenceLoading: false,
   assignment: null,
-  stats: [],
-  configKnobs: null,
   people: [],
-  dryRun: true,
-  showLabeled: false, // queue hides fully-labeled groups unless asked
-  view: "queue", // "queue" | "review" — remembered across reloads
-  review: null, // /api/write-review payload
-  reviewTab: null, // active person tab on the review page
-  jobActive: false, // a pipeline run is in progress (confirmations pause)
-  jobWindows: 0, // windows the running pipeline has finished
-  jobLast: null, // most recent run row, for a "last run failed" hint
-  coreDown: false, // the core is unreachable (banner + retry)
+  configKnobs: null,
+  immichUrl: "",
+  showLabeled: false, // queue hides fully-labeled and decided groups unless asked
+  selected: new Set(), // proposal-card selection keys "asset:appearance"
+  expanded: null, // card key currently showing the full-photo overlay
+  final: null, // /api/final-check payload
+  finalPerson: null,
+  finalSelected: new Set(), // final-check item keys, default OFF
+  finalNames: {}, // retargeted write-as names per item key
+  jobActive: false,
+  jobWindows: 0,
+  jobLast: null,
+  coreDown: false,
 };
-let keyHandler = null;
 let evidenceToken = 0; // discards stale fetches when the selection moves on
 
 function keyOf(row) {
   return `${row.window}:${row.cluster}`;
 }
-
+function akey(e) {
+  return `${e.asset_id}:${e.appearance}`;
+}
 function activeRow() {
   return state.clusters.find(c => keyOf(c) === state.activeKey) || null;
 }
-
-// Fully-labeled clusters are hidden from the queue unless the operator
-// asks for them — they have no pending work, and the review page's person
-// tabs are the surface for checking Immich's labels.
+// Fully-labeled groups and decided (confirmed/skipped) clusters are hidden
+// from the queue unless the operator asks for them.
 function visibleClusters() {
-  return state.clusters.filter(c => state.showLabeled || !c.fully_labeled);
+  return state.clusters.filter(
+    c => state.showLabeled || (!c.fully_labeled && c.status === "open")
+  );
 }
 
 /* ---------- API ---------- */
@@ -51,22 +58,27 @@ async function fetchJson(path) {
     throw err;
   }
   if (!res.ok) {
-    // The UI proxies /api/* to the core: a 502 means the core is down.
-    if (res.status === 502) noteCoreDown();
+    if (res.status === 502) noteCoreDown(); // UI proxies /api/* to the core
     throw new Error(`${res.status} ${res.statusText}`);
   }
   noteCoreUp();
   return res.json();
 }
 
-// The core going away must be visible, not a silently stale page: a banner
-// says so and the poll keeps retrying until it comes back.
+async function postJson(path, body) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
 function noteCoreDown() {
   if (state.coreDown) return;
   state.coreDown = true;
   render();
 }
-
 function noteCoreUp() {
   if (!state.coreDown) return;
   state.coreDown = false;
@@ -78,17 +90,9 @@ async function loadInitialState() {
   state = {
     ...state,
     ...data,
-    // Server serialises dataclasses snake_case; state uses camelCase.
     configKnobs: data.config_knobs ?? null,
-    dryRun: data.dry_run ?? state.dryRun,
-    // A UI on another machine cannot use the core's own Immich URL (it may
-    // be a localhost address); the UI server can inject a reachable one.
-    immichUrl: (
-      window.__REID_UI__?.immichUrl ?? data.immich_url ?? ""
-    ).replace(/\/$/, ""),
+    immichUrl: (window.__REID_UI__?.immichUrl ?? data.immich_url ?? "").replace(/\/$/, ""),
   };
-  // The server builds the initial evidence/assignment for clusters[0]'s
-  // exact window; the key is derived from that same row.
   state.activeKey = state.clusters.length ? keyOf(state.clusters[0]) : null;
   state.activeDay = state.clusters.length ? state.clusters[0].window : null;
   render();
@@ -98,11 +102,10 @@ async function loadEvidence(cluster, window) {
   const token = ++evidenceToken;
   try {
     const data = await fetchJson(`/api/evidence?cluster=${cluster}&window=${encodeURIComponent(window)}`);
-    if (token !== evidenceToken) return; // a newer selection superseded this fetch
+    if (token !== evidenceToken) return;
     state.evidence = data;
     state.evidenceLoading = false;
     renderEvidence();
-    // Refine the actions-pane counts now that the real evidence is in.
     const row = activeRow();
     if (row) {
       state.assignment = buildAssignment(row);
@@ -120,88 +123,78 @@ async function loadPeople() {
   state.people = data.people || [];
 }
 
-/* ---------- Rendering ---------- */
-// One pane's template throwing used to abort the whole render(): the page
-// kept stale DOM while async image loads kept working, which looked like
-// "clicks do nothing". Each pane now fails alone, visibly.
-function safePane(name, fn) {
+async function loadFinal() {
+  render();
   try {
-    return fn();
+    state.final = await fetchJson("/api/final-check");
+    if (!state.final.persons.some(p => p.name === state.finalPerson)) {
+      state.finalPerson = state.final.persons[0]?.name ?? null;
+    }
+    // Written items and items retargeted away from their person drop out.
+    const live = new Set(state.final.persons.flatMap(p => p.items.map(akey)));
+    for (const key of [...state.finalSelected]) if (!live.has(key)) state.finalSelected.delete(key);
+    for (const key of Object.keys(state.finalNames)) if (!live.has(key)) delete state.finalNames[key];
   } catch (err) {
-    console.error(`${name} failed to render:`, err);
-    return `<div class="panerr"><strong>${esc(name)} failed to render</strong><br>${esc(err.message)}</div>`;
+    state.final = { persons: [], error: err.message };
   }
+  render();
 }
 
-function render() {
-  const root = document.getElementById("app");
-  if (state.view === "review") {
-    root.classList.add("review");
-    renderReviewShell(root);
-    return;
-  }
-  root.classList.remove("review");
-  // Preserve column scroll positions across re-renders: a full innerHTML
-  // swap otherwise resets them, losing your place in the review queue.
-  const scrolls = [".days", ".clusters"].map(sel => {
-    const el = document.querySelector(sel);
-    return [sel, el ? el.scrollTop : 0];
-  });
-  root.innerHTML = `
-    ${bannerHTML()}
-    <div class="top">
-      <strong>Review</strong>
-      <span class="chip acc">${visibleClusters().filter(c => c.status === "open").length} open</span>
-      ${lastRunChipHTML()}
-      <span class="spacer"></span>
-      <div class="knobs">
-        <label><input type="checkbox" id="dryToggle" ${state.dryRun ? "checked" : ""}>review before writing</label>
-        <label title="Groups whose every face is already labeled in Immich have nothing pending — show them here too">
-          <input type="checkbox" id="showLabeledToggle" ${state.showLabeled ? "checked" : ""}> show already labeled</label>
-        <button id="gearBtn" title="Settings">⚙</button>
-      </div>
-      <button id="viewReview" title="Review everything about to be written, per person">Write review</button>
-      <button id="runNow" ${state.jobActive ? "disabled" : ""} title="Run the pipeline now: look for new photos and regroup everything">${state.jobActive ? "Running…" : "Run now"}</button>
-      <span class="muted"><kbd class="kbd">j</kbd>/<kbd class="kbd">k</kbd> move · <kbd class="kbd">c</kbd> confirm · <kbd class="kbd">s</kbd> skip</span>
-      <div class="cfgpop" id="cfgPop">${configPopoverHTML()}</div>
-    </div>
-    <div class="days">${safePane("days pane", daysHTML)}</div>
-    <div class="clusters">${safePane("clusters pane", clustersHTML)}</div>
-    <div class="main">${safePane("evidence pane", mainHTML)}</div>
-    <div class="pane">${safePane("actions pane", paneHTML)}</div>
-  `;
-  for (const [sel, top] of scrolls) {
-    const el = document.querySelector(sel);
-    if (el) el.scrollTop = top;
-  }
-  wireEvents();
-  try {
-    renderEvidence();
-  } catch (err) {
-    console.error("evidence grid failed to render:", err);
-  }
-  try {
-    renderPane();
-  } catch (err) {
-    console.error("actions pane failed to render:", err);
-  }
+/* ---------- small helpers ---------- */
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+}
+function toast(msg) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  document.getElementById("toasthost").replaceChildren(t);
+  setTimeout(() => t.remove(), 3200);
+}
+function assetLabel(assetId) {
+  const card = state.evidence.find(e => e.asset_id === assetId)
+    || state.final?.persons.flatMap(p => p.items).find(e => e.asset_id === assetId);
+  return (card && card.asset_name) || `${assetId.slice(0, 8)}…`;
+}
+function statusChip(status) {
+  const map = {
+    will_write: ["ok", "will write"],
+    already_labeled: ["acc", "already labeled"],
+    conflict_skip: ["bad", "label conflict"],
+    no_head_skip: ["warn", "no face found"],
+    ask_for_name: ["", "needs a name"],
+    rejected: ["bad", "excluded"],
+  };
+  return map[status] || ["", status];
+}
+function cropImg(e, w, h, withContext) {
+  if (!e.asset_id) return "";
+  const extra = withContext ? "&expand=0.6&outline=1&neighbours=1" : "";
+  return `<img class="crop" loading="lazy" width="${w}" height="${h}"
+    src="/api/crop?asset_id=${encodeURIComponent(e.asset_id)}&appearance=${e.appearance}${extra}"
+    alt="person crop">`;
+}
+function renderCrops(crops, w, h) {
+  return crops.map(c => cropImg(c, w, h)).join("");
+}
+function pausedByRun() {
+  if (!state.jobActive) return false;
+  toast("A pipeline run is in progress — writes are paused until it finishes.");
+  return true;
 }
 
+/* ---------- top bar / banner ---------- */
 function bannerHTML() {
   if (state.coreDown) {
     return `<div class="banner down">Can't reach the server — is the core running? Retrying…</div>`;
   }
   if (state.jobActive) {
     const n = state.jobWindows;
-    return `<div class="banner run"><span id="jobProgressText">Pipeline running — ${n} ${n === 1 ? "day" : "days"} done</span> · confirmations are paused <button id="cancelRun">Cancel run</button></div>`;
+    return `<div class="banner run"><span id="jobProgressText">Pipeline running — ${n} ${n === 1 ? "day" : "days"} done</span> · writes are paused <button id="cancelRun">Cancel run</button></div>`;
   }
-  return state.dryRun
-    ? `<div class="banner dry">PREVIEW — approving only records; you choose when to write to Immich</div>`
-    : `<div class="banner real">LIVE — confirmations write real faces to Immich</div>`;
+  return "";
 }
 
-// A run that failed, was cancelled or was interrupted leaves a visible
-// trace; a successful run needs no badge (the refreshed queue shows it).
 function lastRunChipHTML() {
   const run = state.jobLast;
   if (state.jobActive || !run || run.state === "done") return "";
@@ -211,11 +204,34 @@ function lastRunChipHTML() {
   return `<span class="chip bad" title="${esc(run.error || label)}">${label}</span>`;
 }
 
+function tabsHTML() {
+  return `
+    <div class="tabs">
+      <button class="tab ${state.view === "proposals" ? "sel" : ""}" data-view="proposals">Proposals</button>
+      <button class="tab ${state.view === "final" ? "sel" : ""}" data-view="final">Final check</button>
+    </div>`;
+}
+
+function topbarHTML() {
+  const isP = state.view === "proposals";
+  return `
+  <div class="top">
+    ${tabsHTML()}
+    ${isP ? `<span class="chip acc">${visibleClusters().filter(c => c.status === "open").length} open</span>` : `<span class="chip acc">${(state.final?.persons ?? []).reduce((n, p) => n + p.count, 0)} appearances</span>`}
+    ${lastRunChipHTML()}
+    <span class="spacer"></span>
+    ${isP ? `
+      <label title="Groups that are fully labeled or already decided have nothing pending — show them here too">
+        <input type="checkbox" id="showLabeledToggle" ${state.showLabeled ? "checked" : ""}> show decided</label>
+      <button id="gearBtn" title="Settings">⚙</button>` : ""}
+    <button id="runNow" ${state.jobActive ? "disabled" : ""} title="Run the pipeline now: look for new photos and regroup everything">${state.jobActive ? "Running…" : "Run now"}</button>
+    <div class="cfgpop" id="cfgPop">${configPopoverHTML()}</div>
+  </div>`;
+}
+
 function configPopoverHTML() {
   const k = state.configKnobs;
-  if (!k) {
-    return `<div class="muted">settings unavailable</div>`;
-  }
+  if (!k) return `<div class="muted">settings unavailable</div>`;
   const rows = [
     ["windowDays", "Days grouped together", k.window_days, 1, 30, 1],
     ["distanceThreshold", "How alike faces must be to group", k.distance_threshold, 0.2, 1, 0.01],
@@ -230,17 +246,86 @@ function configPopoverHTML() {
     + `<div class="muted">Changes apply on the next run.</div>`;
 }
 
+/* ---------- render shell ---------- */
+function render() {
+  const root = document.getElementById("app");
+  root.classList.toggle("final", state.view === "final");
+  root.innerHTML = `
+    ${bannerHTML()}
+    ${topbarHTML()}
+    ${state.view === "proposals" ? proposalsHTML() : finalHTML()}
+  `;
+  wireTopEvents();
+  if (state.view === "proposals") {
+    wireProposalEvents();
+    renderEvidence();
+    renderPane();
+  } else {
+    wireFinalEvents();
+  }
+}
+
+function wireTopEvents() {
+  document.querySelectorAll(".tab[data-view]").forEach(el =>
+    el.addEventListener("click", () => setView(el.dataset.view))
+  );
+  document.getElementById("gearBtn")?.addEventListener("click", () =>
+    document.getElementById("cfgPop")?.classList.toggle("open")
+  );
+  document.querySelectorAll("#cfgPop input[data-cfg]").forEach(inp => {
+    inp.addEventListener("input", () => {
+      const key = inp.dataset.cfg;
+      const val = document.querySelector(`[data-cfg-val="${key}"]`);
+      if (val) val.textContent = inp.value;
+    });
+  });
+  document.getElementById("cfgSave")?.addEventListener("click", saveConfig);
+  document.getElementById("showLabeledToggle")?.addEventListener("change", e => {
+    state.showLabeled = e.target.checked;
+    try { localStorage.setItem("reid-show-labeled", state.showLabeled ? "1" : "0"); } catch { /* private mode */ }
+    if (!state.showLabeled) {
+      const active = activeRow();
+      if (active && (active.fully_labeled || active.status !== "open")) {
+        const first = visibleClusters()[0];
+        if (first) {
+          state.activeKey = keyOf(first);
+          state.activeDay = first.window;
+          state.evidence = [];
+          state.evidenceLoading = true;
+          loadEvidence(first.cluster, first.window);
+          state.assignment = buildAssignment(first);
+        }
+      }
+    }
+    render();
+  });
+  document.getElementById("runNow")?.addEventListener("click", runNow);
+  document.getElementById("cancelRun")?.addEventListener("click", cancelRun);
+}
+
+function setView(view) {
+  state.view = view;
+  if (view === "final") loadFinal();
+  else render();
+}
+
+/* ---------- Proposals tab ---------- */
+function proposalsHTML() {
+  return `
+    <div class="days">${daysHTML()}</div>
+    <div class="clusters">${clustersHTML()}</div>
+    <div class="main">${mainHTML()}</div>
+    <div class="pane">${paneHTML()}</div>`;
+}
+
 function daysHTML() {
-  // Pane 1: one row per day (newest first), Finder column style.
   const groups = new Map();
   for (const c of visibleClusters()) {
     if (!groups.has(c.window)) groups.set(c.window, []);
     groups.get(c.window).push(c);
   }
   const days = [...groups.keys()].sort((a, b) => b.localeCompare(a));
-  if (state.activeDay === null && days.length) {
-    state.activeDay = days[0];
-  }
+  if (state.activeDay === null && days.length) state.activeDay = days[0];
   const rows = days.map(day => {
     const clusterRows = groups.get(day);
     const openCount = clusterRows.filter(r => r.status === "open").length;
@@ -248,59 +333,24 @@ function daysHTML() {
       <div class="dayrow ${day === state.activeDay ? "sel" : ""}" data-day="${day}">
         <div class="dayname">${day}</div>
         <span class="chip ${openCount ? "acc" : ""}">${openCount}/${clusterRows.length}</span>
-      </div>
-    `;
+      </div>`;
   });
   return rows.join("") || `<div class="empty muted">no clusters yet — run the batch</div>`;
 }
 
 function clustersHTML() {
-  // Pane 2: the clusters of the selected day.
   const rows = visibleClusters().filter(c => c.window === state.activeDay);
-  if (!rows.length) {
-    return `<div class="empty muted">select a day</div>`;
-  }
+  if (!rows.length) return `<div class="empty muted">select a day</div>`;
   return rows.map(c => `
-    <div class="item ${keyOf(c) === state.activeKey ? "sel" : ""} ${c.status !== "open" ? "done" : ""}" data-key="${keyOf(c)}" title="${keyOf(c) === state.activeKey ? "viewing this cluster" : "open this cluster"}">
+    <div class="item ${keyOf(c) === state.activeKey ? "sel" : ""} ${c.status !== "open" ? "done" : ""}" data-key="${keyOf(c)}">
       <div class="item-row">
         <div class="strip">${renderCrops(c.crops || [], 26, 36)}</div>
         <div class="item-info">
           <div class="item-name">${c.proposed_name ? esc(c.proposed_name) : '<span class="muted">unnamed</span>'}</div>
-          <div class="item-meta mono">group ${c.cluster} · ${(c.confidence * 100).toFixed(0)}% · ${c.appearances} photos</div>
+          <div class="item-meta mono">group ${c.cluster} · ${(c.confidence * 100).toFixed(0)}% · ${c.appearances} photos · ${c.status === "confirmed" ? "confirmed" : c.status === "skipped" ? "skipped" : ""}</div>
         </div>
       </div>
-    </div>
-  `).join("");
-}
-
-function dryBatchesHTML() {
-  const dryBatches = state.dryBatches || [];
-  if (!dryBatches.length) return "";
-  const pending = dryBatches.filter(b => !b.promoted_at).length;
-  return `
-    <div class="dry-batches">
-      <div class="batch-id" style="margin-bottom:8px">Pending writes — approved, not yet in Immich</div>
-      ${pending > 1 ? `<button id="promoteAll" class="primary" style="width:100%;margin-bottom:8px" ${state.jobActive ? "disabled" : ""} title="Write every approved change to Immich in one go">Write all to Immich (${pending} groups)</button>` : ""}
-      ${dryBatches.map(b => {
-        // Server shape: {id, name, window, cluster, timestamp, promoted_at,
-        // actions: [{asset_id, appearance, head_box, status, message}]}
-        const counts = {};
-        for (const a of b.actions || []) {
-          counts[a.status] = (counts[a.status] || 0) + 1;
-        }
-        const summary = Object.entries(counts)
-          .map(([status, n]) => `${({ would_write: "ready", conflict_skip: "label conflict", no_head_skip: "no face found", error: "failed" })[status] ?? status} ×${n}`)
-          .join(" · ");
-        return `
-        <div class="dry-batch">
-          <div class="batch-id" title="${esc(b.id)}">Approved ${b.timestamp ? new Date(b.timestamp).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : ""} — ${esc(b.name || "?")} · ${esc(b.window || "")}</div>
-          <div class="batch-entries">${esc(summary || "no actions")}</div>
-          ${b.promoted_at ? '<span class="chip ok">written to Immich</span>' : `<button class="primary" data-promote="${b.id}" ${state.jobActive ? "disabled" : ""}>Write to Immich</button>`}
-        </div>
-      `;
-      }).join("")}
-    </div>
-  `;
+    </div>`).join("");
 }
 
 function mainHTML() {
@@ -314,132 +364,92 @@ function mainHTML() {
       <h2>${c.proposed_name ? esc(c.proposed_name) : '<span class="muted">unnamed cluster</span>'}</h2>
     </div>
     <div class="muted cluster-anchor">${c.anchor || "no Immich label found"} · group confidence ${(c.confidence * 100).toFixed(0)}%</div>
-    <div class="evgrid" id="evgrid"></div>
-  `;
+    <div class="evgrid" id="evgrid"></div>`;
 }
 
-function paneHTML() {
-  const a = state.assignment;
-  if (!a) {
-    return `<div class="name-display">—</div><div class="cluster-meta muted">Select a cluster</div>`;
-  }
-  const hasName = a.proposed_name != null;
-  return `
-    <div class="name-display">${hasName ? esc(a.proposed_name) : '<span class="muted">—</span>'}</div>
-    <div class="cluster-meta muted">${a.total_appearances} faces · ${a.writable} to write · ${a.conflicted} label conflicts · ${a.no_head ?? a.ask_for_name ?? 0} without a face</div>
-    ${!hasName ? `<button class="b-name primary" style="width:100%;margin-bottom:10px">Name this cluster</button>` : ""}
-    <div class="name-prompt">
-      <label class="muted">Assign to</label>
-      <input type="text" id="nameInput" list="peopleList" value="${hasName ? esc(a.proposed_name) : ""}" ${a.proposed_name ? "" : "placeholder=\"Type or pick an existing person…\""} ${state.activeKey === null ? "disabled" : ""}>
-      <datalist id="peopleList">${state.people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
-      <div class="hint">existing person → attach · new name → creates person on write</div>
-    </div>
-    <div class="actions">
-      ${state.activeKey !== null ? `
-        <button class="b-ok primary" ${state.jobActive ? "disabled" : ""}>
-          ${state.dryRun ? `Approve ${a.writable || 0} for review` : `Write ${a.writable || 0} faces`}
-        </button>
-        <button class="b-skip">Skip cluster</button>
-      ` : `<div class="chip">Select a cluster</div>`}
-    </div>
-    ${a.cluster_status === "skipped" && state.activeKey !== null ? `
-      <button class="b-reopen" data-key="${a.window}:${a.cluster}" style="width:100%;margin-top:8px">Reopen dismissed cluster</button>
-    ` : ""}
-    <hr>
-    <div class="footer muted">⚙ Settings (top right) adjust how photos are grouped — changes apply on the next run.</div>
-    ${dryBatchesHTML()}
-  `;
-}
-
-function evidenceCardHTML(e, assignment) {
+/* The evidence card: clickable photo, full-photo overlay with all sibling
+ * outlines, Immich / ReID / You rows, selection checkbox, per-card actions. */
+function cardHTML(e) {
   const [chipClass, chipText] = statusChip(e.status);
-  // A rejected card says what it refuses, in the operator's words.
-  const chip =
-    e.status === "rejected" && assignment?.proposed_name
-      ? ["bad", `excluded \u2014 not \u201c${assignment.proposed_name}\u201d`]
-      : [chipClass, chipText];
-  // Name-bearing chips: the status says what, the chip says who.
-  const writeName = e.proposed_name ?? assignment?.proposed_name ?? null;
-  if (e.status === "will_write" && writeName) {
-    chip[1] = `will write \u201c${writeName}\u201d`;
-  }
-  if (e.status === "already_labeled" && e.immich_label) {
-    chip[1] = `already labeled \u201c${e.immich_label}\u201d`;
-    chip[0] = "ok";
-  }
-  const chipTitle =
-    e.status === "rejected"
-      ? `You flagged this appearance as not being \u201c${assignment?.proposed_name ?? "?"}\u201d. It will not be written with that name; an existing label in Immich stays until you remove it there.`
-      : null;
-  const rejectable = assignment?.proposed_name && e.status !== "rejected" && !e.ignored && e.status !== "already_labeled";
-  const wrongLabelable = e.status === "already_labeled" && e.immich_label && !e.ignored;
-  const conflictLabel = e.conflict_names?.length >= 2 ? e.conflict_names.join(" / ") : null;
-  const link = state.immichUrl
-    ? `${state.immichUrl}/photos/${encodeURIComponent(e.asset_id)}`
+  const sel = state.selected.has(akey(e));
+  const link = state.immichUrl ? `${state.immichUrl}/photos/${encodeURIComponent(e.asset_id)}` : null;
+  const youRow = e.pin ? `pinned: ${esc(e.pin)}`
+    : e.ignored ? "ignored — never labeled"
+    : e.rejected_name ? `excluded — not “${esc(e.rejected_name)}”`
+    : e.dismissed ? "cluster dismissed"
     : null;
-  const nameLine = link
-    ? `<a class="asset-name mono" href="${link}" target="_blank" rel="noopener" title="open ${esc(e.asset_id)} in Immich">${esc(e.asset_name || e.asset_id)}</a>`
-    : `<span class="asset-name mono" title="${esc(e.asset_id)}">${esc(e.asset_name || e.asset_id)}</span>`;
-  const alreadyLabeled = e.status === "already_labeled";
+  const rejectable = e.proposed_name && e.status !== "rejected" && !e.ignored && e.status !== "already_labeled";
+  const wrongLabelable = e.status === "already_labeled" && e.immich_label && !e.ignored;
   return `
-    <div class="evcard ${e.status === "rejected" ? "evrejected" : ""} ${e.ignored ? "evignored" : ""} ${alreadyLabeled ? "evlabeled" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
-      <div class="crop">${cropImg(e, 150, 170, e.status !== "rejected" && !e.ignored)}<div class="spinner" title="loading crop\u2026"></div></div>
-      <div class="asset-row">
-        ${e.status === "will_write" && !e.ignored && !e.pinned_elsewhere ? (() => {
-          const writeName = e.proposed_name ?? assignment?.proposed_name ?? null;
-          const label = writeName ? `write “${esc(writeName)}”` : "write";
-          const tip = writeName
-            ? `Checked: on confirm, Immich gets a face labeled “${esc(writeName)}” on this photo — a head box covering this person's head. Uncheck to leave this photo out. The choice persists until the next batch run.`
-            : "Checked: this appearance is written to Immich when you confirm. Uncheck to leave it out. The choice persists until the next batch run.";
-          return `<label class="writemark" title="${esc(tip)}">
-          <input type="checkbox" data-asset="${e.asset_id}" ${e.included ? "checked" : ""}>${label}</label>`;
-        })() : ""}
-        ${nameLine}
-      </div>
-      <div class="date-conf">${esc(e.date)} \u00b7 ${(e.confidence * 100).toFixed(0)}%</div>
-      <div class="chips">
-        <span class="chip ${chip[0]}" ${chipTitle ? `title="${esc(chipTitle)}"` : ""}>${esc(chip[1])}</span>
-        ${conflictLabel ? `<span class="chip warn" title="These Immich labels both appear in this cluster. Assign each appearance to the person it actually is.">conflict: ${esc(conflictLabel)}</span>` : ""}
-        ${e.immich_label && e.status !== "already_labeled" ? `<span class="chip">immich: ${esc(e.immich_label)}</span>` : ""}
-        ${e.pin ? `<span class="chip ok pinchip">pinned: ${esc(e.pin)}</span>` : ""}
-        ${e.ignored ? `<span class="chip bad" title="You ignored this appearance. It is excluded from clustering and will never be labeled.">ignored \u2014 never labeled</span>` : ""}
-      </div>
-      ${e.conflict_names?.length >= 2 && !e.ignored ? `
-        <div class="resolve-row" title="Pin this appearance to one of the conflicting people — the next batch run proposes your choice for review">
-          <span class="muted">resolve:</span>
-          ${e.conflict_names.map(
-            name => `<button class="b-resolve ${e.pin === name ? "resolved" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(name)}">${esc(name)}</button>`
-          ).join("")}
-        </div>` : ""}
-      ${e.ignored
-        ? `<button class="b-unignore" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Undo ignore</button>`
-        : `<button class="b-ignore" data-asset="${e.asset_id}" data-appearance="${e.appearance}" title="Skip this appearance: not a person, or a person you're not interested in. It is excluded from clustering and never labeled.">Ignore</button>`}
-      ${e.ignored ? "" : `
-      ${e.pin ? `<button class="b-unpin" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Unpin</button>` : ""}
-      <button class="b-assign" data-asset="${e.asset_id}" data-appearance="${e.appearance}">${e.pin ? "Reassign person" : "Assign to person\u2026"}</button>
-      ${rejectable ? `<button class="b-reject" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(assignment?.proposed_name ?? "")}">Not this person</button>` : ""}
-      ${e.status === "rejected" ? `<button class="b-unreject" data-asset="${e.asset_id}" data-appearance="${e.appearance}">Undo exclusion</button>` : ""}
-      ${wrongLabelable ? `<button class="b-wronglabel" data-asset="${e.asset_id}" data-appearance="${e.appearance}" data-name="${esc(e.immich_label)}">Wrong label</button>` : ""}
-      `}
+  <div class="evcard ${sel ? "selected" : ""} ${e.ignored ? "evignored" : ""}" data-asset="${e.asset_id}" data-appearance="${e.appearance}">
+    ${state.expanded === akey(e) ? fullPhotoHTML(e) : `
+    <div class="cropwrap">
+      ${link ? `<a href="${link}" target="_blank" rel="noopener" title="open in Immich">${cropImg(e, 150, 170, true)}</a>` : cropImg(e, 150, 170, true)}
+      <button class="photobtn" data-expand="${akey(e)}" title="show the whole photo with every detected person outlined">full photo</button>
+    </div>`}
+    <label class="selrow" title="select for bulk actions (Ignore / Pin as… / Not this person)">
+      <input type="checkbox" data-sel="${akey(e)}" ${sel ? "checked" : ""}> select</label>
+    <div class="inforow"><b>Immich:</b><span>${e.immich_label ? esc(e.immich_label) : '<span class="muted">—</span>'}</span></div>
+    <div class="inforow"><b>ReID:</b><span>${e.proposed_name ? esc(e.proposed_name) : '<span class="muted">unnamed cluster</span>'} <span class="chip ${chipClass}">${esc(chipText)}</span></span></div>
+    <div class="inforow"><b>You:</b><span>${youRow ? youRow : '<span class="muted">—</span>'}</span></div>
+    <div class="date-conf">${esc(e.date)} · ${(e.confidence * 100).toFixed(0)}%</div>
+    ${link ? `<div class="url mono"><a href="${link}" target="_blank" rel="noopener">${esc(link)}</a></div>` : ""}
+    <div class="chips">
+      ${e.sibling_count ? `<span class="chip" title="other detected persons in this photo — expand to see them outlined">${e.sibling_count} other${e.sibling_count === 1 ? "" : "s"} in photo</span>` : ""}
+      ${e.conflict_names?.length >= 2 ? `<span class="chip warn">conflict: ${esc(e.conflict_names.join(" / "))}</span>` : ""}
     </div>
-  `;
+    <div class="cardbtns">
+      ${e.ignored
+        ? `<button data-unignore="${akey(e)}">Undo ignore</button>`
+        : `<button data-ignore="${akey(e)}" title="Not a person, or not interested — excluded from clustering, never labeled">Ignore</button>`}
+      ${e.pin
+        ? `<button data-unpin="${akey(e)}">Unpin</button><button data-assign="${akey(e)}">Reassign person…</button>`
+        : `<button data-assign="${akey(e)}" title="Pin as a person — proposed as that person on the next batch run">Pin as… for next run</button>`}
+      ${rejectable ? `<button data-reject="${akey(e)}" data-name="${esc(e.proposed_name)}">Not this person</button>` : ""}
+      ${e.status === "rejected" ? `<button data-unreject="${akey(e)}" data-name="${esc(e.rejected_name ?? "")}">Undo exclusion</button>` : ""}
+      ${wrongLabelable ? `<button data-wronglabel="${akey(e)}" data-name="${esc(e.immich_label)}">Wrong label</button>` : ""}
+    </div>
+    ${e.conflict_names?.length >= 2 && !e.ignored ? `
+    <div class="resolve-row">
+      <span class="muted">resolve:</span>
+      ${e.conflict_names.map(name => `<button class="b-resolve ${e.pin === name ? "resolved" : ""}" data-resolve="${akey(e)}" data-name="${esc(name)}">${esc(name)}</button>`).join("")}
+    </div>` : ""}
+  </div>`;
+}
+
+/* Full photo with every stored appearance outlined; the card's own appearance
+ * highlighted. Boxes are pixel-space; the SVG viewBox follows the loaded
+ * image's natural size, so they map 1:1. */
+function fullPhotoHTML(e) {
+  const rects = (e.siblings || []).map(s => {
+    const self = s.appearance === e.appearance;
+    return `<rect class="pbox ${self ? "self" : ""}" x="${s.box[0]}" y="${s.box[1]}"
+      width="${s.box[2] - s.box[0]}" height="${s.box[3] - s.box[1]}"/>
+      ${self ? `<text class="ptag" x="${s.box[0]}" y="${Math.max(s.box[1] - 4, 10)}">this appearance</text>` : ""}`;
+  }).join("");
+  return `
+  <div class="fullwrap">
+    <img class="fullphoto" src="/api/crop?full=1&asset_id=${encodeURIComponent(e.asset_id)}" alt="full photo"
+      onload="fitOverlay(this)">
+    <svg class="overlay" onload="fitOverlay(this.previousElementSibling)">${rects}</svg>
+    <button class="photobtn" data-expand="${akey(e)}">crop</button>
+  </div>`;
+}
+function fitOverlay(img) {
+  const svg = img?.parentElement?.querySelector("svg.overlay");
+  if (svg && img.naturalWidth) svg.setAttribute("viewBox", `0 0 ${img.naturalWidth} ${img.naturalHeight}`);
 }
 
 function renderEvidence() {
   const grid = document.getElementById("evgrid");
   if (!grid) return;
   if (state.evidenceLoading) {
-    // The cluster just switched: show an explicit loading state instead of
-    // the previous cluster's cards.
-    grid.innerHTML = `<div class="evloading">loading photos\u2026</div>`;
+    grid.innerHTML = `<div class="evloading">loading photos…</div>`;
     return;
   }
-  grid.innerHTML = state.evidence
-    .map(e => evidenceCardHTML(e, state.assignment))
-    .join("");
-  // Crops stream in from /api/crop: keep a spinner up until each image
-  // actually arrives (or errors out), then fade the picture in.
-  grid.querySelectorAll("img.crop").forEach(img => {
+  grid.innerHTML = state.evidence.map(cardHTML).join("");
+  // Crop fade-in, same as before.
+  grid.querySelectorAll("img.crop, img.fullphoto").forEach(img => {
     const done = () => img.classList.add("loaded");
     if (img.complete) done();
     else {
@@ -447,603 +457,88 @@ function renderEvidence() {
       img.addEventListener("error", done, { once: true });
     }
   });
-  wireEvidenceEvents();
+  wireCardEvents();
+}
+
+function paneHTML() {
+  const a = state.assignment;
+  if (!a) return `<div class="name-display">—</div><div class="cluster-meta muted">Select a cluster</div>`;
+  const hasName = a.proposed_name != null;
+  const selCount = state.selected.size;
+  return `
+    <div class="name-display">${hasName ? esc(a.proposed_name) : '<span class="muted">—</span>'}</div>
+    <div class="cluster-meta muted">${a.total_appearances} appearances · ${a.writable} to write · ${a.conflicted} label conflicts · ${a.labeled} already labeled</div>
+    ${!hasName ? `<button class="b-name primary" style="width:100%;margin-bottom:10px">Name this cluster</button>` : ""}
+    <div class="name-prompt">
+      <label class="muted">Assign to</label>
+      <input type="text" id="nameInput" list="peopleList" value="${hasName ? esc(a.proposed_name) : ""}" ${hasName ? "" : 'placeholder="Type or pick an existing person…"'} ${state.activeKey === null ? "disabled" : ""}>
+      <datalist id="peopleList">${state.people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
+      <div class="hint">existing person → attaches · new name → creates the person on write. Naming pins the cluster's appearances to that person on the next run.</div>
+    </div>
+    <div class="actions">
+      ${state.activeKey !== null ? `
+        <button class="b-ok primary" ${state.jobActive ? "disabled" : ""}>Confirm proposal</button>
+        <button class="b-skip">Skip cluster</button>` : `<div class="chip">Select a cluster</div>`}
+    </div>
+    ${a.cluster_status !== "open" && state.activeKey !== null ? `
+      <button class="b-reopen" data-key="${a.window}:${a.cluster}" style="width:100%;margin-top:8px">Reopen cluster</button>` : ""}
+    <hr>
+    <div class="bulkbar">
+      <b>${selCount} selected</b>
+      <div class="bulkrow">
+        <button data-bulk="ignore" ${!selCount || state.jobActive ? "disabled" : ""}>Ignore selected</button>
+        <button data-bulk="unignore" ${!selCount || state.jobActive ? "disabled" : ""}>Undo ignore</button>
+        <button data-bulk="reject" ${!selCount || state.jobActive ? "disabled" : ""}>Not this person</button>
+      </div>
+      <div class="bulkrow">
+        <button data-bulk="pin" ${!selCount || state.jobActive ? "disabled" : ""}>Pin selected as… for next run</button>
+      </div>
+      <div class="hint">Bulk actions apply to the visible cards only. “Pin as X” takes effect on the next pipeline run; reassigning in Final check writes as X now.</div>
+    </div>
+    <hr>
+    <div class="footer muted">⚙ Settings (top right) adjust how photos are grouped — changes apply on the next run.</div>`;
 }
 
 function renderPane() {
   const pane = document.querySelector(".pane");
-  if (!pane) return;
-  pane.innerHTML = paneHTML();
-  wirePaneEvents();
-}
-
-/* ---------- Write-review page ---------- */
-function setView(view) {
-  state.view = view;
-  try {
-    localStorage.setItem("reid-view", view);
-  } catch {
-    /* private mode: view just resets on reload */
-  }
-  if (view === "review") loadReview();
-  else render();
-}
-
-async function loadReview() {
-  render();
-  try {
-    state.review = await fetchJson("/api/write-review");
-    const validTab =
-      state.reviewTab === "__pending__" ||
-      state.reviewTab === "__unnamed__" ||
-      state.review.tabs.some(t => t.name === state.reviewTab);
-    if (!validTab) {
-      state.reviewTab = state.review.tabs[0]?.name ?? null;
-    }
-    // Pending-write selection: page state. New items take their default
-    // (clean writes pre-checked); existing selections survive reloads;
-    // written items drop out.
-    const seen = state.pendingSeen ?? new Set();
-    const selected = state.pendingSelected ?? new Set();
-    const pendingKeys = new Set();
-    for (const p of state.review.pending || []) {
-      const key = `${p.batch_id}:${p.asset_id}:${p.appearance}`;
-      pendingKeys.add(key);
-      if (!seen.has(key)) {
-        seen.add(key);
-        if (p.default_included) selected.add(key);
-      }
-    }
-    for (const key of [...selected]) {
-      if (!pendingKeys.has(key)) selected.delete(key);
-    }
-    state.pendingSeen = seen;
-    state.pendingSelected = selected;
-  } catch (err) {
-    state.review = { tabs: [], unnamed: [], total_writable: 0, pending: [], total_pending: 0, error: err.message };
-  }
-  render();
-}
-
-function renderReviewShell(root) {
-  root.innerHTML = `
-    ${bannerHTML()}
-    <div class="top review-top">
-      <strong>Write review</strong>
-      <span class="chip acc">${(state.review?.total_writable ?? 0)} writes pending</span>
-      ${lastRunChipHTML()}
-      <span class="spacer"></span>
-      <div class="knobs">
-        <label><input type="checkbox" id="dryToggle" ${state.dryRun ? "checked" : ""}>review before writing</label>
-      </div>
-      <button id="viewQueue" class="primary">Back to queue</button>
-      <button id="runNow" ${state.jobActive ? "disabled" : ""} title="Run the pipeline now: look for new photos and regroup everything">${state.jobActive ? "Running…" : "Run now"}</button>
-      <div class="cfgpop" id="cfgPop">${configPopoverHTML()}</div>
-    </div>
-    <div class="rvwrap">
-      <div class="rvtabs" id="rvTabs"></div>
-      <div class="rvbody" id="rvBody"></div>
-    </div>
-  `;
-  wireReviewEvents();
-  renderReviewTabs();
-  renderReviewBody();
-}
-
-function setReviewTab(name) {
-  state.reviewTab = name;
-  renderReviewTabs();
-  renderReviewBody();
-}
-
-function renderReviewTabs() {
-  const tabsEl = document.getElementById("rvTabs");
-  if (!tabsEl || !state.review) return;  const tabs = state.review.tabs.map(t => `
-    <button class="rvtab ${state.reviewTab === t.name ? "sel" : ""}" data-tab="${esc(t.name)}">
-      ${esc(t.name)}
-      <span class="chip acc">${t.writable}</span>
-      ${t.labeled ? `<span class="chip ok" title="already labeled — nothing to write">${t.labeled}</span>` : ""}
-    </button>
-  `).join("");
-  const unnamed = state.review.unnamed.length
-    ? `<button class="rvtab ${state.reviewTab === "__unnamed__" ? "sel" : ""}" data-tab="__unnamed__">unnamed <span class="chip">${state.review.unnamed.length}</span></button>`
-    : "";
-  const pendingTab = `<button class="rvtab ${state.reviewTab === "__pending__" ? "sel" : ""}" data-tab="__pending__">Pending writes <span class="chip white">${state.review.pending?.length || 0}</span></button>`;
-  tabsEl.innerHTML = tabs + pendingTab + unnamed;
-  // Tabs re-render on every switch: bind them here, not in wireReviewEvents
-  // (which runs once on an empty strip).
-  tabsEl.querySelectorAll(".rvtab").forEach(el => {
-    el.addEventListener("click", () => setReviewTab(el.dataset.tab));
-  });
-}
-
-function renderReviewBody() {
-  const body = document.getElementById("rvBody");
-  if (!body || !state.review) return;
-  if (state.review.error) {
-    body.innerHTML = `<div class="panerr">review failed to load: ${esc(state.review.error)}</div>`;
-    return;
-  }
-  if (state.reviewTab === "__pending__") {
-    body.innerHTML = renderPendingPane();
-  } else if (state.reviewTab === "__unnamed__") {
-    body.innerHTML = renderUnnamedSections();
-  } else {
-    const tab = state.review.tabs.find(t => t.name === state.reviewTab);
-    body.innerHTML = tab ? renderPersonPane(tab) : `<div class="empty muted">nothing to write — confirm clusters in the queue or run the batch</div>`;
-  }
-  // Crop fade-in, same as the queue.
-  body.querySelectorAll("img.crop").forEach(img => {
-    const done = () => img.classList.add("loaded");
-    if (img.complete) done();
-    else {
-      img.addEventListener("load", done, { once: true });
-      img.addEventListener("error", done, { once: true });
-    }
-  });
-  wireEvidenceEvents();
-  wireReviewBodyEvents();
-}
-
-function renderPersonPane(tab) {
-  const writableCards = tab.writable_cards.filter(
-    c => c.status === "will_write" || c.status === "conflict_skip"
-  );
-  const byWindow = new Map();
-  for (const c of writableCards) {
-    if (!byWindow.has(c.window)) byWindow.set(c.window, []);
-    byWindow.get(c.window).push(c);
-  }
-  const sections = [...byWindow.entries()].map(([window, cards]) => {
-    const byCluster = new Map();
-    for (const c of cards) {
-      if (!byCluster.has(c.cluster)) byCluster.set(c.cluster, []);
-      byCluster.get(c.cluster).push(c);
-    }
-    const clusters = [...byCluster.entries()].map(([cluster, cards]) => `
-      <div class="rv-day">
-        <span class="rv-dayname">${window}</span>
-        <span class="item-meta mono">group ${cluster} · ${cards.filter(c => c.included).length} of ${cards.length} to write</span>
-      </div>
-      <div class="evgrid">${cards.map(c => evidenceCardHTML(c, { proposed_name: tab.name })).join("")}</div>
-    `).join("");
-    return clusters;
-  }).join("");
-  const labeledSection = tab.labeled_cards.length ? `
-    <div class="rv-day">
-      <span class="rv-dayname">already labeled</span>
-      <span class="item-meta muted">${tab.labeled_cards.length} in Immich — nothing to write</span>
-    </div>
-    <div class="evgrid">${tab.labeled_cards.map(c => evidenceCardHTML(c, { proposed_name: tab.name })).join("")}</div>
-  ` : "";
-  const pinnedSection = tab.pinned_cards?.length ? `
-    <div class="rv-day">
-      <span class="rv-dayname">pinned to ${esc(tab.name)}</span>
-      <span class="item-meta muted">${tab.pinned_cards.length} — will be proposed as ${esc(tab.name)} on the next batch run</span>
-    </div>
-    <div class="evgrid">${tab.pinned_cards.map(c => evidenceCardHTML(c, { proposed_name: tab.name })).join("")}</div>
-  ` : "";
-  const globalBar = `
-    <div class="rv-global">
-      <button id="rvConfirm" class="primary" ${tab.writable && !state.jobActive ? "" : "disabled"}>
-        ${state.dryRun ? `Approve ${tab.writable} writes for review` : `Write ${tab.writable} faces`}
-      </button>
-      <button id="rvAll">All</button>
-      <button id="rvNone">None</button>
-      <span class="muted">one click approves every write for ${esc(tab.name)} — grouped by day</span>
-    </div>
-  `;
-  return globalBar + sections + labeledSection + pinnedSection;
-}
-
-function renderUnnamedSections() {
-  return state.review.unnamed.map(g => `
-    <div class="rv-day">
-      <span class="rv-dayname">${g.window}</span>
-      <span class="item-meta mono">group ${g.cluster} · ${g.cards.length} photos</span>
-      <button class="b-opencluster" data-window="${g.window}" data-cluster="${g.cluster}">Open in queue to name it</button>
-    </div>
-    <div class="evgrid">${g.cards.map(c => evidenceCardHTML(c, null)).join("")}</div>
-  `).join("");
-}
-
-function pendingKey(p) {
-  return `${p.batch_id}:${p.asset_id}:${p.appearance}`;
-}
-
-const PENDING_CHIP = {
-  would_write: ["ok", "ready"],
-  conflict_skip: ["bad", "label conflict"],
-  no_head_skip: ["warn", "no face found"],
-  error: ["bad", "failed"],
-};
-
-function renderPendingPane() {
-  const pending = state.review?.pending || [];
-  if (!pending.length) {
-    return `<div class="empty muted">nothing pending — every approved write is in Immich</div>`;
-  }
-  const selected = pending.filter(p => state.pendingSelected.has(pendingKey(p)));
-  const globalBar = `
-    <div class="rv-global">
-      <button id="rvWritePending" class="primary" ${selected.length && !state.jobActive ? "" : "disabled"}>
-        Write ${selected.length} selected to Immich
-      </button>
-      <button id="rvSelAll">Select all</button>
-      <button id="rvSelNone">Deselect all</button>
-      <span class="hint">Click a card to include or leave it out. Unselected items stay pending — written items disappear from this list.</span>
-    </div>
-  `;
-  const byName = new Map();
-  for (const p of pending) {
-    const name = p.name || "?";
-    if (!byName.has(name)) byName.set(name, []);
-    byName.get(name).push(p);
-  }
-  const sections = [...byName.entries()].map(([name, items]) => {
-    const byWindow = new Map();
-    for (const p of items) {
-      if (!byWindow.has(p.window)) byWindow.set(p.window, []);
-      byWindow.get(p.window).push(p);
-    }
-    return [...byWindow.entries()].map(([window, group]) => {
-      const selCount = group.filter(p => state.pendingSelected.has(pendingKey(p))).length;
-      return `
-        <div class="rv-day">
-          <span class="rv-dayname">${esc(name)}</span>
-          <span class="item-meta mono">${window} · group ${group[0].cluster} · ${selCount} of ${group.length} selected</span>
-        </div>
-        <div class="evgrid">${group.map(pendingCardHTML).join("")}</div>
-      `;
-    }).join("");
-  }).join("");
-  return globalBar + sections;
-}
-
-function pendingCardHTML(p) {
-  const key = pendingKey(p);
-  const selected = state.pendingSelected.has(key);
-  const skipped = p.status !== "would_write";
-  const [chipClass, chipText] = PENDING_CHIP[p.status] ?? ["", p.status];
-  const link = state.immichUrl
-    ? `${state.immichUrl}/photos/${encodeURIComponent(p.asset_id)}`
-    : null;
-  const nameLine = link
-    ? `<a href="${link}" target="_blank" rel="noopener" title="open ${esc(p.asset_id)} in Immich">${esc(p.asset_name || p.asset_id)}</a>`
-    : `<span title="${esc(p.asset_id)}">${esc(p.asset_name || p.asset_id)}</span>`;
-  return `
-    <div class="pcard ${selected ? "selected" : ""} ${skipped ? "skipped" : ""}" data-pending="${key}"
-      title="${selected ? "Selected — click to leave out (it stays pending)" : "Click to select for writing"}">
-      <div class="imgwrap">${cropImg({ asset_id: p.asset_id, appearance: p.appearance }, 150, 170, false)}<div class="check">✓</div></div>
-      <div class="name">${nameLine}</div>
-      <div class="writeas">write as <b>${esc(p.name)}</b></div>
-      <div class="meta2"><span class="chip ${chipClass}">${esc(chipText)}</span> ${esc(p.window)} · group ${p.cluster}</div>
-    </div>
-  `;
-}
-
-function togglePending(key) {
-  if (state.pendingSelected.has(key)) state.pendingSelected.delete(key);
-  else state.pendingSelected.add(key);
-  renderReviewBody();
-}
-
-async function writeSelectedPending() {
-  if (pausedByRun()) return;
-  const pending = state.review?.pending || [];
-  const items = pending
-    .filter(p => state.pendingSelected.has(pendingKey(p)))
-    .map(p => ({ batch_id: p.batch_id, asset_id: p.asset_id, appearance: p.appearance }));
-  if (!items.length) {
-    toast("nothing selected");
-    return;
-  }
-  try {
-    const res = await fetch("/api/write-pending", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`write failed: ${data.error}`);
-      return;
-    }
-    const notWritten = data.results.filter(r => r.status && r.status !== "written").length;
-    toast(
-      `wrote ${data.written} faces to Immich` +
-        (notWritten ? ` — ${notWritten} could not be written (reasons on the items)` : "")
-    );
-    loadReview();
-  } catch (err) {
-    toast(`write failed: ${err.message}`);
+  if (pane) {
+    pane.innerHTML = paneHTML();
+    wirePaneEvents();
   }
 }
 
-function wireReviewEvents() {
-  document.getElementById("viewQueue")?.addEventListener("click", () => setView("queue"));
-  document.getElementById("dryToggle")?.addEventListener("change", e => {
-    state.dryRun = e.target.checked;
-    render();
-  });
-  document.getElementById("gearBtn")?.addEventListener("click", () =>
-    document.getElementById("cfgPop")?.classList.toggle("open")
-  );
-  document.querySelectorAll("#cfgPop input[data-cfg]").forEach(inp => {
-    inp.addEventListener("input", () => {
-      const key = inp.dataset.cfg;
-      document.querySelector(`[data-cfg-val="${key}"]`).textContent = inp.value;
-    });
-  });
-  document.getElementById("cfgSave")?.addEventListener("click", saveConfig);
-  wireRunButtons();
-}
-
-function wireReviewBodyEvents() {
-  document.getElementById("rvConfirm")?.addEventListener("click", confirmAllWrites);
-  document.getElementById("rvAll")?.addEventListener("click", () => toggleAllWrites(true));
-  document.getElementById("rvNone")?.addEventListener("click", () => toggleAllWrites(false));
-  document.getElementById("rvWritePending")?.addEventListener("click", writeSelectedPending);
-  document.getElementById("rvSelAll")?.addEventListener("click", () => {
-    for (const p of state.review?.pending || []) state.pendingSelected.add(pendingKey(p));
-    renderReviewBody();
-  });
-  document.getElementById("rvSelNone")?.addEventListener("click", () => {
-    state.pendingSelected.clear();
-    renderReviewBody();
-  });
-  document.querySelectorAll(".pcard[data-pending]").forEach(el => {
-    el.addEventListener("click", e => {
-      if (e.target.closest("a")) return; // filename links open Immich, not toggle
-      togglePending(el.dataset.pending);
-    });
-  });
-  document.querySelectorAll(".b-opencluster").forEach(btn => {
-    btn.addEventListener("click", () => {
-      state.view = "queue";
-      try {
-        localStorage.setItem("reid-view", "queue");
-      } catch { /* private mode */ }
-      selectCluster(`${btn.dataset.window}:${btn.dataset.cluster}`);
-    });
-  });
-}
-
-async function toggleAllWrites(included) {
-  const tab = state.review?.tabs.find(t => t.name === state.reviewTab);
-  if (!tab) return;
-  await Promise.all(
-    tab.writable_cards
-      .filter(c => c.status === "will_write" && c.included !== included)
-      .map(c => {
-        c.included = included;
-        return fetch("/api/write-decision", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ asset_id: c.asset_id, appearance: c.appearance, included }),
-        });
-      })
-  );
-  if (state.reviewTab === "__unnamed__") renderReviewBody();
-  else renderReviewBody();
-}
-
-async function confirmAllWrites() {
-  if (pausedByRun()) return;
-  try {
-    const res = await fetch("/api/confirm-all", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dry_run: state.dryRun }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`confirm failed: ${data.error}`);
-      return;
-    }
-    if (state.dryRun) {
-      toast(`approved ${data.count} writes in ${data.batch_ids.length} group(s) — use “Write all to Immich” when ready`);
-      loadDryRunBatches();
-    } else {
-      const written = data.groups.reduce((n, g) => n + (g.result.results?.filter(r => r.status === "written").length || 0), 0);
-      toast(`wrote ${written} faces across ${data.groups.length} day/cluster group(s)`);
-    }
-    loadReview();
-  } catch (err) {
-    toast(`confirm failed: ${err.message}`);
+function buildAssignment(clusterRow) {
+  const w = state.evidence.filter(e => e.cluster === clusterRow.cluster && e.window === clusterRow.window);
+  if (!w.length && clusterRow.appearances != null) {
+    return {
+      cluster: clusterRow.cluster, window: clusterRow.window, cluster_status: clusterRow.status,
+      proposed_name: clusterRow.proposed_name, anchor: clusterRow.anchor,
+      total_appearances: clusterRow.appearances, writable: clusterRow.writable,
+      conflicted: clusterRow.conflicted, labeled: clusterRow.labeled,
+    };
   }
-}
-
-/* ---------- Pipeline runs ---------- */
-// The core runs the pipeline as one job at a time; the UI polls its status
-// and pauses confirmations while a run is rebuilding proposals.
-function pausedByRun() {
-  if (!state.jobActive) return false;
-  toast("A pipeline run is in progress — confirmations are paused until it finishes.");
-  return true;
-}
-
-async function pollJobs() {
-  let data;
-  try {
-    data = await fetchJson("/api/jobs");
-  } catch (err) {
-    return; // noteCoreDown already showed the banner; keep retrying
-  }
-  const wasActive = state.jobActive;
-  const wasWindows = state.jobWindows;
-  const prevLastState = state.jobLast?.state ?? null;
-  const run = data.last_run || null;
-  state.jobActive = !!data.active;
-  state.jobLast = run;
-  state.jobWindows = state.jobActive ? (run?.windows_done ?? 0) : 0;
-
-  if (wasActive && !state.jobActive) {
-    toast(run?.state === "done" ? "Pipeline run finished — the queue is up to date." : "Pipeline run stopped.");
-    render();
-    await refreshAfterRun();
-    return;
-  }
-  if (!wasActive && state.jobActive) {
-    render(); // banner + disabled confirmations
-    return;
-  }
-  if (state.jobActive && wasWindows !== state.jobWindows) {
-    const el = document.getElementById("jobProgressText");
-    if (el) {
-      const n = state.jobWindows;
-      el.textContent = `Pipeline running — ${n} ${n === 1 ? "day" : "days"} done`;
-    }
-    return;
-  }
-  // First poll after boot, or a run outcome we have not shown yet: the
-  // last-run badge lives in the top bar, so re-render to show it.
-  if (!state.jobActive && prevLastState !== (run?.state ?? null)) render();
-}
-
-async function refreshAfterRun() {
-  try {
-    await loadInitialState();
-    await loadDryRunBatches();
-    if (state.view === "review") await loadReview();
-  } catch (err) {
-    toast(`could not refresh after the run: ${err.message}`);
-  }
-}
-
-async function runNow() {
-  try {
-    const res = await fetch("/api/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trigger: "manual" }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(data.error);
-      return;
-    }
-    toast("Pipeline started — this can take a while.");
-    await pollJobs();
-  } catch (err) {
-    toast(`could not start a run: ${err.message}`);
-  }
-}
-
-async function cancelRun() {
-  if (!window.confirm("Stop the pipeline run? Finished work is kept and the next run continues from there.")) return;
-  try {
-    const res = await fetch("/api/jobs/cancel", { method: "POST" });
-    const data = await res.json();
-    if (data.error) {
-      toast(data.error);
-      return;
-    }
-    toast("Stopping the pipeline run…");
-    await pollJobs();
-  } catch (err) {
-    toast(`could not stop the run: ${err.message}`);
-  }
-}
-
-function wireRunButtons() {
-  document.getElementById("runNow")?.addEventListener("click", runNow);
-  document.getElementById("cancelRun")?.addEventListener("click", cancelRun);
-}
-
-/* ---------- Event wiring ---------- */
-function wireEvents() {
-  // Config popover
-  document.getElementById("gearBtn")?.addEventListener("click", () =>
-    document.getElementById("cfgPop")?.classList.toggle("open")
-  );
-  document.querySelectorAll("#cfgPop input[data-cfg]").forEach(inp => {
-    inp.addEventListener("input", () => {
-      const key = inp.dataset.cfg;
-      document.querySelector(`[data-cfg-val="${key}"]`).textContent = inp.value;
-    });
-  });
-  document.getElementById("cfgSave")?.addEventListener("click", saveConfig);
-
-  // Dry-run toggle
-  document.getElementById("dryToggle")?.addEventListener("change", e => {
-    state.dryRun = e.target.checked;
-    render(); // re-render banner and button labels
-  });
-
-  // View toggle
-  document.getElementById("viewReview")?.addEventListener("click", () => setView("review"));
-
-  // Show already-labeled groups
-  document.getElementById("showLabeledToggle")?.addEventListener("change", e => {
-    state.showLabeled = e.target.checked;
-    try {
-      localStorage.setItem("reid-show-labeled", state.showLabeled ? "1" : "0");
-    } catch {
-      /* private mode: toggle resets on reload */
-    }
-    // Hiding the cluster you're viewing moves the selection to the first
-    // visible one, so the panes never show something the list doesn't.
-    if (!state.showLabeled) {
-      const active = activeRow();
-      if (active && active.fully_labeled) {
-        const first = visibleClusters().find(c => c.status === "open") || visibleClusters()[0];
-        if (first) {
-          state.activeKey = keyOf(first);
-          state.activeDay = first.window;
-          loadEvidence(first.cluster, first.window);
-          state.assignment = buildAssignment(first);
-        }
-      }
-    }
-    render();
-  });
-
-  // Sidebar: day rows select a day, cluster rows select a cluster
-  document.querySelectorAll(".days .dayrow").forEach(el => {
-    el.addEventListener("click", () => selectDay(el.dataset.day));
-  });
-  document.querySelectorAll(".clusters .item[data-key]").forEach(el => {
-    el.addEventListener("click", () => selectCluster(el.dataset.key));
-  });
-
-  // Dry-batch promote
-  document.querySelectorAll("[data-promote]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const id = btn.dataset.promote;
-      await promoteBatch(id);
-    });
-  });
-  document.getElementById("promoteAll")?.addEventListener("click", promoteAll);
-
-  // Pipeline runs
-  wireRunButtons();
-
-  // Keyboard navigation
-  if (keyHandler) document.removeEventListener("keydown", keyHandler);
-  keyHandler = e => {
-    if (/input|textarea/i.test(e.target.tagName) || e.target.isContentEditable) return;
-    if (state.view === "review") return; // the review page is mouse/tab driven
-    const openClusters = visibleClusters().filter(c => c.status === "open");
-    const idx = openClusters.findIndex(c => keyOf(c) === state.activeKey);
-    if (e.key === "j") {
-      const next = openClusters[(idx + 1) % openClusters.length];
-      if (next) selectCluster(keyOf(next));
-    }
-    if (e.key === "k") {
-      const prev = openClusters[(idx - 1 + openClusters.length) % openClusters.length];
-      if (prev) selectCluster(keyOf(prev));
-    }
-    if (e.key === "c") doConfirm(state.activeKey);
-    if (e.key === "s") doSkip(state.activeKey);
+  return {
+    cluster: clusterRow.cluster, window: clusterRow.window, cluster_status: clusterRow.status,
+    proposed_name: clusterRow.proposed_name, anchor: clusterRow.anchor,
+    total_appearances: w.length,
+    writable: w.filter(e => e.status === "will_write").length,
+    conflicted: w.filter(e => e.status === "conflict_skip").length,
+    labeled: w.filter(e => e.status === "already_labeled").length,
   };
-  document.addEventListener("keydown", keyHandler);
+}
+
+/* ---------- Proposals events ---------- */
+function wireProposalEvents() {
+  document.querySelectorAll(".days .dayrow").forEach(el =>
+    el.addEventListener("click", () => selectDay(el.dataset.day))
+  );
+  document.querySelectorAll(".clusters .item[data-key]").forEach(el =>
+    el.addEventListener("click", () => selectCluster(el.dataset.key))
+  );
 }
 
 function selectDay(day) {
   state.activeDay = day;
-  // Show the day's clusters AND load its first open one, so the
-  // evidence/actions panes move with the click.
   const rows = visibleClusters().filter(c => c.window === day);
   const first = rows.find(c => c.status === "open") || rows[0];
   if (first) selectCluster(keyOf(first));
@@ -1055,9 +550,6 @@ function selectCluster(key) {
   const row = activeRow();
   if (row) {
     state.activeDay = row.window;
-    // Switch immediately: drop the previous cluster's cards and show the
-    // pane-level loading state until the fetch lands. Header, cluster
-    // pane and action counts all update at click time.
     state.evidence = [];
     state.evidenceLoading = true;
     loadEvidence(row.cluster, row.window);
@@ -1066,80 +558,39 @@ function selectCluster(key) {
   render();
 }
 
-function wireEvidenceEvents() {
-  document.querySelectorAll(".evcard input[data-asset]").forEach(el => {
+function wireCardEvents() {
+  document.querySelectorAll("[data-sel]").forEach(el =>
     el.addEventListener("change", () => {
-      const asset = el.dataset.asset;
-      const appearance = parseInt(el.closest(".evcard")?.dataset.appearance ?? "0", 10);
-      // The card lives either in the queue's evidence or the review page.
-      const card =
-        state.evidence.find(e => e.asset_id === asset) ||
-        state.review?.tabs
-          .flatMap(t => [...t.writable_cards, ...t.labeled_cards])
-          .find(e => e.asset_id === asset && String(e.appearance) === String(appearance));
-      if (card) card.included = el.checked;
-      // Persist for this review cycle; the batch run clears decisions.
-      fetch("/api/write-decision", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset_id: asset, appearance, included: el.checked }),
-      }).catch(() => toast("could not persist the write choice"));
-    });
-  });
-  document.querySelectorAll(".b-reject[data-asset]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      // The card carries its own context name: the review page's person
-      // tab (not the queue's possibly stale last-viewed cluster).
-      const name = btn.dataset.name || state.assignment?.proposed_name;
-      rejectAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10), name);
-    });
-  });
-  document.querySelectorAll(".b-wronglabel[data-asset]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      markWrongLabel(
-        btn.dataset.asset,
-        parseInt(btn.dataset.appearance, 10),
-        btn.dataset.name
-      );
-    });
-  });
-  document.querySelectorAll(".b-assign[data-asset]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      assignPrompt(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
-    });
-  });
-  document.querySelectorAll(".b-unpin[data-asset]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      unpinAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
-    });
-  });
-  document.querySelectorAll(".b-resolve[data-asset]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      pinAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10), btn.dataset.name);
-    });
-  });
-  document.querySelectorAll(".b-ignore[data-asset]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      ignoreAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
-    });
-  });
-  document.querySelectorAll(".b-unignore[data-asset]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      unignoreAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10));
-    });
-  });
-  document.querySelectorAll(".b-unreject[data-asset]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const name = state.assignment?.proposed_name;
-      unrejectAppearance(btn.dataset.asset, parseInt(btn.dataset.appearance, 10), name);
-    });
-  });
-  document.querySelectorAll(".b-reopen[data-key]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const c = state.clusters.find(x => keyOf(x) === btn.dataset.key);
-      if (c) dismissCluster(c.cluster, c.window, false);
-    });
-  });
+      const k = el.dataset.sel;
+      if (el.checked) state.selected.add(k);
+      else state.selected.delete(k);
+      renderEvidence();
+      renderPane();
+    })
+  );
+  document.querySelectorAll("[data-expand]").forEach(el =>
+    el.addEventListener("click", () => {
+      const k = el.dataset.expand;
+      state.expanded = state.expanded === k ? null : k;
+      renderEvidence();
+    })
+  );
+  document.querySelectorAll("[data-ignore]").forEach(el =>
+    el.addEventListener("click", () => ignoreAppearance(el.dataset.ignore)));
+  document.querySelectorAll("[data-unignore]").forEach(el =>
+    el.addEventListener("click", () => unignoreAppearance(el.dataset.unignore)));
+  document.querySelectorAll("[data-assign]").forEach(el =>
+    el.addEventListener("click", () => assignPrompt(el.dataset.assign)));
+  document.querySelectorAll("[data-unpin]").forEach(el =>
+    el.addEventListener("click", () => unpinAppearance(el.dataset.unpin)));
+  document.querySelectorAll("[data-reject]").forEach(el =>
+    el.addEventListener("click", () => rejectAppearance(el.dataset.reject, el.dataset.name)));
+  document.querySelectorAll("[data-unreject]").forEach(el =>
+    el.addEventListener("click", () => unrejectAppearance(el.dataset.unreject, el.dataset.name)));
+  document.querySelectorAll("[data-wronglabel]").forEach(el =>
+    el.addEventListener("click", () => markWrongLabel(el.dataset.wronglabel, el.dataset.name)));
+  document.querySelectorAll("[data-resolve]").forEach(el =>
+    el.addEventListener("click", () => pinAppearance(el.dataset.resolve, el.dataset.name)));
 }
 
 function wirePaneEvents() {
@@ -1147,90 +598,429 @@ function wirePaneEvents() {
   if (nameInput) {
     nameInput.addEventListener("change", () => {
       const v = nameInput.value.trim();
-      if (v && state.assignment && !state.assignment.proposed_name) {
+      if (v && state.assignment) {
         state.assignment.proposed_name = v;
-        // Update cluster row too
         const row = activeRow();
-        if (row) {
-          row.proposed_name = v;
-          toast(`Group on ${row.window} named ${v} (${state.people.includes(v) ? "existing person" : "new person"}).`);
-        }
+        if (row) row.proposed_name = v;
+        toast(`Group named “${v}” (${state.people.includes(v) ? "existing person" : "new person"}).`);
         render();
       }
     });
   }
-
-  document.querySelector(".b-ok")?.addEventListener("click", () => doConfirm(state.activeKey));
-  document.querySelector(".b-skip")?.addEventListener("click", () => doSkip(state.activeKey));
-  document.querySelector(".b-name")?.addEventListener("click", () => namePrompt(state.activeKey));
+  document.querySelector(".b-ok")?.addEventListener("click", confirmCluster);
+  document.querySelector(".b-skip")?.addEventListener("click", () => {
+    const c = activeRow();
+    if (c) dismissCluster(c.cluster, c.window, true);
+  });
+  document.querySelector(".b-name")?.addEventListener("click", () => namePrompt());
+  document.querySelector(".b-reopen")?.addEventListener("click", e => {
+    const [window, cluster] = e.target.dataset.key.split(":");
+    dismissCluster(Number(cluster), window, false);
+    confirmClusterState(Number(cluster), window, false);
+  });
+  document.querySelectorAll("[data-bulk]").forEach(btn =>
+    btn.addEventListener("click", () => bulkAction(btn.dataset.bulk)));
 }
 
-/* ---------- Dry-run batch actions ---------- */
-async function loadDryRunBatches() {
+async function bulkAction(action) {
+  if (pausedByRun() || !state.selected.size) return;
+  const items = [...state.selected].map(k => {
+    const [asset_id, appearance] = k.split(":");
+    return { asset_id, appearance: parseInt(appearance, 10) };
+  });
+  let name = null;
+  if (action === "pin") {
+    name = await nameModal("Pin selected as which person?", "Applies on the next pipeline run.");
+    if (!name) return;
+  }
+  if (action === "reject") {
+    const row = activeRow();
+    name = row?.proposed_name;
+    if (!name) { toast("name the cluster first — then 'not this person' means something"); return; }
+  }
+  const path = { ignore: "/api/bulk-ignore", unignore: "/api/bulk-unignore", pin: "/api/bulk-pin", reject: "/api/bulk-reject" }[action];
   try {
-    const res = await fetch("/api/dry-run-batches");
-    const batches = await res.json();
-    state.dryBatches = batches;
+    const data = await postJson(path, { items, ...(name ? { name } : {}) });
+    if (data.error) { toast(`bulk ${action} failed: ${data.error}`); return; }
+    toast(`bulk ${action}: ${data.count} appearance(s) — ${action === "pin" ? `pinned as “${name}” for the next run` : action === "reject" ? `marked not “${name}”` : action}`);
+    state.selected.clear();
+    await loadInitialState();
+    const row = activeRow();
+    if (row) { state.evidence = []; state.evidenceLoading = true; loadEvidence(row.cluster, row.window); state.assignment = buildAssignment(row); }
     render();
   } catch (err) {
-    console.warn("failed to load dry-run batches:", err);
+    toast(`bulk ${action} failed: ${err.message}`);
   }
 }
 
-async function promoteBatch(id) {
+/* ---------- Final check tab ---------- */
+function finalHTML() {
+  const persons = state.final?.persons ?? [];
+  const person = persons.find(p => p.name === state.finalPerson) || persons[0];
+  return `
+    <div class="persons">${personsHTML(persons)}</div>
+    <div class="finalmain">${finalMainHTML(person)}</div>`;
+}
+
+function personsHTML(persons) {
+  if (!persons.length) return `<div class="empty muted">nothing to check — confirm proposals in the Proposals tab or run the batch</div>`;
+  return persons.map(p => `
+    <div class="personrow ${p.name === state.finalPerson ? "sel" : ""}" data-person="${esc(p.name)}">
+      <b>${esc(p.name)}</b>
+      <span class="chip acc">${p.count}</span>
+    </div>`).join("");
+}
+
+function finalMainHTML(person) {
+  if (state.final?.error) return `<div class="panerr">final check failed to load: ${esc(state.final.error)}</div>`;
+  if (!person) return `<div class="empty muted">select a person</div>`;
+  const selected = person.items.filter(i => state.finalSelected.has(akey(i)));
+  const totalSelected = (state.final?.persons ?? []).reduce(
+    (n, p) => n + p.items.filter(i => state.finalSelected.has(akey(i))).length, 0);
+  const srcChip = { proposal: ["acc", "ReID proposal"], pin: ["acc", "your pin"], conflict: ["bad", "conflict"], written: ["ok", "in Immich"] };
+  return `
+    <div class="writebar">
+      <button id="writePerson" class="primary" ${selected.length && !state.jobActive ? "" : "disabled"}>
+        Write ${selected.length} selected as “${esc(person.name)}” to Immich</button>
+      <button id="selAll">Select all</button>
+      <button id="selNone">Deselect all</button>
+      <button id="retargetSel" ${selected.length && !state.jobActive ? "" : "disabled"} title="reassign the selected appearances to another person — the write targets that person now">Write selected as…</button>
+      <span class="spacer"></span>
+      <button id="writeAll" class="primary" ${totalSelected && !state.jobActive ? "" : "disabled"}>
+        Write all selected across people (${totalSelected})</button>
+    </div>
+    <div class="main" style="grid-row:auto;height:auto;overflow:visible;padding:12px">
+      <h2 style="margin:4px 0">${esc(person.name)}</h2>
+      <div class="hint" style="margin-bottom:10px">Every appearance assigned to ${esc(person.name)} — ReID proposals, your pins, conflicts. Checkboxes default OFF; checked items are written to Immich on confirm.</div>
+      <div class="evgrid">${person.items.map(finalCardHTML).join("")}</div>
+    </div>`;
+}
+
+function finalCardHTML(i) {
+  const key = akey(i);
+  const on = state.finalSelected.has(key);
+  const link = state.immichUrl ? `${state.immichUrl}/photos/${encodeURIComponent(i.asset_id)}` : null;
+  const [cc, ct] = { proposal: ["acc", "ReID proposal"], pin: ["acc", "your pin"], conflict: ["bad", "conflict"], written: ["ok", "in Immich"] }[i.source] || ["", i.source];
+  const writeAs = state.finalNames[key] ?? i.name;
+  return `
+  <div class="evcard ${on ? "selected" : ""}" data-key="${key}">
+    <div class="cropwrap">
+      ${link ? `<a href="${link}" target="_blank" rel="noopener" title="open in Immich">${cropImg(i, 150, 140, false)}</a>` : cropImg(i, 150, 140, false)}
+    </div>
+    <label class="selrow" title="include in the write to Immich (default off)">
+      <input type="checkbox" data-fsel="${key}" ${on ? "checked" : ""}> write to Immich</label>
+    <div class="inforow"><b>Write as:</b><span><b>${esc(writeAs)}</b>${state.finalNames[key] ? ' <span class="chip warn">retargeted</span>' : ""}</span></div>
+    <div class="inforow"><b>Source:</b><span><span class="chip ${cc}">${ct}</span>${i.written ? ' <span class="chip ok">written</span>' : ""}</span></div>
+    <div class="date-conf mono muted">${esc(i.asset_name || i.asset_id)} · ${esc(i.window)} · group ${i.cluster}</div>
+    <div class="cardbtns">
+      <button data-fassign="${key}">Write as…</button>
+    </div>
+  </div>`;
+}
+
+function wireFinalEvents() {
+  document.querySelectorAll(".personrow[data-person]").forEach(el =>
+    el.addEventListener("click", () => { state.finalPerson = el.dataset.person; render(); }));
+  document.querySelectorAll("[data-fsel]").forEach(el =>
+    el.addEventListener("change", () => {
+      const k = el.dataset.fsel;
+      if (el.checked) state.finalSelected.add(k);
+      else state.finalSelected.delete(k);
+      render();
+    }));
+  document.querySelectorAll("[data-fassign]").forEach(el =>
+    el.addEventListener("click", async () => {
+      const name = await nameModal("Write this appearance as which person?", "The write targets this person NOW (the pin also persists for the next run).");
+      if (!name) return;
+      const key = el.dataset.fassign;
+      const data = await postJson("/api/retarget", { items: [keyItem(key)], name });
+      if (data.error) { toast(`retarget failed: ${data.error}`); return; }
+      state.finalNames[key] = name;
+      toast(`“${assetLabel(key.split(":")[0])}” will be WRITTEN as “${name}” now — not just pinned`);
+      loadFinal();
+    }));
+  document.getElementById("selAll")?.addEventListener("click", () => {
+    const person = state.final.persons.find(p => p.name === state.finalPerson);
+    person?.items.forEach(i => state.finalSelected.add(akey(i)));
+    render();
+  });
+  document.getElementById("selNone")?.addEventListener("click", () => {
+    const person = state.final.persons.find(p => p.name === state.finalPerson);
+    person?.items.forEach(i => state.finalSelected.delete(akey(i)));
+    render();
+  });
+  document.getElementById("writePerson")?.addEventListener("click", () => writeSelected(state.finalPerson));
+  document.getElementById("writeAll")?.addEventListener("click", writeAllSelected);
+  document.getElementById("retargetSel")?.addEventListener("click", async () => {
+    const person = state.final.persons.find(p => p.name === state.finalPerson);
+    const items = person?.items.filter(i => state.finalSelected.has(akey(i))).map(i => ({ asset_id: i.asset_id, appearance: i.appearance })) ?? [];
+    const name = await nameModal("Write all selected as which person?", "The writes target this person NOW; the pins persist for the next run.");
+    if (!name) return;
+    const data = await postJson("/api/retarget", { items, name });
+    if (data.error) { toast(`retarget failed: ${data.error}`); return; }
+    for (const i of items) state.finalNames[`${i.asset_id}:${i.appearance}`] = name;
+    toast(`${data.count} selected will be WRITTEN as “${name}” now`);
+    loadFinal();
+  });
+}
+
+function keyItem(key) {
+  const [asset_id, appearance] = key.split(":");
+  return { asset_id, appearance: parseInt(appearance, 10) };
+}
+
+async function writeSelected(personName) {
   if (pausedByRun()) return;
+  const person = state.final?.persons.find(p => p.name === personName);
+  const writes = (person?.items ?? [])
+    .filter(i => state.finalSelected.has(akey(i)) && !i.written)
+    .map(i => ({ asset_id: i.asset_id, appearance: i.appearance, name: state.finalNames[akey(i)] ?? personName }));
+  if (!writes.length) { toast("nothing selected"); return; }
   try {
-    const res = await fetch(`/api/promote/${id}`, { method: "POST" });
-    const data = await res.json();
-    if (data.error) {
-      toast(`promote failed: ${data.error}`);
-      return;
-    }
-    toast(`wrote ${data.results.filter(r => r.status === "written").length} faces to Immich`);
-    loadDryRunBatches();
+    const data = await postJson("/api/write-faces", { writes });
+    if (data.error) { toast(`write failed: ${data.error}`); return; }
+    const failed = data.results.filter(r => r.status && r.status !== "written").length;
+    toast(`wrote ${data.written} faces to Immich as “${personName}”` + (failed ? ` — ${failed} skipped (see server log)` : ""));
+    await loadInitialState();
+    await loadFinal();
   } catch (err) {
-    toast(`promote error: ${err.message}`);
+    toast(`write failed: ${err.message}`);
   }
 }
 
-async function promoteAll() {
+async function writeAllSelected() {
   if (pausedByRun()) return;
+  const writes = (state.final?.persons ?? []).flatMap(p =>
+    p.items
+      .filter(i => state.finalSelected.has(akey(i)) && !i.written)
+      .map(i => ({ asset_id: i.asset_id, appearance: i.appearance, name: state.finalNames[akey(i)] ?? p.name }))
+  );
+  if (!writes.length) { toast("nothing selected"); return; }
   try {
-    const res = await fetch("/api/promote-all", { method: "POST" });
-    const data = await res.json();
-    if (data.error) {
-      toast(`promote-all failed: ${data.error}`);
-      return;
-    }
-    const written = data.results.reduce(
-      (n, r) => n + (r.results?.filter(x => x.status === "written").length || 0),
-      0
-    );
-    toast(`wrote ${written} faces to Immich from ${data.promoted} group(s)`);
-    loadDryRunBatches();
+    const data = await postJson("/api/write-faces", { writes });
+    if (data.error) { toast(`write failed: ${data.error}`); return; }
+    const failed = data.results.filter(r => r.status && r.status !== "written").length;
+    toast(`wrote ${data.written} faces to Immich across all selected people` + (failed ? ` — ${failed} skipped` : ""));
+    await loadInitialState();
+    await loadFinal();
   } catch (err) {
-    toast(`promote-all error: ${err.message}`);
+    toast(`write failed: ${err.message}`);
   }
 }
 
-/* ---------- Actions ---------- */
+/* ---------- cluster-level actions ---------- */
+async function confirmCluster() {
+  if (pausedByRun()) return;
+  const c = activeRow();
+  if (!c) return;
+  let name = state.assignment?.proposed_name ?? c.proposed_name;
+  if (!name) {
+    name = await nameModal("Name this cluster first", "The name becomes the proposal; the write happens in Final check.");
+    if (!name) return;
+  }
+  try {
+    const data = await postJson("/api/confirm-cluster", { window: c.window, cluster: c.cluster, name, confirmed: true });
+    if (data.error) { toast(`confirm failed: ${data.error}`); return; }
+    toast(`cluster confirmed as “${name}” — its appearances are in Final check; the write happens there`);
+    await loadInitialState();
+    const first = visibleClusters()[0];
+    if (first) selectCluster(keyOf(first));
+    else render();
+  } catch (err) {
+    toast(`confirm failed: ${err.message}`);
+  }
+}
+
+async function confirmClusterState(cluster, window, confirmed) {
+  try {
+    await postJson("/api/confirm-cluster", { window, cluster, confirmed });
+  } catch { /* reopen path: best effort */ }
+}
+
+async function dismissCluster(cluster, window, dismissed) {
+  try {
+    const data = await postJson("/api/skip", { cluster, window, dismissed });
+    if (data.error) { toast(`skip failed: ${data.error}`); return; }
+    toast(dismissed ? "cluster dismissed — it stays out of the queue" : "cluster reopened");
+    await loadInitialState();
+    render();
+  } catch (err) {
+    toast(`skip failed: ${err.message}`);
+  }
+}
+
+/* ---------- per-appearance actions (single) ---------- */
+async function ignoreAppearance(key) {
+  const item = keyItem(key);
+  const data = await postJson("/api/ignore", item);
+  if (data.error) { toast(`ignore failed: ${data.error}`); return; }
+  const card = state.evidence.find(e => akey(e) === key);
+  if (card) card.ignored = true;
+  toast(`ignored “${assetLabel(item.asset_id)}” — excluded from clustering, never labeled`);
+  renderEvidence(); renderPane();
+}
+async function unignoreAppearance(key) {
+  const item = keyItem(key);
+  const data = await postJson("/api/unignore", item);
+  if (data.error) { toast(`unignore failed: ${data.error}`); return; }
+  const card = state.evidence.find(e => akey(e) === key);
+  if (card) card.ignored = false;
+  toast("ignore removed — re-evaluated on the next batch run");
+  renderEvidence(); renderPane();
+}
+async function pinAppearance(key, name) {
+  const data = await postJson("/api/pin", { ...keyItem(key), name });
+  if (data.error) { toast(`pin failed: ${data.error}`); return; }
+  const card = state.evidence.find(e => akey(e) === key);
+  if (card) card.pin = name;
+  toast(`pinned as “${name}” — proposed as ${name} on the NEXT batch run, then written via Final check`);
+  renderEvidence(); renderPane();
+}
+async function unpinAppearance(key) {
+  const data = await postJson("/api/unpin", keyItem(key));
+  if (data.error) { toast(`unpin failed: ${data.error}`); return; }
+  const card = state.evidence.find(e => akey(e) === key);
+  if (card) card.pin = null;
+  toast("pin removed — normal anchoring applies from the next batch run on");
+  renderEvidence(); renderPane();
+}
+async function rejectAppearance(key, name) {
+  if (!name) { toast("name the cluster first — then 'not this person' means something"); return; }
+  const data = await postJson("/api/reject", { ...keyItem(key), name });
+  if (data.error) { toast(`reject failed: ${data.error}`); return; }
+  const card = state.evidence.find(e => akey(e) === key);
+  if (card) { card.status = "rejected"; card.rejected_name = name; }
+  toast(`“${assetLabel(key.split(":")[0])}” will not be proposed as “${name}”`);
+  renderEvidence(); renderPane();
+}
+async function unrejectAppearance(key, name) {
+  if (!name) { toast("the excluded name is unknown here — undo it from the cluster that excluded it"); return; }
+  const data = await postJson("/api/unreject", { ...keyItem(key), name });
+  if (data.error) { toast(`undo failed: ${data.error}`); return; }
+  const card = state.evidence.find(e => akey(e) === key);
+  if (card) { card.status = "will_write"; card.rejected_name = null; }
+  toast("exclusion removed — re-evaluated on the next batch run");
+  renderEvidence(); renderPane();
+}
+async function markWrongLabel(key, name) {
+  const data = await postJson("/api/reject", { ...keyItem(key), name });
+  if (data.error) { toast(`failed to record: ${data.error}`); return; }
+  const card = state.evidence.find(e => akey(e) === key);
+  if (card) card.immich_label = null;
+  toast(`recorded: “${name}” on this appearance is treated as wrong from the next batch run on`);
+  renderEvidence();
+}
+
+/* ---------- modal name prompt ---------- */
+function nameModal(title, hint) {
+  return new Promise(resolve => {
+    const host = document.getElementById("modalhost");
+    host.innerHTML = `<div class="modal"><div class="inner">
+      <h3>${esc(title)}</h3>
+      <div class="muted" style="margin-bottom:10px">${esc(hint ?? "")}</div>
+      <input id="nm" list="nml" placeholder="Type or pick an existing person…" style="width:100%">
+      <datalist id="nml">${state.people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
+      <div class="modal-actions">
+        <button id="nmc">Cancel</button><button id="nmo" class="primary">OK</button>
+      </div>
+    </div></div>`;
+    const inp = host.querySelector("#nm");
+    inp.focus();
+    const done = v => { host.innerHTML = ""; resolve(v); };
+    host.querySelector("#nmc").onclick = () => done(null);
+    host.querySelector("#nmo").onclick = () => done(inp.value.trim() || null);
+    inp.addEventListener("keydown", e => {
+      if (e.key === "Enter") { e.preventDefault(); done(inp.value.trim() || null); }
+    });
+  });
+}
+function namePrompt() {
+  nameModal("Name this cluster", "Existing person → attaches · new name → creates the person on write.").then(v => {
+    if (v && state.assignment) {
+      state.assignment.proposed_name = v;
+      const row = activeRow();
+      if (row) row.proposed_name = v;
+      toast(`Group named “${v}”.`);
+      render();
+    }
+  });
+}
+
+/* ---------- pipeline runs ---------- */
+async function pollJobs() {
+  let data;
+  try {
+    data = await fetchJson("/api/jobs");
+  } catch {
+    return;
+  }
+  const wasActive = state.jobActive;
+  const wasWindows = state.jobWindows;
+  const prevLastState = state.jobLast?.state ?? null;
+  const run = data.last_run || null;
+  state.jobActive = !!data.active;
+  state.jobLast = run;
+  state.jobWindows = state.jobActive ? (run?.windows_done ?? 0) : 0;
+  if (wasActive && !state.jobActive) {
+    toast(run?.state === "done" ? "Pipeline run finished — the queue is up to date." : "Pipeline run stopped.");
+    await refreshAfterRun();
+    return;
+  }
+  if (!wasActive && state.jobActive) { render(); return; }
+  if (state.jobActive && wasWindows !== state.jobWindows) {
+    const el = document.getElementById("jobProgressText");
+    if (el) {
+      const n = state.jobWindows;
+      el.textContent = `Pipeline running — ${n} ${n === 1 ? "day" : "days"} done`;
+    }
+    return;
+  }
+  if (!state.jobActive && prevLastState !== (run?.state ?? null)) render();
+}
+
+async function refreshAfterRun() {
+  try {
+    await loadInitialState();
+    if (state.view === "final") await loadFinal();
+  } catch (err) {
+    toast(`could not refresh after the run: ${err.message}`);
+  }
+}
+
+async function runNow() {
+  try {
+    const data = await postJson("/api/jobs", { trigger: "manual" });
+    if (data.error) { toast(data.error); return; }
+    toast("Pipeline started — this can take a while.");
+    await pollJobs();
+  } catch (err) {
+    toast(`could not start a run: ${err.message}`);
+  }
+}
+
+async function cancelRun() {
+  if (!window.confirm("Stop the pipeline run? Finished work is kept and the next run continues from there.")) return;
+  try {
+    const data = await postJson("/api/jobs/cancel", {});
+    if (data.error) { toast(data.error); return; }
+    toast("Stopping the pipeline run…");
+    await pollJobs();
+  } catch (err) {
+    toast(`could not stop the run: ${err.message}`);
+  }
+}
+
+/* ---------- config ---------- */
 async function saveConfig() {
   const knobs = {};
   document.querySelectorAll("#cfgPop input[data-cfg]").forEach(inp => {
     const key = inp.dataset.cfg;
-    // window_days is an integer knob; the rest are floats
     knobs[key] = key === "windowDays" ? parseInt(inp.value, 10) : parseFloat(inp.value);
   });
   try {
-    const res = await fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(knobs),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`tuning rejected: ${data.error}`);
-    } else {
+    const data = await postJson("/api/config", knobs);
+    if (data.error) toast(`tuning rejected: ${data.error}`);
+    else {
       state.configKnobs = data.knobs;
       toast("settings saved — applies on the next run");
       render();
@@ -1240,528 +1030,14 @@ async function saveConfig() {
   }
 }
 
-async function rejectAppearance(assetId, appearance, name) {
-  if (!name) {
-    toast("name the cluster first — then 'not this person' means something");
-    return;
-  }
-  try {
-    const res = await fetch("/api/reject", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset_id: assetId, appearance, name }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`reject failed: ${data.error}`);
-      return;
-    }
-    // Update local state so the card flips to 'rejected' without a reload —
-    // in the queue's evidence or on the review page.
-    const card = state.evidence.find(
-      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
-    );
-    if (card) card.status = "rejected";
-    const reviewCard = state.review?.tabs
-      .flatMap(t => [...t.writable_cards, ...t.labeled_cards, ...(t.pinned_cards || [])])
-      .find(
-        e => e.asset_id === assetId && String(e.appearance) === String(appearance)
-      );
-    if (reviewCard) reviewCard.status = "rejected";
-    toast(`“${assetLabel(assetId)}” (appearance ${appearance}) will not be proposed as “${name}”`);
-    if (state.view === "review") renderReviewBody();
-    else renderEvidence();
-  } catch (err) {
-    toast(`reject failed: ${err.message}`);
-  }
-}
-
-/* Operator assignment: pin an appearance to a person. Nothing writes to
- * Immich here — the next batch run proposes the pinned name through the
- * normal review path, so it is reviewed like every other label. */
-function assignPrompt(assetId, appearance) {
-  const host = document.getElementById("modalhost");
-  const current = state.evidence.find(
-    e => e.asset_id === assetId && String(e.appearance) === String(appearance)
-  )?.pin;
-  host.innerHTML = `<div class="modal"><div class="inner">
-    <h3>Assign to person <span class="mono muted">${esc(assetLabel(assetId))} · ${appearance}</span></h3>
-    <div class="muted" style="margin-bottom:10px">${current ? `currently pinned to “${esc(current)}”` : "The pinned name is proposed on the next batch run — reviewed like any other label before anything writes."}</div>
-    <input id="ap" list="apl" placeholder="Type or pick an existing person…" style="width:100%">
-    <datalist id="apl">${state.people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
-    <div class="modal-hint">Existing name → attaches to that person. New name → creates the person when confirmed.</div>
-    <div class="modal-actions">
-      <button id="apc">Cancel</button><button id="apo" class="primary">Assign</button>
-    </div>
-  </div></div>`;
-  const inp = host.querySelector("#ap");
-  inp.focus();
-  const submit = () => {
-    const v = inp.value.trim();
-    if (v) {
-      host.innerHTML = "";
-      pinAppearance(assetId, appearance, v);
-    }
-  };
-  host.querySelector("#apc").onclick = () => (host.innerHTML = "");
-  host.querySelector("#apo").onclick = submit;
-  inp.addEventListener("keydown", e => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      submit();
-    }
-  });
-}
-
-async function pinAppearance(assetId, appearance, name) {
-  try {
-    const res = await fetch("/api/pin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset_id: assetId, appearance, name }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`assign failed: ${data.error}`);
-      return;
-    }
-    const card = state.evidence.find(
-      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
-    );
-    if (card) card.pin = name;
-    const reviewCard = state.review?.tabs
-      .flatMap(t => t.writable_cards)
-      .find(
-        e =>
-          e.asset_id === assetId && String(e.appearance) === String(appearance)
-      );
-    if (reviewCard) reviewCard.pin = name;
-    toast(
-      `pinned → “${name}”: it will be proposed as ${name} on the next batch run, ` +
-        "then reviewed and written like any other label."
-    );
-    if (state.view === "review") renderReviewBody();
-    else renderEvidence();
-  } catch (err) {
-    toast(`assign failed: ${err.message}`);
-  }
-}
-
-async function unpinAppearance(assetId, appearance) {
-  try {
-    const res = await fetch("/api/unpin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset_id: assetId, appearance }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`unpin failed: ${data.error}`);
-      return;
-    }
-    const card = state.evidence.find(
-      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
-    );
-    if (card) card.pin = null;
-    const reviewCard = state.review?.tabs
-      .flatMap(t => t.writable_cards)
-      .find(
-        e =>
-          e.asset_id === assetId && String(e.appearance) === String(appearance)
-      );
-    if (reviewCard) reviewCard.pin = null;
-    toast("pin removed — normal anchoring applies from the next batch run on");
-    if (state.view === "review") renderReviewBody();
-    else renderEvidence();
-  } catch (err) {
-    toast(`unpin failed: ${err.message}`);
-  }
-}
-
-const STATUS_KEY_BY_ENUM = {
-  proposed: "will_write",
-  labeled: "already_labeled",
-  conflicted: "conflict_skip",
-  ask_name: "ask_for_name",
-  rejected: "rejected",
-};
-
-function assetLabel(assetId) {
-  // The asset may live in the queue's evidence or on the review page.
-  const card =
-    state.evidence.find(e => e.asset_id === assetId) ||
-    state.review?.tabs
-      .flatMap(t => [...t.writable_cards, ...t.labeled_cards, ...(t.pinned_cards || [])])
-      .find(e => e.asset_id === assetId);
-  return (card && card.asset_name) || `${assetId.slice(0, 8)}…`;
-}
-
-async function ignoreAppearance(assetId, appearance) {
-  try {
-    const res = await fetch("/api/ignore", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset_id: assetId, appearance }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`ignore failed: ${data.error}`);
-      return;
-    }
-    const card = state.evidence.find(
-      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
-    );
-    if (card) card.ignored = true;
-    toast(
-      `ignored “${assetLabel(assetId)}” (appearance ${appearance}) — excluded from clustering, never labeled`
-    );
-    renderEvidence();
-  } catch (err) {
-    toast(`ignore failed: ${err.message}`);
-  }
-}
-
-async function unignoreAppearance(assetId, appearance) {
-  try {
-    const res = await fetch("/api/unignore", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset_id: assetId, appearance }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`unignore failed: ${data.error}`);
-      return;
-    }
-    const card = state.evidence.find(
-      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
-    );
-    if (card) card.ignored = false;
-    toast("ignore removed — the appearance is re-evaluated on the next batch run");
-    renderEvidence();
-  } catch (err) {
-    toast(`unignore failed: ${err.message}`);
-  }
-}
-
-async function unrejectAppearance(assetId, appearance, name) {
-  if (!name) {
-    toast("the excluded name is unknown here — undo it from the cluster that excluded it");
-    return;
-  }
-  try {
-    const res = await fetch("/api/unreject", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset_id: assetId, appearance, name }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`undo failed: ${data.error}`);
-      return;
-    }
-    const card = state.evidence.find(
-      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
-    );
-    if (card) card.status = STATUS_KEY_BY_ENUM[data.status] ?? "will_write";
-    toast(`exclusion removed — the appearance is re-evaluated on the next batch run`);
-    renderEvidence();
-  } catch (err) {
-    toast(`undo failed: ${err.message}`);
-  }
-}
-
-async function markWrongLabel(assetId, appearance, name) {  try {
-    const res = await fetch("/api/reject", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset_id: assetId, appearance, name }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`failed to record: ${data.error}`);
-      return;
-    }
-    const card = state.evidence.find(
-      e => e.asset_id === assetId && String(e.appearance) === String(appearance)
-    );
-    if (card) card.immich_label = null;
-    toast(
-      `recorded: “${name}” on this appearance is treated as wrong from the next batch run on. ` +
-        "The label stays in Immich until you remove it there — until then, writes here will report a conflict."
-    );
-    renderEvidence();
-  } catch (err) {
-    toast(`failed to record: ${err.message}`);
-  }
-}
-
-async function dismissCluster(cluster, window, dismissed) {
-  try {
-    const res = await fetch("/api/skip", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cluster, window, dismissed }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      toast(`skip failed: ${data.error}`);
-      return;
-    }
-    const row = state.clusters.find(c => c.cluster === cluster && c.window === window);
-    if (row) row.status = dismissed ? "skipped" : "open";
-    toast(dismissed ? "cluster dismissed — it stays out of the queue" : "cluster reopened");
-    render();
-  } catch (err) {
-    toast(`skip failed: ${err.message}`);
-  }
-}
-
-function buildAssignment(clusterRow) {
-  // Evidence for this cluster may not be loaded yet (the fetch is in
-  // flight). The cluster row carries the server's own counts, so the
-  // actions pane is correct at click time and refines when evidence lands.
-  const w = state.evidence.filter(e => e.cluster === clusterRow.cluster && e.window === clusterRow.window);
-  if (!w.length && clusterRow.appearances != null) {
-    return {
-      cluster: clusterRow.cluster,
-      window: clusterRow.window,
-      cluster_status: clusterRow.status,
-      proposed_name: clusterRow.proposed_name,
-      anchor: clusterRow.anchor,
-      total_appearances: clusterRow.appearances,
-      writable: clusterRow.writable,
-      conflicted: clusterRow.conflicted,
-      no_head: clusterRow.ask_for_name,
-      labeled: clusterRow.labeled,
-      existing_people: state.people,
-    };
-  }
-  // Build assignment pane from cluster row + evidence
-  const writable = w.filter(e => e.status === "will_write").length;
-  const conflicted = w.filter(e => e.status === "conflict_skip").length;
-  const no_head = w.filter(e => e.status === "no_head_skip").length;
-  const labeled = w.filter(e => e.status === "already_labeled").length;
-  return {
-    cluster: clusterRow.cluster,
-    window: clusterRow.window,
-    cluster_status: clusterRow.status,
-    proposed_name: clusterRow.proposed_name,
-    anchor: clusterRow.anchor,
-    total_appearances: w.length,
-    writable, conflicted, no_head, labeled,
-    existing_people: state.people,
-  };
-}
-
-async function doConfirm(key) {
-  if (key === null) return;
-  if (pausedByRun()) return;
-  const c = state.clusters.find(x => keyOf(x) === key);
-  if (!c || c.status !== "open") return;
-  if (state.evidenceLoading) {
-    toast("evidence still loading — one moment");
-    return;
-  }
-
-  if (!c.proposed_name) {
-    namePrompt(key, name => {
-      c.proposed_name = name;
-      c.anchor = `named by you (${state.people.includes(name) ? "existing person" : "new person"})`;
-      doConfirm(key);
-    });
-    return;
-  }
-
-  // For now just mark as confirmed locally
-  c.status = "confirmed";
-  const w = state.evidence.filter(e => e.cluster === c.cluster && e.window === c.window);
-  const included = w.filter(e => e.status === "will_write" && e.included);
-  const st = {
-    writable: included.length,
-    conflicted: w.filter(e => e.status === "conflict_skip").length,
-    nohead: w.filter(e => e.status === "no_head_skip").length,
-  };
-  if (state.dryRun) {
-    // POST /api/confirm with dry_run: true
-    const body = {
-      cluster: c.cluster,
-      window: c.window,
-      name: c.proposed_name,
-      included: included.map(e => ({ asset_id: e.asset_id, appearance: e.appearance })),
-      dry_run: true,
-    };
-    try {
-      const res = await fetch("/api/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (data.error) {
-        toast(`dry-run failed: ${data.error}`);
-        return;
-      }
-      toast(`recorded (dry-run): ${data.name} ×${data.results.filter(r => r.status === "would_write").length} — batch ${data.batch_id}`);
-      // Refresh dry-run batch list
-      loadDryRunBatches();
-    } catch (err) {
-      toast(`dry-run error: ${err.message}`);
-    }
-  } else {
-    toast(`wrote ${st.writable} faces → ${c.proposed_name}` +
-      ((st.conflicted || 0) + (st.nohead || 0) ? ` (skipped ${(st.conflicted || 0) + (st.nohead || 0)})` : ""));
-  }
-  render();
-}
-
-function doSkip(key) {
-  if (key === null) return;
-  const c = state.clusters.find(x => keyOf(x) === key);
-  if (!c) return;
-  dismissCluster(c.cluster, c.window, true);
-}
-
-function namePrompt(key, onPick) {
-  const row = state.clusters.find(x => keyOf(x) === key);
-  const label = row ? `${row.window} / ${row.cluster}` : key;
-  const host = document.getElementById("modalhost");
-  const finish = name => {
-    host.innerHTML = "";
-    if (name && typeof onPick === "function") {
-      onPick(name);
-    } else if (name) {
-      // Default (pane "Name this cluster" button): set the name in place,
-      // so the confirm button becomes usable without another round-trip.
-      const c = state.clusters.find(x => keyOf(x) === key);
-      if (c) {
-        c.proposed_name = name;
-        c.anchor = `named by you (${state.people.includes(name) ? "existing person" : "new person"})`;
-      }
-      if (
-        state.assignment &&
-        `${state.assignment.window}:${state.assignment.cluster}` === key
-      ) {
-        state.assignment.proposed_name = name;
-      }
-      render();
-    }
-  };
-  host.innerHTML = `<div class="modal"><div class="inner">
-    <h3>Name this cluster <span class="mono muted">${esc(label)}</span></div>
-    <div class="muted" style="margin-bottom:10px">${state.assignment?.total_appearances || 0} appearances · no Immich anchor found</div>
-    <input id="np" list="pl" placeholder="Type or pick an existing person…" style="width:100%">
-    <datalist id="pl">${state.people.map(p => `<option value="${esc(p)}">`).join("")}</datalist>
-    <div class="modal-hint">Existing name → attaches to that person. New name → creates a person on write.</div>
-    <div class="modal-actions">
-      <button id="npc">Cancel</button><button id="npo" class="primary">OK</button>
-    </div>
-  </div></div>`;
-  const inp = host.querySelector("#np");
-  inp.focus();
-  const submit = () => {
-    const v = inp.value.trim();
-    if (v) finish(v);
-  };
-  host.querySelector("#npc").onclick = () => (host.innerHTML = "");
-  host.querySelector("#npo").onclick = submit;
-  inp.addEventListener("keydown", e => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      submit();
-    }
-  });
-}
-
-function statusChip(status) {
-  const map = {
-    will_write: ["ok", "will write"],
-    already_labeled: ["acc", "already labeled"],
-    conflict_skip: ["bad", "label conflict"],
-    no_head_skip: ["warn", "no face found"],
-    ask_for_name: ["", "needs a name"],
-    rejected: ["bad", "excluded"],
-  };
-  return map[status] || ["", status];
-}
-
-function cropSVG(e, w = 150, h = 170) {
-  // Deterministic placeholder based on asset_id + appearance
-  const seed = [...(e.asset_id + e.appearance)].reduce((x, ch) => x + ch.charCodeAt(0), 0);
-  const hue = seed % 360;
-  // Randomize head position slightly
-  const hx = 0.2 + (seed % 50) / 100;
-  const hy = 0.18 + (seed % 30) / 200;
-  const hr = 0.16 * (0.9 + (seed % 30) / 100);
-  const isNoHead = e.status === "no_head_skip";
-  const isConflict = e.status === "conflict_skip";
-
-  return `<svg class="crop" width="${w}" height="${h}" viewBox="0 0 100 136">
-    <rect width="100" height="136" fill="hsl(${hue},18%,20%)"/>
-    <rect width="100" height="136" fill="url(#g${hue % 4})" opacity=".5"/>
-    <defs><linearGradient id="g${hue % 4}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity=".08"/>
-      <stop offset="1" stop-color="#000" stop-opacity=".25"/></linearGradient></defs>
-    <circle cx="${hx * 100}" cy="${hy * 136}" r="${hr * 100}" fill="hsl(${hue},30%,55%)"/>
-    <rect x="${hx * 100 - hr * 130}" y="${(hy + hr) * 136 - 4}"
-      width="${hr * 260}" height="${136 - (hy + hr) * 136}"
-      rx="12" fill="hsl(${hue},25%,42%)"/>
-    ${!isNoHead ? `<rect x="${(hx - hr * 1.1) * 100}" y="${(hy - hr * 1.15) * 136}"
-      width="${hr * 2.2 * 100}" height="${hr * 2.3 * 136}"
-      fill="none" stroke="${isConflict ? "#e0a33a" : "#4f8cff"}"
-      stroke-width="2" stroke-dasharray="4 3"/>` : ''}
-    ${isConflict ? `<rect width="100" height="136" fill="rgba(224,82,82,.14)"/>
-      <text x="50" y="128" text-anchor="middle" font-size="11" fill="#e05252">conflict</text>` : ''}
-  </svg>`;
-}
-
-function renderCrops(crops, w, h) {
-  return crops.map(c => cropImg(c, w, h)).join("");
-}
-
-function cropImg(e, w, h, withContext) {
-  // Real person crop from the container; cropSVG is the fallback for refs
-  // that carry no asset (shouldn't happen, but keeps tiles from breaking).
-  // Evidence cards pass withContext: the crop grows context around the box,
-  // the target person is outlined in blue and every neighbour whose box
-  // reaches into the card is outlined in orange, so neighbours stay
-  // distinguishable.
-  if (!e.asset_id) return cropSVG(e, w, h);
-  const extra = withContext ? "&expand=0.6&outline=1&neighbours=1" : "";
-  return `<img class="crop" loading="lazy" width="${w}" height="${h}"
-    src="/api/crop?asset_id=${encodeURIComponent(e.asset_id)}&appearance=${e.appearance}${extra}"
-    alt="person crop">`;
-}
-
-function esc(s) {
-  return String(s).replace(/[&<"]/g, m => ({ "&": "&amp;", "<": "&lt;", '"': "&quot;" }[m]));
-}
-
-function toast(msg) {
-  const t = document.createElement("div");
-  t.className = "toast";
-  t.textContent = msg;
-  document.getElementById("toasthost").replaceChildren(t);
-  setTimeout(() => t.remove(), 2200);
-}
-
-/* ---------- Boot ---------- */
+/* ---------- boot ---------- */
 async function boot() {
   try {
-    state.view = localStorage.getItem("reid-view") || "queue";
     state.showLabeled = localStorage.getItem("reid-show-labeled") === "1";
-  } catch {
-    /* private mode: default view */
-  }
+  } catch { /* private mode */ }
   await loadInitialState();
-  if (state.view === "review") await loadReview();
-  await loadDryRunBatches();
-  // Poll the core's job status: progress while a run is going, a refresh
-  // when it finishes, and a banner when the core is unreachable.
+  await loadPeople();
+  setInterval(pollJobs, 3000);
   await pollJobs();
-  setInterval(pollJobs, 5000);
 }
-boot().catch(err => {
-  console.error("Failed to load UI state:", err);
-  document.getElementById("app").innerHTML = `<div style="padding:20px;color:var(--bad)">Failed to load: ${esc(err.message)}</div>`;
-});
+boot();
