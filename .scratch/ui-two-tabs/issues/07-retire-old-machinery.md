@@ -2,7 +2,7 @@
 
 Part of: [UI Two Tabs — Map](../map.md)
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 06
 
 ## Question
@@ -26,3 +26,23 @@ Execute the death list recorded in [Retire the dry-run batch / promote machinery
 
 Done when: no references to the dead endpoints/tables remain (grep clean), pre-commit
 passes, and the only write path is `POST /api/write-faces`.
+
+## Answer
+
+**Executed and committed as `53a1d69` on main (2026-11-25).** Grep-clean (the only
+remaining mention is the intentional `DROP TABLE IF EXISTS` in `_migrate`), pre-commit
+all green: ruff, ruff-format, mypy strict, pytest **150 passed** (26 dead tests removed),
+plus the new jsdom two-tab UI smoke suite 5/5 (`tests/ui/app.test.mjs`, `npm test`).
+
+Removed: endpoints `/api/write-review`, `/api/dry-run-batches`, `/api/promote/<id>`,
+`/api/promote-all`, `/api/write-pending`, `/api/confirm-all`, `/api/write-decision`, and
+the old write-path `/api/confirm`; core methods `get_write_review`, `confirm_all`,
+`promote_all`, `promote_batch`, `write_pending`, `confirm_cluster`, `get_dry_run_batches`,
+`set_write_decision`, the `_dry_run` state / `UIState.dry_run`, and the dry-run branches
+of `_write_appearance(_checked)`; store tables `dry_run_batch`, `dry_run_action`,
+`write_decision` (auto-dropped in `_migrate` per ticket 05) with their methods and the
+`DryRunAction`/`DryRunBatch` dataclasses; `DryRunActionStatus` and
+`WriteResultStatus.WOULD_WRITE` from enums; `AGENTS.md`/`CODING_STANDARDS.md` enum lists
+updated. Tests referencing the dead API deleted; `tests/ui/app.test.mjs` rewritten for
+the two-tab UI. The only write path is now `POST /api/write-faces`; development safety =
+no write-scoped API key configured.

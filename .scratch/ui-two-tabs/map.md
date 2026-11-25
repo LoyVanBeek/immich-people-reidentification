@@ -65,10 +65,16 @@ human write gate, and development safety comes from not configuring a write-scop
 
 ## Not yet specified
 
-- Ticket 07 (retire the old machinery) is the only remaining build ticket — frontier.
-  Ticket 06 (the two-tab UI + new API) is built and committed (`806879e`); where the
-  `confirmed` cluster state is stored was settled there: a `cluster_confirmation` table,
-  surviving wipes like dismissals.
+- (empty — the map is fully walked. All tickets resolved: 01–05 decisions, 06 build
+  (`806879e`), 07 retirement (`53a1d69`).)
+
+## Status
+
+**Done.** The two-tab UI (Proposals / Final check) is built, the old write/review
+machinery is retired, and the only write path is `POST /api/write-faces` from the Final
+check tab. Verified: pre-commit green on `53a1d69` (ruff, mypy strict, pytest 150 passed),
+jsdom UI smoke suite 5/5. Prototype primary source: branch `prototype/ui-two-tabs`
+(`a2978ac`, `fbb9a92`).
 
 ## Out of scope
 
