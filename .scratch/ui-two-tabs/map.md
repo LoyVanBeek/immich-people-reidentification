@@ -65,9 +65,10 @@ human write gate, and development safety comes from not configuring a write-scop
 
 ## Not yet specified
 
-- (empty — the way is clear. Build tickets 06 and 07 carry the execution; where the
-  `confirmed` cluster state is stored is a ticket-06 implementation detail, semantics
-  fixed by ticket 04.)
+- Ticket 07 (retire the old machinery) is the only remaining build ticket — frontier.
+  Ticket 06 (the two-tab UI + new API) is built and committed (`806879e`); where the
+  `confirmed` cluster state is stored was settled there: a `cluster_confirmation` table,
+  surviving wipes like dismissals.
 
 ## Out of scope
 
