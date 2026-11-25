@@ -40,6 +40,7 @@ from .store import (
     Store,
     WriteLedgerEntry,
 )
+from .version import git_commit
 
 _log = logging.getLogger("reid.core")
 
@@ -149,6 +150,7 @@ class UIState:
     config_knobs: UIConfigKnobs
     people: list[str]  # existing Immich people for autocomplete
     immich_url: str  # base URL for "open in Immich" viewer links
+    core_commit: str  # git commit of the running core, for the UI's version chip
 
 
 class CoreAPIHandler(BaseHTTPRequestHandler):
@@ -548,6 +550,7 @@ class CoreServer:
             config_knobs=config_knobs,
             people=people,
             immich_url=self.cfg.immich.base_url.rstrip("/"),
+            core_commit=git_commit(),
         )
         return asdict(state)
 

@@ -63,6 +63,8 @@ function makeDom() {
   const dom = new JSDOM(`<!doctype html><html><body>
     <div id="app"></div><div id="modalhost"></div><div id="toasthost"></div>
   </body></html>`, { url: "http://localhost/", runScripts: "outside-only" });
+  // The UI server injects this into index.html at serve time.
+  dom.window.__REID_UI__ = { immichUrl: "http://immich.test", commit: "ui1234" };
   const posts = [];
   dom.window.fetch = async (path, opts) => {
     if (opts?.method === "POST") {
@@ -84,6 +86,7 @@ function makeDom() {
         config_knobs: { window_days: 1 },
         people: ["Alice", "Bob", "Carol"],
         immich_url: "http://immich.test",
+        core_commit: "core567",
       };
     } else if (path.startsWith("/api/evidence")) {
       json = EVIDENCE_W1;
@@ -117,6 +120,10 @@ async function testBootRendersTabsAndNewCard() {
   await flush();
   const tabs = [...document.querySelectorAll(".tab")].map(t => t.textContent);
   assert.deepEqual(tabs, ["Proposals", "Final check"]);
+  // Version chip: which git commit the UI and the core are running.
+  const ver = document.querySelector(".top .ver");
+  assert.ok(ver, "version chip missing");
+  assert.match(ver.textContent, /ui ui1234 · core core567/);
   // Proposals panes: days, clusters, evidence grid, actions pane.
   assert.ok(document.querySelector(".days .dayrow.sel"), "no day selected");
   assert.ok(document.querySelector(".clusters .item.sel"), "no cluster selected");

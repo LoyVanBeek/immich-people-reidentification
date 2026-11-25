@@ -16,6 +16,7 @@ from pathlib import Path
 import httpx
 
 from .config import load_ui_config
+from .version import git_commit
 
 _log = logging.getLogger("reid.server")
 
@@ -113,16 +114,15 @@ class UIHandler(BaseHTTPRequestHandler):
         self.wfile.write(html.encode())
 
     def _ui_config_script(self) -> str:
-        """Inline window.__REID_UI__ config, or nothing when unset.
-
-        The URL comes from this server, not the core, because a core on the
-        Pi reports a localhost address that means nothing on a laptop.
-        """
-        if not self.immich_url:
-            return ""
+        """Inline window.__REID_UI__ config: the UI's own git commit and the
+        Immich URL override (the URL comes from this server, not the core,
+        because a core on the Pi reports a localhost address that means
+        nothing on a laptop)."""
         import json
 
-        payload = json.dumps({"immichUrl": self.immich_url}).replace("<", "\\u003c")
+        payload = json.dumps(
+            {"immichUrl": self.immich_url, "commit": git_commit()}
+        ).replace("<", "\\u003c")
         return f"<script>window.__REID_UI__ = {payload};</script>"
 
     def _serve_static(self, name: str) -> None:

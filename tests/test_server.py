@@ -199,6 +199,7 @@ class TestServerAPI:
         assert "stats" in state
         assert "config_knobs" in state
         assert "people" in state
+        assert state["core_commit"]  # git commit indicator
 
         # Should have 2 clusters
         assert len(state["clusters"]) == 2
@@ -1216,12 +1217,14 @@ port = {core_port}
         else:
             pytest.fail("UI did not start")
 
-        # index.html carries the version stamp (immich_url not set here).
+        # index.html carries the version stamp and the injected config with
+        # the UI's git commit (immich_url not set here, so it is null).
         with urlopen(f"http://127.0.0.1:{ui_port}/", timeout=10) as resp:
             assert resp.status == 200
             html = resp.read().decode()
             assert "__UI_VERSION__" not in html
-            assert "window.__REID_UI__" not in html
+            assert '"commit":' in html
+            assert "window.__REID_UI__" in html
 
     def test_get_config_knobs(
         self, config_with_store: Path, populated_store: Store
@@ -1337,6 +1340,7 @@ class TestServerHTTP:
             data = json.load(resp)
             assert "clusters" in data
             assert len(data["clusters"]) == 2
+            assert data["core_commit"]  # git commit indicator for the UI chip
 
     @pytest.fixture
     def ui_server_url(

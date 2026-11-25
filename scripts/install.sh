@@ -60,6 +60,11 @@ Options:
   --dry-run             Show what would be done without making changes
   -h, --help            Show this help
 
+After a git pull, re-run this script: if the local image reid-batch:local is in
+use, it is rebuilt when the git HEAD changed since the last build (marker:
+.reid-image-commit), so the new code actually runs. The ghcr :latest image is
+pulled by the units on every start.
+
 This script:
   * Writes/merges reid.toml (generates a core API key, sets core host to
     0.0.0.0 so a remote UI can reach it) — never overwrites an existing file.
@@ -175,6 +180,38 @@ detect_image() {
     else
         echo "${GHCR_IMAGE}"
     fi
+}
+
+# Rebuild reid-batch:local when the repo's git HEAD changed since the last
+# build (or the image is missing) — so `git pull && ./scripts/install.sh`
+# always deploys the new code, not the stale local image. The ghcr image is
+# unaffected: the units pull :latest on start.
+ensure_local_image() {
+    [[ "${IMAGE}" == "reid-batch:local" ]] || return 0
+    local head marker="${INSTALL_DIR}/.reid-image-commit" built=""
+    head="$(git -C "${INSTALL_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    if [[ -f "${marker}" ]]; then
+        built="$(cat "${marker}" 2>/dev/null || true)"
+    fi
+    if have_docker && docker image inspect reid-batch:local >/dev/null 2>&1 \
+        && [[ "${built}" == "${head}" ]]; then
+        log_info "Local image reid-batch:local up to date (${head})"
+        return 0
+    fi
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_info "Would build reid-batch:local at ${head} (build-arg GIT_COMMIT=${head})"
+        return 0
+    fi
+    if ! have_docker; then
+        log_warn "Docker unavailable; cannot rebuild reid-batch:local (using whatever is present)"
+        return 0
+    fi
+    log_info "Building reid-batch:local at ${head} (first build is slow, later ones are cached)..."
+    (cd "${INSTALL_DIR}" && docker buildx build \
+        --platform linux/arm64 -t reid-batch:local \
+        --build-arg GIT_COMMIT="${head}" .)
+    echo "${head}" > "${marker}"
+    log_info "Built reid-batch:local (${head})"
 }
 
 # Generate a random core API key (hex) if openssl is available, else /dev/urandom.
@@ -694,8 +731,14 @@ install_compose() {
         fi
     else
         log_info "Bringing up docker compose (profile: local)..."
+        # --build rebuilds reid-batch:local when sources changed (cached, so
+        # a no-change run is fast); without it compose reuses the old image.
+        local build_flag=""
+        if [[ "${IMAGE}" == "reid-batch:local" ]]; then
+            build_flag="--build"
+        fi
         docker compose -f "${INSTALL_DIR}/docker-compose.yml" \
-            --profile local up -d reid-core reid-ui
+            --profile local up -d ${build_flag} reid-core reid-ui
 
         if [[ "${UP}" == "true" ]]; then
             log_info "Waiting for core and UI to be ready..."
@@ -775,6 +818,11 @@ main() {
         IMAGE="${IMAGE:-${GHCR_IMAGE}}"
     fi
     log_info "Image: ${IMAGE}"
+
+    # Rebuild the local image when the git HEAD moved since the last build,
+    # so a git pull + re-run of this script deploys the new code.
+    export GIT_COMMIT="$(git -C "${INSTALL_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    ensure_local_image
 
     # reid.toml + data dir
     ensure_reid_toml

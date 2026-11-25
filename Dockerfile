@@ -18,6 +18,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
 FROM python:3.13-slim-bookworm
+# GIT_COMMIT is baked next to the installed package so the UI can show which
+# commit is running; pass --build-arg GIT_COMMIT=$(git rev-parse --short HEAD).
+ARG GIT_COMMIT=unknown
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcb1 libglib2.0-0 libsm6 libxext6 libxrender1 libgl1 \
     && rm -rf /var/lib/apt/lists/*
@@ -27,6 +30,7 @@ RUN groupadd --system reid \
     && mkdir -p /data /etc/reid \
     && chown reid:reid /data /etc/reid
 COPY --from=builder --chown=reid:reid /app/.venv /app/.venv
+RUN echo "${GIT_COMMIT}" > /app/.venv/lib/python3.13/site-packages/reid/GIT_COMMIT.txt
 USER reid
 ENV PATH="/app/.venv/bin:$PATH" \
     YOLO_CONFIG_DIR=/tmp/Ultralytics \

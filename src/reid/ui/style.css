@@ -515,6 +515,9 @@ a.asset-name:hover { color: var(--accent); border-bottom-color: var(--accent); }
 }
 .writebar .spacer { flex: 1; }
 
+/* Version chip: which git commit the UI and core are running */
+.top .ver { font-size: 11px; }
+
 /* ---------- Evidence card: photo, overlay, info rows, selection ---------- */
 .evcard.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .cropwrap {

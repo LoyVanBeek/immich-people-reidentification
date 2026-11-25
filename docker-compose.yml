@@ -29,6 +29,10 @@ services:
       context: .
       dockerfile: Dockerfile
       platforms: ["linux/arm64"]
+      args:
+        # Baked into the image; the UI shows it as its version. install.sh
+        # exports GIT_COMMIT from git rev-parse.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: reid-batch:local
     container_name: reid-core
     network_mode: host
@@ -46,6 +50,10 @@ services:
       context: .
       dockerfile: Dockerfile
       platforms: ["linux/arm64"]
+      args:
+        # Baked into the image; the UI shows it as its version. install.sh
+        # exports GIT_COMMIT from git rev-parse.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: reid-batch:local
     container_name: reid-ui
     network_mode: host
@@ -95,6 +103,10 @@ services:
       context: .
       dockerfile: Dockerfile
       platforms: ["linux/arm64"]
+      args:
+        # Baked into the image; the UI shows it as its version. install.sh
+        # exports GIT_COMMIT from git rev-parse.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: reid-batch:local
     container_name: reid-trigger
     network_mode: host
@@ -113,6 +125,10 @@ services:
       context: .
       dockerfile: Dockerfile
       platforms: ["linux/arm64"]
+      args:
+        # Baked into the image; the UI shows it as its version. install.sh
+        # exports GIT_COMMIT from git rev-parse.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: reid-batch:local
     container_name: reid-batch
     network_mode: host
@@ -130,6 +146,10 @@ services:
       context: .
       dockerfile: Dockerfile
       platforms: ["linux/arm64"]
+      args:
+        # Baked into the image; the UI shows it as its version. install.sh
+        # exports GIT_COMMIT from git rev-parse.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: reid-batch:local
     container_name: reid-wipe
     network_mode: host

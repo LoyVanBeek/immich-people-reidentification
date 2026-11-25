@@ -92,6 +92,8 @@ async function loadInitialState() {
     ...data,
     configKnobs: data.config_knobs ?? null,
     immichUrl: (window.__REID_UI__?.immichUrl ?? data.immich_url ?? "").replace(/\/$/, ""),
+    uiCommit: window.__REID_UI__?.commit ?? null,
+    coreCommit: data.core_commit ?? null,
   };
   state.activeKey = state.clusters.length ? keyOf(state.clusters[0]) : null;
   state.activeDay = state.clusters.length ? state.clusters[0].window : null;
@@ -220,6 +222,7 @@ function topbarHTML() {
     ${isP ? `<span class="chip acc">${visibleClusters().filter(c => c.status === "open").length} open</span>` : `<span class="chip acc">${(state.final?.persons ?? []).reduce((n, p) => n + p.count, 0)} appearances</span>`}
     ${lastRunChipHTML()}
     <span class="spacer"></span>
+    <span class="ver mono muted" title="running code: ui ${esc(state.uiCommit ?? "?")} · core ${esc(state.coreCommit ?? "?")}">ui ${esc(state.uiCommit ?? "?")} · core ${esc(state.coreCommit ?? "?")}</span>
     ${isP ? `
       <label title="Groups that are fully labeled or already decided have nothing pending — show them here too">
         <input type="checkbox" id="showLabeledToggle" ${state.showLabeled ? "checked" : ""}> show decided</label>
