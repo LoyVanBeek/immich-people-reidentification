@@ -178,6 +178,34 @@ async function testBulkBarCountsSelectionAndPosts() {
   assert.equal(post.body.reason, "not_a_person");
 }
 
+async function testSelectAllSelectsAllCards() {
+  const { window, document } = makeDom();
+  await flush();
+  click(window, document.querySelector('[data-bulk="selall"]'));
+  await flush();
+  const sels = [...document.querySelectorAll("[data-sel]")];
+  assert.equal(sels.length, 2, "expected 2 selection checkboxes");
+  assert.ok(sels.every(el => el.checked), "all checkboxes should be checked after select all");
+  assert.match(document.querySelector(".bulkbar b")?.textContent ?? "", /2 selected/);
+  const btn = document.getElementById("writePerson") ?? document.querySelector('[data-bulk="ignore"]');
+  assert.ok(btn, "a bulk action button should exist");
+}
+
+async function testSelectNoneClearsSelection() {
+  const { window, document } = makeDom();
+  await flush();
+  // Select all first
+  click(window, document.querySelector('[data-bulk="selall"]'));
+  await flush();
+  assert.match(document.querySelector(".bulkbar b")?.textContent ?? "", /2 selected/);
+  // Deselect all
+  click(window, document.querySelector('[data-bulk="selnone"]'));
+  await flush();
+  const sels = [...document.querySelectorAll("[data-sel]")];
+  assert.ok(sels.every(el => !el.checked), "all checkboxes should be unchecked after deselect all");
+  assert.match(document.querySelector(".bulkbar b")?.textContent ?? "", /0 selected/);
+}
+
 async function testConfirmProposalPostsConfirmCluster() {
   const { window, document, posts } = makeDom();
   await flush();
@@ -397,6 +425,8 @@ async function testMixedSelectionWritesOnlyUnwritten() {
 const tests = [
   testBootRendersTabsAndNewCard,
   testBulkBarCountsSelectionAndPosts,
+  testSelectAllSelectsAllCards,
+  testSelectNoneClearsSelection,
   testConfirmProposalPostsConfirmCluster,
   testFinalCheckTabPersonGridAndWrite,
   testCardIgnoreButtonPosts,

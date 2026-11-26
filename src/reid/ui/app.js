@@ -510,6 +510,10 @@ function paneHTML() {
     <div class="bulkbar">
       <b>${selCount} selected</b>
       <div class="bulkrow">
+        <button data-bulk="selall" ${(!state.evidence.length || state.selected.size === state.evidence.length || state.jobActive) ? "disabled" : ""}>Select all</button>
+        <button data-bulk="selnone" ${(!state.selected.size || state.jobActive) ? "disabled" : ""}>Deselect all</button>
+      </div>
+      <div class="bulkrow">
         <button data-bulk="ignore" ${!selCount || state.jobActive ? "disabled" : ""}>Ignore selected</button>
         <button data-bulk="unignore" ${!selCount || state.jobActive ? "disabled" : ""}>Undo ignore</button>
         <button data-bulk="reject" ${!selCount || state.jobActive ? "disabled" : ""}>Not this person</button>
@@ -647,6 +651,18 @@ function wirePaneEvents() {
 }
 
 async function bulkAction(action) {
+  if (action === "selall") {
+    state.evidence.forEach(e => state.selected.add(akey(e)));
+    renderEvidence();
+    renderPane();
+    return;
+  }
+  if (action === "selnone") {
+    state.selected.clear();
+    renderEvidence();
+    renderPane();
+    return;
+  }
   if (pausedByRun() || !state.selected.size) return;
   const items = [...state.selected].map(k => {
     const [asset_id, appearance] = k.split(":");
