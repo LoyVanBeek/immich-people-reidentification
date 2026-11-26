@@ -16,6 +16,7 @@ Default canonical triage label vocabulary (`needs-triage`, `needs-info`, `ready-
 ### Domain docs
 
 Single-context: root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md`.
+User UI hints/decisions: `docs/ui-learnings.md`.
 
 ---
 
