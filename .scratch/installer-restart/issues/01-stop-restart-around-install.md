@@ -13,7 +13,7 @@ restart and the old container kept serving.
 
 ## Answer
 
-Implemented in `scripts/install.sh` (committed on main):
+Implemented in `scripts/install.sh` (committed as `24cb75c` on main):
 
 - `active_services()` — detects running reid-core/reid-ui (compose names or
   systemd units) per mode; empty in dry-run.
