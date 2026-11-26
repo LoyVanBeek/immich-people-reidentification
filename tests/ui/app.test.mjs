@@ -59,22 +59,22 @@ const FINAL = {
 
 const DOMS = [];
 
-function makeDom(opts = {}) {
+function makeDom(testOpts = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>
     <div id="app"></div><div id="modalhost"></div><div id="toasthost"></div>
-  </body></html>`, { url: opts.pageUrl || "http://localhost/", runScripts: "outside-only" });
+  </body></html>`, { url: testOpts.pageUrl || "http://localhost/", runScripts: "outside-only" });
   // The UI server injects this into index.html at serve time; uiConfig: null
   // simulates no injection (the core-reported immich_url is then used).
-  if (opts.uiConfig !== null) {
-    dom.window.__REID_UI__ = { immichUrl: opts.uiImmichUrl ?? "http://immich.test", commit: "ui1234" };
+  if (testOpts.uiConfig !== null) {
+    dom.window.__REID_UI__ = { immichUrl: testOpts.uiImmichUrl ?? "http://immich.test", commit: "ui1234" };
   }
   const posts = [];
-  const stateImmichUrl = opts.immichUrl || "http://immich.test";
-  dom.window.fetch = async (path, opts) => {
-    if (opts?.method === "POST") {
-      posts.push({ path, body: JSON.parse(opts.body) });
+  const stateImmichUrl = testOpts.immichUrl || "http://immich.test";
+  dom.window.fetch = async (path, init) => {
+    if (init?.method === "POST") {
+      posts.push({ path, body: JSON.parse(init.body) });
       if (path === "/api/write-faces") {
-        const writes = JSON.parse(opts.body).writes;
+        const writes = JSON.parse(init.body).writes;
         return { ok: true, json: async () => ({ results: writes.map(w => ({ ...w, status: "written" })), written: writes.length }) };
       }
       return { ok: true, json: async () => ({ count: 1, results: [], confirmed: true, pin: "x" }) };
@@ -99,7 +99,7 @@ function makeDom(opts = {}) {
     } else if (path === "/api/jobs") {
       json = { active: false, last_run: null };
     } else if (path === "/api/final-check") {
-      json = FINAL;
+      json = testOpts.finalOverride ?? FINAL;
     } else {
       json = {};
     }
@@ -275,6 +275,99 @@ async function testNonLocalhostImmichUrlNotRewritten() {
   );
 }
 
+async function testWrittenItemCheckboxDisabled() {
+  // Already-written appearances show "written" chip and their write-to-Immich
+  // checkbox is disabled, so they can't be selected for writing again.
+  const FINAL_WITH_WRITTEN = {
+    persons: [
+      {
+        name: "Alice",
+        count: 2,
+        items: [
+          card("asset-a", 0, { source: "proposal", written: true, name: "Alice" }),
+          card("asset-b", 0, { source: "pin", written: false, name: "Alice", pin: "Alice" }),
+        ],
+      },
+    ],
+  };
+  const { window, document } = makeDom({ finalOverride: FINAL_WITH_WRITTEN });
+  await flush();
+  click(window, document.querySelector('.tab[data-view="final"]'));
+  await flush();
+  click(window, document.querySelector('.personrow[data-person="Alice"]'));
+  await flush();
+  const cbWritten = document.querySelector('[data-fsel="asset-a:0"]');
+  assert.ok(cbWritten, "written card missing");
+  assert.ok(cbWritten.disabled, "written item checkbox not disabled");
+  const cbUnwritten = document.querySelector('[data-fsel="asset-b:0"]');
+  assert.ok(cbUnwritten, "unwritten card missing");
+  assert.ok(!cbUnwritten.disabled, "unwritten item checkbox should be enabled");
+}
+
+async function testWriteButtonDisabledWhenAllSelectedAreWritten() {
+  // Selecting only written items must not enable the write button.
+  const FINAL_WITH_WRITTEN = {
+    persons: [
+      {
+        name: "Alice",
+        count: 2,
+        items: [
+          card("asset-a", 0, { source: "proposal", written: true, name: "Alice" }),
+          card("asset-b", 0, { source: "pin", written: true, name: "Alice", pin: "Alice" }),
+        ],
+      },
+    ],
+  };
+  const { window, document } = makeDom({ finalOverride: FINAL_WITH_WRITTEN });
+  await flush();
+  click(window, document.querySelector('.tab[data-view="final"]'));
+  await flush();
+  click(window, document.querySelector('.personrow[data-person="Alice"]'));
+  await flush();
+  const cb1 = document.querySelector('[data-fsel="asset-a:0"]');
+  const cb2 = document.querySelector('[data-fsel="asset-b:0"]');
+  cb1.checked = true; click(window, cb1);
+  cb2.checked = true; click(window, cb2);
+  await flush();
+  const btn = document.getElementById("writePerson");
+  assert.ok(btn.disabled, "write button should be disabled when all selected are written");
+}
+
+async function testMixedSelectionWritesOnlyUnwritten() {
+  // Selecting one written + one unwritten item posts only the unwritten one.
+  const FINAL_MIXED = {
+    persons: [
+      {
+        name: "Alice",
+        count: 2,
+        items: [
+          card("asset-a", 0, { source: "proposal", written: true, name: "Alice" }),
+          card("asset-b", 0, { source: "pin", written: false, name: "Alice", pin: "Alice" }),
+        ],
+      },
+    ],
+  };
+  const { window, document, posts } = makeDom({ finalOverride: FINAL_MIXED });
+  await flush();
+  click(window, document.querySelector('.tab[data-view="final"]'));
+  await flush();
+  click(window, document.querySelector('.personrow[data-person="Alice"]'));
+  await flush();
+  const cbUnwritten = document.querySelector('[data-fsel="asset-b:0"]');
+  cbUnwritten.checked = true; change(window, cbUnwritten);
+  await flush();
+  const btn = document.getElementById("writePerson");
+  assert.ok(btn, "writePerson button missing");
+  assert.ok(!btn.disabled, "writePerson button should be enabled");
+  click(window, btn);
+  await flush();
+  const post = posts.find(p => p.path === "/api/write-faces");
+  assert.ok(post, "no /api/write-faces POST");
+  assert.deepEqual(post.body.writes, [{ asset_id: "asset-b", appearance: 0, name: "Alice" }]);
+  const toastEls = [...document.querySelectorAll(".toast")].map(t => t.textContent);
+  assert.ok(toastEls.some(t => t.includes("wrote")), "expected a wrote toast");
+}
+
 const tests = [
   testBootRendersTabsAndNewCard,
   testBulkBarCountsSelectionAndPosts,
@@ -284,6 +377,9 @@ const tests = [
   testLocalhostUiImmichUrlRewrittenToBrowserHost,
   testCoreReportedLocalhostRewrittenWhenNoUiOverride,
   testNonLocalhostImmichUrlNotRewritten,
+  testWrittenItemCheckboxDisabled,
+  testWriteButtonDisabledWhenAllSelectedAreWritten,
+  testMixedSelectionWritesOnlyUnwritten,
 ];
 let failed = 0;
 for (const t of tests) {

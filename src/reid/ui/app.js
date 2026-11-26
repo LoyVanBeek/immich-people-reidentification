@@ -698,9 +698,9 @@ function personsHTML(persons) {
 function finalMainHTML(person) {
   if (state.final?.error) return `<div class="panerr">final check failed to load: ${esc(state.final.error)}</div>`;
   if (!person) return `<div class="empty muted">select a person</div>`;
-  const selected = person.items.filter(i => state.finalSelected.has(akey(i)));
+  const selected = person.items.filter(i => state.finalSelected.has(akey(i)) && !i.written);
   const totalSelected = (state.final?.persons ?? []).reduce(
-    (n, p) => n + p.items.filter(i => state.finalSelected.has(akey(i))).length, 0);
+    (n, p) => n + p.items.filter(i => state.finalSelected.has(akey(i)) && !i.written).length, 0);
   const srcChip = { proposal: ["acc", "ReID proposal"], pin: ["acc", "your pin"], conflict: ["bad", "conflict"], written: ["ok", "in Immich"] };
   return `
     <div class="writebar">
@@ -732,7 +732,7 @@ function finalCardHTML(i) {
       ${link ? `<a href="${link}" target="_blank" rel="noopener" title="open in Immich">${cropImg(i, 150, 140, false)}</a>` : cropImg(i, 150, 140, false)}
     </div>
     <label class="selrow" title="include in the write to Immich (default off)">
-      <input type="checkbox" data-fsel="${key}" ${on ? "checked" : ""}> write to Immich</label>
+      <input type="checkbox" data-fsel="${key}" ${on ? "checked" : ""}${i.written ? " disabled title=\"already in Immich\"" : ""}> write to Immich</label>
     <div class="inforow"><b>Write as:</b><span><b>${esc(writeAs)}</b>${state.finalNames[key] ? ' <span class="chip warn">retargeted</span>' : ""}</span></div>
     <div class="inforow"><b>Source:</b><span><span class="chip ${cc}">${ct}</span>${i.written ? ' <span class="chip ok">written</span>' : ""}</span></div>
     <div class="date-conf mono muted">${esc(i.asset_name || i.asset_id)} · ${esc(i.window)} · group ${i.cluster}</div>
@@ -795,11 +795,16 @@ function keyItem(key) {
 
 async function writeSelected(personName) {
   if (pausedByRun()) return;
-  const person = state.final?.persons.find(p => p.name === personName);
-  const writes = (person?.items ?? [])
+  const person = state.final?.persons.find(p => p.name === personName) ?? state.final?.persons[0] ?? null;
+  if (!person) return;
+  const writes = (person.items ?? [])
     .filter(i => state.finalSelected.has(akey(i)) && !i.written)
     .map(i => ({ asset_id: i.asset_id, appearance: i.appearance, name: state.finalNames[akey(i)] ?? personName }));
-  if (!writes.length) { toast("nothing selected"); return; }
+  if (!writes.length) {
+    const hasSelected = person.items.some(i => state.finalSelected.has(akey(i)));
+    toast(hasSelected ? "all selected are already written to Immich" : "nothing selected");
+    return;
+  }
   try {
     const data = await postJson("/api/write-faces", { writes });
     if (data.error) { toast(`write failed: ${data.error}`); return; }
