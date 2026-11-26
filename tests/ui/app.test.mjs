@@ -164,10 +164,18 @@ async function testBulkBarCountsSelectionAndPosts() {
   assert.match(document.querySelector(".bulkbar b")?.textContent ?? "", /2 selected/);
   click(window, document.querySelector('[data-bulk="ignore"]'));
   await flush();
+  // Handle the ignore-reason modal
+  const nm = document.querySelector("#nm");
+  if (nm) {
+    nm.value = "not a person";
+    click(window, document.querySelector("#nmo"));
+    await flush();
+  }
   const post = posts.find(p => p.path === "/api/bulk-ignore");
   assert.ok(post, "no /api/bulk-ignore POST");
   assert.equal(post.body.items.length, 2);
   assert.deepEqual(post.body.items[0], { asset_id: "asset-a", appearance: 0 });
+  assert.equal(post.body.reason, "not_a_person");
 }
 
 async function testConfirmProposalPostsConfirmCluster() {
@@ -216,11 +224,29 @@ async function testFinalCheckTabPersonGridAndWrite() {
 async function testCardIgnoreButtonPosts() {
   const { window, document, posts } = makeDom();
   await flush();
-  click(window, document.querySelector("[data-ignore]"));
+  // Click "Ignore this person" button (second [data-ignore], reason=ignore)
+  const ignoreBtn = document.querySelectorAll('[data-ignore]')[1];
+  assert.ok(ignoreBtn, "no 'Ignore this person' button");
+  click(window, ignoreBtn);
   await flush();
   const post = posts.find(p => p.path === "/api/ignore");
   assert.ok(post, "no /api/ignore POST");
   assert.equal(post.body.asset_id, "asset-a");
+  assert.equal(post.body.reason, "ignore");
+}
+
+async function testNotAPersonButtonPostsReason() {
+  const { window, document, posts } = makeDom();
+  await flush();
+  // Click "Not a person" button (reason=not_a_person)
+  const notAPersonBtn = document.querySelector('[data-reason="not_a_person"]');
+  assert.ok(notAPersonBtn, "no 'Not a person' button");
+  click(window, notAPersonBtn);
+  await flush();
+  const post = posts.find(p => p.path === "/api/ignore");
+  assert.ok(post, "no /api/ignore POST");
+  assert.ok(["asset-a", "asset-b"].includes(post.body.asset_id), "posted for one of the cards");
+  assert.equal(post.body.reason, "not_a_person");
 }
 
 async function testLocalhostUiImmichUrlRewrittenToBrowserHost() {
@@ -374,6 +400,7 @@ const tests = [
   testConfirmProposalPostsConfirmCluster,
   testFinalCheckTabPersonGridAndWrite,
   testCardIgnoreButtonPosts,
+  testNotAPersonButtonPostsReason,
   testLocalhostUiImmichUrlRewrittenToBrowserHost,
   testCoreReportedLocalhostRewrittenWhenNoUiOverride,
   testNonLocalhostImmichUrlNotRewritten,

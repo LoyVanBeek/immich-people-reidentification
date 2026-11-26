@@ -215,3 +215,42 @@ def test_ignores_round_trip_and_survive_a_wipe(store: Store) -> None:
     store.add_appearances("asset-c", [appearance_row("asset-c")])
     store.wipe()
     assert store.appearance_ignores() == {("asset-b", 3)}
+
+
+def test_ignore_reasons_are_recorded_and_read(store: Store) -> None:
+    """Ignores carry a reason: 'ignore' (detection noise) or
+    'not_a_person' (not a person)."""
+    store.ignore_appearance("asset-a", 0, reason="ignore")
+    store.ignore_appearance("asset-b", 3, reason="not_a_person")
+
+    reasons = store.appearance_ignore_reasons()
+    assert reasons[("asset-a", 0)] == "ignore"
+    assert reasons[("asset-b", 3)] == "not_a_person"
+
+    # Re-ignoring with a different reason overwrites it.
+    store.ignore_appearance("asset-a", 0, reason="not_a_person")
+    assert store.appearance_ignore_reasons()[("asset-a", 0)] == "not_a_person"
+
+    # Invalid reason defaults to 'ignore'.
+    store.ignore_appearance("asset-c", 7, reason="nonsense")
+    assert store.appearance_ignore_reasons()[("asset-c", 7)] == "ignore"
+
+    # Ignores without reasons still show up in appearance_ignores().
+    assert ("asset-a", 0) in store.appearance_ignores()
+    assert ("asset-b", 3) in store.appearance_ignores()
+    assert ("asset-c", 7) in store.appearance_ignores()
+
+
+def test_ignore_reasons_migrate_on_existing_stores(tmp_path: Path) -> None:
+    """Stores created before the reason column gets it added automatically,
+    and old rows default to 'ignore'."""
+    from reid.store import Store
+
+    path = tmp_path / "reid.sqlite3"
+    store = Store(path)
+    store.ignore_appearance("asset-a", 0)  # no reason arg -> 'ignore'
+
+    # Simulate an old store by creating the table without the reason column,
+    # then opening it fresh.
+    store2 = Store(path)
+    assert store2.appearance_ignore_reasons()[("asset-a", 0)] == "ignore"

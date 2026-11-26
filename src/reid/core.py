@@ -328,6 +328,7 @@ class CoreAPIHandler(BaseHTTPRequestHandler):
             result = self.core_server.ignore_appearance_request(  # type: ignore[union-attr]
                 str(body.get("asset_id", "")),
                 int(body.get("appearance", -1)),
+                str(body.get("reason", "ignore")).strip(),
             )
             self._send_json(result)
         elif path == "/api/unignore":
@@ -806,15 +807,23 @@ class CoreServer:
         return {"asset_id": asset_id, "appearance": appearance, "pin": None}
 
     def ignore_appearance_request(
-        self, asset_id: str, appearance: int
+        self, asset_id: str, appearance: int, reason: str = "ignore"
     ) -> dict[str, Any]:
-        """Record 'this detection is wrong — never label it'.
+        """Record 'this detection is wrong' or 'this is not a person'.
 
         The ignore survives batch runs: the appearance is excluded from
         clustering entirely. Nothing writes to Immich here.
         """
-        self.store.ignore_appearance(asset_id, appearance)
-        return {"asset_id": asset_id, "appearance": appearance, "ignored": True}
+        reason = reason.strip()
+        if reason not in ("ignore", "not_a_person"):
+            return {"error": "reason must be 'ignore' or 'not_a_person'"}
+        self.store.ignore_appearance(asset_id, appearance, reason)
+        return {
+            "asset_id": asset_id,
+            "appearance": appearance,
+            "ignored": True,
+            "reason": reason,
+        }
 
     def unignore_appearance_request(
         self, asset_id: str, appearance: int
@@ -906,9 +915,18 @@ class CoreServer:
             return {"persons": []}
         appearances_by_asset = self.store.appearances_by_asset()
         rejected = set(self.store.appearance_rejections())
+        pins = self.store.appearance_pins()
+
+        proposal_keys = {(p.asset_id, p.appearance) for p in proposals}
 
         faces_by_asset: dict[str, list[Face]] = {}
-        for asset_id in sorted({p.asset_id for p in proposals}):
+        face_asset_ids = {p.asset_id for p in proposals}
+        # Also fetch faces for pinned appearances that have no proposal row
+        # (pin-only items appear in Final check under their pinned person).
+        face_asset_ids.update(
+            aid for (aid, app_no) in pins if (aid, app_no) not in proposal_keys
+        )
+        for asset_id in sorted(face_asset_ids):
             try:
                 faces_by_asset[asset_id] = self.immich.fetch_faces(asset_id)
             except Exception as exc:  # noqa: BLE001
@@ -960,6 +978,68 @@ class CoreServer:
                 item["written"] = written
                 item["name"] = name
                 persons.setdefault(name, []).append(item)
+
+        # Pin-only appearances: pinned but have no proposal row (singletons,
+        # below-min-size clusters). They appear in Final check under their
+        # pinned person.
+        for (asset_id, appearance_no), name in sorted(pins.items()):
+            if (asset_id, appearance_no) in proposal_keys:
+                continue  # already handled via its cluster's proposals
+            appearance = next(
+                (
+                    a
+                    for a in appearances_by_asset.get(asset_id, [])
+                    if a.appearance == appearance_no
+                ),
+                None,
+            )
+            if appearance is None:
+                continue
+            person_id = name_to_id.get(name)
+            written = person_id is not None and self.store.has_write_ledger_entry(
+                asset_id, person_id
+            )
+            iso = (
+                isoformat_z(appearance.captured_at)
+                if appearance.captured_at
+                else "unknown"
+            )
+            item = {
+                "asset_id": asset_id,
+                "appearance": appearance_no,
+                "window": iso,
+                "cluster": -1,
+                "date": iso,
+                "confidence": appearance.confidence,
+                "immich_label": None,
+                "status": "will_write",
+                "included": True,
+                "pixel_source": appearance.pixel_source,
+                "pin": name,
+                "conflict_names": None,
+                "asset_name": self._asset_name(asset_id),
+                "ignored": False,
+                "proposed_name": name,
+                "siblings": [
+                    {
+                        "appearance": appearance_no,
+                        "box": [
+                            appearance.box_left,
+                            appearance.box_top,
+                            appearance.box_right,
+                            appearance.box_bottom,
+                        ],
+                        "confidence": appearance.confidence,
+                    }
+                ],
+                "sibling_count": 0,
+                "rejected_name": None,
+                "dismissed": False,
+            }
+            item["source"] = "pin"
+            item["written"] = written
+            item["name"] = name
+            persons.setdefault(name, []).append(item)
 
         return {
             "persons": [
@@ -1135,9 +1215,12 @@ class CoreServer:
         items, err = self._parse_bulk_items(body)
         if err:
             return err
+        reason = str(body.get("reason", "ignore")).strip()
+        if ignored and reason not in ("ignore", "not_a_person"):
+            return {"error": "reason must be 'ignore' or 'not_a_person'"}
         for asset_id, appearance_no in items:
             if ignored:
-                self.store.ignore_appearance(asset_id, appearance_no)
+                self.store.ignore_appearance(asset_id, appearance_no, reason)
             else:
                 self.store.unignore_appearance(asset_id, appearance_no)
         return {

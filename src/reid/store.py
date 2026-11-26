@@ -225,6 +225,17 @@ class Store:
             self._conn.execute(
                 "ALTER TABLE appearance ADD COLUMN captured_at TEXT NOT NULL DEFAULT ''"
             )
+        # Operator ignore reasons: distinguishes "this detection is wrong"
+        # from "this is not a person". Existing stores get the default
+        # reason ('ignore') for rows created before the column existed.
+        ignore_columns = {
+            str(row[1])
+            for row in self._conn.execute("PRAGMA table_info(appearance_ignore)")
+        }
+        if "reason" not in ignore_columns:
+            self._conn.execute(
+                "ALTER TABLE appearance_ignore ADD COLUMN reason TEXT NOT NULL DEFAULT 'ignore'"
+            )
         # Retired tables (dry-run batches, write decisions) are dropped, not
         # migrated: their contents were ephemeral approvals, and the proposals
         # they were built from survive in the proposal table.
@@ -538,21 +549,28 @@ class Store:
         ).fetchall()
         return {(str(r[0]), int(r[1])): str(r[2]) for r in rows}
 
-    def ignore_appearance(self, asset_id: str, appearance: int) -> None:
-        """Record 'this detection is wrong — never label it'.
+    def ignore_appearance(
+        self, asset_id: str, appearance: int, reason: str = "ignore"
+    ) -> None:
+        """Record 'this detection is wrong' or 'this is not a person'.
 
         Survives batch runs and wipes: the appearance is excluded from
         clustering entirely (never proposed, never ask-for-name) and
-        confirmations skip it.
+        confirmations skip it. `reason` is "ignore" (detection noise) or
+        "not_a_person" (not a person at all).
         """
+        reason = reason.strip()
+        if reason not in ("ignore", "not_a_person"):
+            reason = "ignore"
         with self._conn:
             self._conn.execute(
                 """
-                INSERT INTO appearance_ignore (asset_id, appearance)
-                VALUES (?, ?)
-                ON CONFLICT(asset_id, appearance) DO NOTHING
+                INSERT INTO appearance_ignore (asset_id, appearance, reason)
+                VALUES (?, ?, ?)
+                ON CONFLICT(asset_id, appearance) DO UPDATE
+                SET reason = excluded.reason
                 """,
-                (asset_id, appearance),
+                (asset_id, appearance, reason),
             )
 
     def unignore_appearance(self, asset_id: str, appearance: int) -> None:
@@ -564,11 +582,18 @@ class Store:
             )
 
     def appearance_ignores(self) -> set[tuple[str, int]]:
-        """All ignored (asset_id, appearance) pairs."""
+        """All ignored (asset_id, appearance) pairs (batch clustering reads this)."""
         rows = self._conn.execute(
             "SELECT asset_id, appearance FROM appearance_ignore"
         ).fetchall()
         return {(str(r[0]), int(r[1])) for r in rows}
+
+    def appearance_ignore_reasons(self) -> dict[tuple[str, int], str]:
+        """All ignored (asset_id, appearance) pairs mapped to their reason."""
+        rows = self._conn.execute(
+            "SELECT asset_id, appearance, reason FROM appearance_ignore"
+        ).fetchall()
+        return {(str(r[0]), int(r[1])): str(r[2]) for r in rows}
 
     # -- pipeline runs -------------------------------------------------------
 

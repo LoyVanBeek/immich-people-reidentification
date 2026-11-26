@@ -425,7 +425,7 @@ function cardHTML(e) {
     <div class="cardbtns">
       ${e.ignored
         ? `<button data-unignore="${akey(e)}">Undo ignore</button>`
-        : `<button data-ignore="${akey(e)}" title="Not a person, or not interested — excluded from clustering, never labeled">Ignore</button>`}
+        : `<button data-ignore="${akey(e)}" data-reason="not_a_person" title="Not a person — excluded from clustering, never labeled">Not a person</button><button data-ignore="${akey(e)}" data-reason="ignore" title="Ignore this person — excluded from clustering, never labeled">Ignore this person</button>`}
       ${e.pin
         ? `<button data-unpin="${akey(e)}">Unpin</button><button data-assign="${akey(e)}">Reassign person…</button>`
         : `<button data-assign="${akey(e)}" title="Pin as a person — proposed as that person on the next batch run">Pin as… for next run</button>`}
@@ -600,7 +600,7 @@ function wireCardEvents() {
     })
   );
   document.querySelectorAll("[data-ignore]").forEach(el =>
-    el.addEventListener("click", () => ignoreAppearance(el.dataset.ignore)));
+    el.addEventListener("click", () => ignoreAppearance(el.dataset.ignore, el.dataset.reason)));
   document.querySelectorAll("[data-unignore]").forEach(el =>
     el.addEventListener("click", () => unignoreAppearance(el.dataset.unignore)));
   document.querySelectorAll("[data-assign]").forEach(el =>
@@ -653,6 +653,7 @@ async function bulkAction(action) {
     return { asset_id, appearance: parseInt(appearance, 10) };
   });
   let name = null;
+  let reason = "ignore";
   if (action === "pin") {
     name = await nameModal("Pin selected as which person?", "Applies on the next pipeline run.");
     if (!name) return;
@@ -662,11 +663,20 @@ async function bulkAction(action) {
     name = row?.proposed_name;
     if (!name) { toast("name the cluster first — then 'not this person' means something"); return; }
   }
+  if (action === "ignore") {
+    reason = await nameModal(
+      "Ignore as what?",
+      "Not a person → excluded as a false detection · Ignore this person → excluded but kept as a person record."
+    );
+    if (!reason) return;
+    if (reason.toLowerCase().includes("not a person")) reason = "not_a_person";
+    else reason = "ignore";
+  }
   const path = { ignore: "/api/bulk-ignore", unignore: "/api/bulk-unignore", pin: "/api/bulk-pin", reject: "/api/bulk-reject" }[action];
   try {
-    const data = await postJson(path, { items, ...(name ? { name } : {}) });
+    const data = await postJson(path, { items, ...(name ? { name } : {}), ...(action === "ignore" ? { reason } : {}) });
     if (data.error) { toast(`bulk ${action} failed: ${data.error}`); return; }
-    toast(`bulk ${action}: ${data.count} appearance(s) — ${action === "pin" ? `pinned as “${name}” for the next run` : action === "reject" ? `marked not “${name}”` : action}`);
+    toast(`bulk ${action}: ${data.count} appearance(s) — ${action === "pin" ? `pinned as “${name}” for the next run` : action === "reject" ? `marked not “${name}”` : action === "ignore" ? `ignored as ${reason === "not_a_person" ? "not a person" : "ignore"}` : action}`);
     state.selected.clear();
     await loadInitialState();
     const row = activeRow();
@@ -879,13 +889,25 @@ async function dismissCluster(cluster, window, dismissed) {
 }
 
 /* ---------- per-appearance actions (single) ---------- */
-async function ignoreAppearance(key) {
+async function assignPrompt(key) {
+  const name = await nameModal(
+    "Pin as which person?",
+    "This appearance will be proposed as that person on the next batch run, and appears in Final check now."
+  );
+  if (!name) return;
+  await pinAppearance(key, name);
+}
+async function ignoreAppearance(key, reason = "ignore") {
   const item = keyItem(key);
-  const data = await postJson("/api/ignore", item);
+  const data = await postJson("/api/ignore", { ...item, reason });
   if (data.error) { toast(`ignore failed: ${data.error}`); return; }
   const card = state.evidence.find(e => akey(e) === key);
   if (card) card.ignored = true;
-  toast(`ignored “${assetLabel(item.asset_id)}” — excluded from clustering, never labeled`);
+  toast(
+    reason === "not_a_person"
+      ? `marked “${assetLabel(item.asset_id)}” as not a person — excluded from clustering`
+      : `ignored “${assetLabel(item.asset_id)}” — excluded from clustering, never labeled`
+  );
   renderEvidence(); renderPane();
 }
 async function unignoreAppearance(key) {
@@ -904,6 +926,7 @@ async function pinAppearance(key, name) {
   if (card) card.pin = name;
   toast(`pinned as “${name}” — proposed as ${name} on the NEXT batch run, then written via Final check`);
   renderEvidence(); renderPane();
+  if (state.view === "final") await loadFinal();
 }
 async function unpinAppearance(key) {
   const data = await postJson("/api/unpin", keyItem(key));
