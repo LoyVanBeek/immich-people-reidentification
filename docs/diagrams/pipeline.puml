@@ -1,0 +1,64 @@
+@startuml
+' One pipeline run + the human write path, as swimlanes.
+' GitHub does not render PlantUML inline — open this file in PlantUML/Kroki.
+
+title Pipeline run: new Immich photo -> proposals -> confirmed write
+
+|Immich|
+|reid-trigger / reid-ui|
+|reid-core (job manager)|
+|reid-batch subprocess|
+|local store|
+|operator (review UI)|
+
+|reid-trigger / reid-ui|
+:nightly systemd timer\nor "Run now" in the UI;
+|reid-core (job manager)|
+:POST /api/jobs;
+:start run (run_status = running,\nREID_RUN_ID set, one run at a time);
+:spawn "python -m reid.cli --config reid.toml";
+|reid-batch subprocess|
+:read checkpoint;
+|local store|
+|reid-batch subprocess|
+:fetch the new-asset feed;
+|Immich|
+:POST /api/search/metadata\n(createdAfter = checkpoint, type = IMAGE);
+|reid-batch subprocess|
+:for each new asset;
+|Immich|
+:GET /api/assets/{id}/thumbnail?size=preview\n(or /original when pixel_source = original);
+|reid-batch subprocess|
+:YOLO11n person detection;
+:quality gates, in order —\nconfidence floor, then min box height\n(edge-clipped boxes are kept);
+:OSNet-AIN x1.0 embed of the full-person crop\n(512-dim, L2-normalized float32);
+|local store|
+:replace appearances per asset;
+|reid-batch subprocess|
+:cluster + anchor over ALL stored appearances;
+:exclude operator-ignored appearances\nand appearances with no usable capture time;
+:tombstone detection — ledger pairs no longer\nlabeled in Immich become tombstones;
+|Immich|
+:GET /api/faces?id=... for each appearance-bearing asset;
+|reid-batch subprocess|
+:partition capture days (EXIF, local tz,\nfallback upload time) into timespan windows;
+:per window — cosine distance matrix,\naverage-linkage clustering cut at distance_threshold;
+:anchor each cluster — a face claims an appearance at\nface_overlap containment (best match wins),\nunanimous name = proposed, 2+ names = conflicted,\nnone + size >= min_cluster_size = ask_for_name,\npins override, operator rejections drop proposals;
+|local store|
+:replace proposals wholesale,\nupdate run_status.windows_done per window;
+:advance checkpoint to newest createdAt\n(only after the whole run succeeds);
+|reid-core (job manager)|
+:run_status = done / failed / cancelled\n(confirmations and writes refused while running);
+|operator (review UI)|
+:review queue — Proposals and Final check tabs;
+:confirm / dismiss cluster, reject appearance-name pair,\npin appearance, ignore detection\n(persist as review decisions — no Immich writes here);
+|reid-core (job manager)|
+:POST /api/write-faces\n(needs idle core + write-scoped API key);
+:per item — skip if ignored or rejected,\nresolve person by name (find or create),\nresolve head box (Immich unassigned face contained\nin the person box, else SCRFD-500M fallback on the crop),\nchecks in order — write ledger, tombstone,\nconflict / already labeled, no head found;
+|Immich|
+:POST /api/faces (assetId, personId, head box);
+|local store|
+:journal write_ledger entry -> "written";
+|reid-batch subprocess|
+:next run — labels the user removed in Immich\nbecome tombstones and are never re-proposed;
+@enduml

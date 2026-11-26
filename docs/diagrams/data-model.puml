@@ -1,0 +1,128 @@
+@startuml
+' ER diagram of the local store (src/reid/store.py).
+' GitHub does not render PlantUML inline — open this file in PlantUML/Kroki.
+' Colors: blue = pipeline state (erased by reid-wipe),
+'         green = review decisions (survive runs AND wipes),
+'         yellow = ops / UI state.
+
+title Local store (reid.sqlite3) — entity-relationship diagram
+
+hide circle
+skinparam linetype ortho
+skinparam entity {
+  BackgroundColor<<pipeline>> #E8F0FE
+  BackgroundColor<<decision>> #E6F4EA
+  BackgroundColor<<ops>> #FEF7E0
+}
+
+entity "checkpoint" as checkpoint <<pipeline>> {
+  * feed : TEXT <<PK>>
+  --
+  * value : TEXT
+}
+
+entity "appearance" as appearance <<pipeline>> {
+  * asset_id : TEXT <<PK>>
+  * appearance : INTEGER <<PK>>
+  --
+  * embedding : BLOB
+  * confidence : REAL
+  * box_left : REAL
+  * box_top : REAL
+  * box_right : REAL
+  * box_bottom : REAL
+  * pixel_source : TEXT
+  captured_at : TEXT
+}
+
+entity "proposal" as proposal <<pipeline>> {
+  * asset_id : TEXT <<PK,FK>>
+  * appearance : INTEGER <<PK,FK>>
+  --
+  window : TEXT
+  cluster : INTEGER
+  * status : TEXT
+  proposed_name : TEXT
+}
+
+entity "write_ledger" as ledger <<pipeline>> {
+  * asset_id : TEXT <<PK>>
+  * person_id : TEXT <<PK>>
+  --
+  cluster : INTEGER
+  window : TEXT
+  * timestamp : TEXT
+}
+
+entity "tombstone" as tombstone <<pipeline>> {
+  * asset_id : TEXT <<PK>>
+  * person_id : TEXT <<PK>>
+}
+
+entity "appearance_rejection" as rejection <<decision>> {
+  * asset_id : TEXT <<PK>>
+  * appearance : INTEGER <<PK>>
+  * proposed_name : TEXT <<PK>>
+}
+
+entity "appearance_pin" as pin <<decision>> {
+  * asset_id : TEXT <<PK>>
+  * appearance : INTEGER <<PK>>
+  --
+  * person_name : TEXT
+}
+
+entity "appearance_ignore" as ignore <<decision>> {
+  * asset_id : TEXT <<PK>>
+  * appearance : INTEGER <<PK>>
+  --
+  * reason : TEXT
+}
+
+entity "cluster_dismissal" as dismissal <<decision>> {
+  * window : TEXT <<PK>>
+  * cluster : INTEGER <<PK>>
+}
+
+entity "cluster_confirmation" as confirmation <<decision>> {
+  * window : TEXT <<PK>>
+  * cluster : INTEGER <<PK>>
+}
+
+entity "run_status" as run <<ops>> {
+  * id : TEXT <<PK>>
+  --
+  * state : TEXT
+  * trigger : TEXT
+  pid : INTEGER
+  * started_at : TEXT
+  finished_at : TEXT
+  * windows_done : INTEGER
+  error : TEXT
+}
+
+entity "tuning" as tuning <<ops>> {
+  * key : TEXT <<PK>>
+  --
+  * value : TEXT
+}
+
+appearance ||--o{ proposal : "(asset_id, appearance)"
+appearance ||--|| pin
+appearance ||--|| ignore
+appearance ||--o{ rejection
+proposal }o--|| dismissal : "(window, cluster)"
+proposal }o--|| confirmation : "(window, cluster)"
+ledger ||--o{ tombstone : "(asset_id, person_id)"
+
+note right of checkpoint : newest asset createdAt of the last\nfully completed run, sent back\nverbatim as createdAfter
+note right of appearance : 512 float32, L2-normalized\nreplaced per asset (idempotent)
+note right of proposal : replaced wholesale every run\n(clusters rebuilt from scratch)
+note bottom of rejection : review decisions survive runs AND reid-wipe
+
+legend right
+  <b>Blue</b> — pipeline state, erased by reid-wipe
+  <b>Green</b> — review decisions, survive runs and wipes
+  <b>Yellow</b> — ops / UI state (run_status, tuning)
+endlegend
+@enduml
