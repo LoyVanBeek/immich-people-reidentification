@@ -504,6 +504,34 @@ async function testFinalCheckImagesGetLoadedClass() {
   assert.ok(imgs.every(img => img.classList.contains("loaded")), "crop images must get .loaded after load");
 }
 
+async function testFinalCheckCardHasOutlineCropAndFullPhotoToggle() {
+  // Final check cards match the Proposals card: context crop with outlines
+  // and neighbours, sibling badge, and a full-photo expand toggle.
+  const { window, document } = makeDom();
+  await flush();
+  click(window, document.querySelector('.tab[data-view="final"]'));
+  await flush();
+  const card = document.querySelector(".finalmain .evcard");
+  assert.ok(card, "no final-check card");
+  const img = card.querySelector("img.crop");
+  assert.ok(img, "no crop image");
+  assert.ok(img.src.includes("outline=1") && img.src.includes("neighbours=1") && img.src.includes("expand=0.6"),
+    "crop should include expand/outline/neighbours like the Proposals card, got: " + img.src);
+  assert.match(card.textContent, /1 other in photo/, "sibling badge missing");
+  const expandBtn = card.querySelector("[data-expand]");
+  assert.ok(expandBtn, "full photo button missing in Final check");
+  click(window, expandBtn);
+  await flush();
+  const overlay = document.querySelector(".finalmain svg.overlay");
+  assert.ok(overlay, "full-photo overlay missing after expand");
+  assert.ok(overlay.querySelectorAll("rect.pbox").length >= 2, "sibling boxes not drawn");
+  assert.equal(overlay.querySelectorAll("rect.pbox.self").length, 1, "self not highlighted");
+  // Toggle back to the crop.
+  click(window, document.querySelector(".finalmain [data-expand]"));
+  await flush();
+  assert.ok(document.querySelector(".finalmain img.crop"), "crop should be back after collapsing");
+}
+
 const tests = [
   testBootRendersTabsAndNewCard,
   testBulkBarCountsSelectionAndPosts,
@@ -524,6 +552,7 @@ const tests = [
   testSemanticsLabelsPerTab,
   testConfirmWithSelectionSendsItemsNoModal,
   testFinalCheckImagesGetLoadedClass,
+  testFinalCheckCardHasOutlineCropAndFullPhotoToggle,
 ];
 let failed = 0;
 for (const t of tests) {

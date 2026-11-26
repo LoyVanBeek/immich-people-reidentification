@@ -761,13 +761,18 @@ function finalCardHTML(i) {
   const writeAs = state.finalNames[key] ?? i.name;
   return `
   <div class="evcard ${on ? "selected" : ""}" data-key="${key}">
+    ${state.expanded === key ? fullPhotoHTML(i) : `
     <div class="cropwrap">
-      ${link ? `<a href="${link}" target="_blank" rel="noopener" title="open in Immich">${cropImg(i, 150, 140, false)}</a>` : cropImg(i, 150, 140, false)}
-    </div>
+      ${link ? `<a href="${link}" target="_blank" rel="noopener" title="open in Immich">${cropImg(i, 150, 170, true)}</a>` : cropImg(i, 150, 170, true)}
+      <button class="photobtn" data-expand="${key}" title="show the whole photo with everyone in it boxed">full photo</button>
+    </div>`}
     <label class="selrow" title="tick to label this photo in Immich when you write (off by default)">
       <input type="checkbox" data-fsel="${key}" ${on ? "checked" : ""}${i.written ? " disabled title=\"already in Immich\"" : ""}> write to Immich</label>
     <div class="inforow"><b>Write as:</b><span><b>${esc(writeAs)}</b>${state.finalNames[key] ? ' <span class="chip warn">changed</span>' : ""}</span></div>
     <div class="inforow"><b>Source:</b><span><span class="chip ${cc}">${ct}</span>${i.written ? ' <span class="chip ok">written</span>' : ""}</span></div>
+    <div class="chips">
+      ${i.sibling_count ? `<span class="chip" title="more people in this photo — expand to see them boxed">${i.sibling_count} other${i.sibling_count === 1 ? "" : "s"} in photo</span>` : ""}
+    </div>
     <div class="date-conf mono muted">${esc(i.asset_name || i.asset_id)} · ${esc(i.window)} · group ${i.cluster}</div>
     <div class="cardbtns">
       <button data-fassign="${key}">Write as…</button>
@@ -778,6 +783,13 @@ function finalCardHTML(i) {
 function wireFinalEvents() {
   document.querySelectorAll(".personrow[data-person]").forEach(el =>
     el.addEventListener("click", () => { state.finalPerson = el.dataset.person; render(); }));
+  document.querySelectorAll("[data-expand]").forEach(el =>
+    el.addEventListener("click", () => {
+      const k = el.dataset.expand;
+      state.expanded = state.expanded === k ? null : k;
+      render();
+    })
+  );
   document.querySelectorAll("[data-fsel]").forEach(el =>
     el.addEventListener("change", () => {
       const k = el.dataset.fsel;
