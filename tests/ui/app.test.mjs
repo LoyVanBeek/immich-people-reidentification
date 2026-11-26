@@ -82,7 +82,7 @@ function makeDom(testOpts = {}) {
     let json;
     if (path === "/api/state") {
       json = {
-        clusters: CLUSTERS,
+        clusters: testOpts.clusters ?? CLUSTERS,
         active_cluster: 1,
         evidence: EVIDENCE_W1,
         assignment: { cluster: 1, window: W1, proposed_name: "Alice", anchor: "Immich label: Alice", total_appearances: 2, writable: 2, conflicted: 0, labeled: 0, existing_people: ["Alice", "Bob", "Carol"] },
@@ -246,7 +246,7 @@ async function testFinalCheckTabPersonGridAndWrite() {
   await flush();
   cards = [...document.querySelectorAll(".evcard")];
   assert.equal(cards.length, 1);
-  assert.match(cards[0].textContent, /conflict/);
+  assert.match(cards[0].textContent, /labels disagree/);
 }
 
 async function testCardIgnoreButtonPosts() {
@@ -419,7 +419,53 @@ async function testMixedSelectionWritesOnlyUnwritten() {
   assert.ok(post, "no /api/write-faces POST");
   assert.deepEqual(post.body.writes, [{ asset_id: "asset-b", appearance: 0, name: "Alice" }]);
   const toastEls = [...document.querySelectorAll(".toast")].map(t => t.textContent);
-  assert.ok(toastEls.some(t => t.includes("wrote")), "expected a wrote toast");
+  assert.ok(toastEls.some(t => t.includes("labeled")), "expected a labeled toast");
+}
+
+async function testBothTabsAlwaysRendered() {
+  // Learning: the 2nd tab (Final check) is always rendered, even when empty.
+  const { window, document } = makeDom({ finalOverride: { persons: [] } });
+  await flush();
+  const tabs = [...document.querySelectorAll(".tab")].map(t => t.textContent);
+  assert.deepEqual(tabs, ["Proposals", "Final check"]);
+  click(window, document.querySelector('.tab[data-view="final"]'));
+  await flush();
+  // Final check renders its empty state, not a missing tab.
+  assert.match(document.body.textContent, /nothing to check yet/);
+}
+
+async function testFullyLabeledHiddenBehindToggle() {
+  // Learning: fully-labeled groups are hidden from the queue by default,
+  // behind the "show already labeled" toggle.
+  const clusters = [
+    ...CLUSTERS,
+    { cluster: 7, window: W1, proposed_name: "Carol", anchor: "Immich label: Carol", confidence: 0.9, appearances: 2, writable: 0, conflicted: 0, ask_for_name: 0, labeled: 2, status: "open", crops: [], fully_labeled: true },
+  ];
+  const { window, document } = makeDom({ clusters });
+  await flush();
+  const keys = [...document.querySelectorAll(".clusters .item")].map(el => el.dataset.key);
+  assert.ok(!keys.some(k => k.endsWith(":7")), "fully-labeled group visible by default");
+  const toggle = document.getElementById("showLabeledToggle");
+  assert.ok(toggle, "show-already-labeled toggle missing");
+  assert.match(toggle.parentElement.textContent, /show already labeled/);
+  toggle.checked = true; change(window, toggle);
+  await flush();
+  const keysAfter = [...document.querySelectorAll(".clusters .item")].map(el => el.dataset.key);
+  assert.ok(keysAfter.some(k => k.endsWith(":7")), "fully-labeled group not shown after toggle");
+}
+
+async function testSemanticsLabelsPerTab() {
+  // Learning: labels state semantics — Proposals pins for next run,
+  // Final check writes now.
+  const { window, document } = makeDom();
+  await flush();
+  assert.ok(document.querySelector('[data-assign]'), "Proposals should have a Pin as… button");
+  assert.match(document.querySelector('[data-assign]').textContent, /Pin as… for next run/);
+  click(window, document.querySelector('.tab[data-view="final"]'));
+  await flush();
+  assert.ok(document.getElementById("writePerson"), "Final check should have a Write button");
+  assert.match(document.getElementById("writePerson").textContent, /Write \d+ selected as/);
+  assert.ok(document.querySelector('[data-fassign]'), "Final check cards should have Write as…");
 }
 
 const tests = [
@@ -437,6 +483,9 @@ const tests = [
   testWrittenItemCheckboxDisabled,
   testWriteButtonDisabledWhenAllSelectedAreWritten,
   testMixedSelectionWritesOnlyUnwritten,
+  testBothTabsAlwaysRendered,
+  testFullyLabeledHiddenBehindToggle,
+  testSemanticsLabelsPerTab,
 ];
 let failed = 0;
 for (const t of tests) {

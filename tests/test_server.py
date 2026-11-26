@@ -316,6 +316,42 @@ class TestServerAPI:
         assert len(evidence) == 1
         assert evidence[0]["status"] == "ask_for_name"
 
+    def test_pinned_elsewhere_leaves_the_evidence_view(
+        self, config_with_store: Path, populated_store: Store
+    ) -> None:
+        """A proposal pinned to another person leaves its cluster's evidence
+        view immediately (presentation only; the store row is unchanged)."""
+        cfg = load_config(config_with_store)
+        server = CoreServer(cfg)
+
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+        assert len(evidence) == 2
+
+        # Pin one of cluster 0's appearances to a different person.
+        server.store.set_pin("asset1", 0, "Bob")
+
+        evidence = server.get_evidence({"cluster": ["0"], "window": ["2026-11-10"]})
+        assert len(evidence) == 1
+        assert evidence[0]["appearance"] == 1  # only the unpinned one remains
+
+        # The proposal row itself is untouched (store unchanged until next run).
+        props = [
+            p
+            for p in server.store.proposals()
+            if p.asset_id == "asset1" and p.appearance == 0
+        ]
+        assert len(props) == 1
+        assert props[0].cluster == 0
+
+        # Final check still sees the pinned appearance under its pinned person.
+        final = server.get_final_check()
+        bob_items = [
+            i for p in final["persons"] if p["name"] == "Bob" for i in p["items"]
+        ]
+        assert any(
+            i["asset_id"] == "asset1" and i["appearance"] == 0 for i in bob_items
+        )
+
     def test_get_people(self, config_with_store: Path, populated_store: Store) -> None:
         cfg = load_config(config_with_store)
         server = CoreServer(cfg)

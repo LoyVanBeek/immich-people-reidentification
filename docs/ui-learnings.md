@@ -1,5 +1,9 @@
 # UI learnings — hints and decisions from the user
 
+Status: applied/verified on 2026-11-26 against the two-tab UI (see commit applying the
+plain-language copy sweep, "show already labeled" toggle label, semantics labels, and
+tests for pin-divergent evidence exclusion + always-rendered tabs).
+
 Every UI-related hint/decision the user gave, in the order they were settled.
 Sources: conversation history, `.scratch/person-reid-v1/issues/06` (prototype verdict),
 `.scratch/ui-two-tabs/issues/01` (two-tab grilling session, 2026-11-25), and post-redesign
