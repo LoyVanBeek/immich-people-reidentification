@@ -403,6 +403,47 @@ class TestConfirmCluster:
         )
         assert store.confirmed_clusters() == set()
 
+    def test_confirm_with_items_pins_only_selected_and_keeps_cluster_open(
+        self, env: tuple[CoreServer, Store]
+    ) -> None:
+        """Confirm proposal with a selection = confirm the selected photos'
+        current verdict: only those are pinned (→ Final check), the cluster
+        itself stays open for the rest."""
+        server, store = env
+        result = server.set_cluster_confirmed(
+            {
+                "window": WINDOW,
+                "cluster": 0,
+                "name": "Alice",
+                "confirmed": True,
+                "items": [{"asset_id": A1, "appearance": 0}],
+            }
+        )
+        assert result["confirmed"] is False  # cluster not marked confirmed
+        assert result["pinned"] == 1
+        assert (WINDOW, 0) not in store.confirmed_clusters()
+        assert store.appearance_pins()[(A1, 0)] == "Alice"
+        assert (A1, 1) not in store.appearance_pins()  # unselected not pinned
+        # The pinned photo surfaces in Final check under Alice.
+        final = server.get_final_check()
+        alice = next(p for p in final["persons"] if p["name"] == "Alice")
+        assert any(i["asset_id"] == A1 and i["appearance"] == 0 for i in alice["items"])
+
+    def test_confirm_with_invalid_items_rejected(
+        self, env: tuple[CoreServer, Store]
+    ) -> None:
+        server, _ = env
+        result = server.set_cluster_confirmed(
+            {
+                "window": WINDOW,
+                "cluster": 0,
+                "name": "Alice",
+                "confirmed": True,
+                "items": [{"asset_id": "", "appearance": 0}],
+            }
+        )
+        assert "error" in result
+
     def test_confirmation_survives_wipe(self, env: tuple[CoreServer, Store]) -> None:
         _, store = env
         store.confirm_cluster(WINDOW, 0, True)

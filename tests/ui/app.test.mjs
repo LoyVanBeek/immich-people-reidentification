@@ -468,6 +468,42 @@ async function testSemanticsLabelsPerTab() {
   assert.ok(document.querySelector('[data-fassign]'), "Final check cards should have Write as…");
 }
 
+async function testConfirmWithSelectionSendsItemsNoModal() {
+  // Learning: "Confirm proposal" = confirm the current verdict on the
+  // SELECTED photos and send those to Final check — no name popup when the
+  // group is already named.
+  const { window, document, posts } = makeDom();
+  await flush();
+  // Select the first card only.
+  const sel = document.querySelector("[data-sel]");
+  sel.checked = true; change(window, sel);
+  await flush();
+  click(window, document.querySelector(".b-ok"));
+  await flush();
+  // No name modal should have appeared.
+  assert.ok(!document.querySelector("#nm"), "name modal should not appear for a named group");
+  const post = posts.find(p => p.path === "/api/confirm-cluster");
+  assert.ok(post, "no /api/confirm-cluster POST");
+  assert.equal(post.body.name, "Alice", "should confirm the current proposed name");
+  assert.ok(Array.isArray(post.body.items) && post.body.items.length === 1, "should scope to selected photos");
+  assert.deepEqual(post.body.items[0], { asset_id: "asset-a", appearance: 0 });
+}
+
+async function testFinalCheckImagesGetLoadedClass() {
+  // The Final check tab renders via render(); crop images must get the
+  // "loaded" class (CSS keeps them at opacity:0 otherwise → black cards).
+  const { window, document } = makeDom();
+  await flush();
+  click(window, document.querySelector('.tab[data-view="final"]'));
+  await flush();
+  const imgs = [...document.querySelectorAll(".finalmain img.crop")];
+  assert.ok(imgs.length > 0, "no crop images in Final check");
+  for (const img of imgs) {
+    img.dispatchEvent(new window.Event("load"));
+  }
+  assert.ok(imgs.every(img => img.classList.contains("loaded")), "crop images must get .loaded after load");
+}
+
 const tests = [
   testBootRendersTabsAndNewCard,
   testBulkBarCountsSelectionAndPosts,
@@ -486,6 +522,8 @@ const tests = [
   testBothTabsAlwaysRendered,
   testFullyLabeledHiddenBehindToggle,
   testSemanticsLabelsPerTab,
+  testConfirmWithSelectionSendsItemsNoModal,
+  testFinalCheckImagesGetLoadedClass,
 ];
 let failed = 0;
 for (const t of tests) {

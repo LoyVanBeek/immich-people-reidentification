@@ -271,6 +271,19 @@ function configPopoverHTML() {
 }
 
 /* ---------- render shell ---------- */
+// Crop images render at opacity:0 until this marks them loaded (CSS fade-in).
+// Must run for every render path — Proposals grid AND Final check cards.
+function wireCropFadeIn(root) {
+  root.querySelectorAll("img.crop, img.fullphoto").forEach(img => {
+    const done = () => img.classList.add("loaded");
+    if (img.complete) done();
+    else {
+      img.addEventListener("load", done, { once: true });
+      img.addEventListener("error", done, { once: true });
+    }
+  });
+}
+
 function render() {
   const root = document.getElementById("app");
   root.classList.toggle("final", state.view === "final");
@@ -279,6 +292,7 @@ function render() {
     ${topbarHTML()}
     ${state.view === "proposals" ? proposalsHTML() : finalHTML()}
   `;
+  wireCropFadeIn(root);
   wireTopEvents();
   if (state.view === "proposals") {
     wireProposalEvents();
@@ -473,14 +487,7 @@ function renderEvidence() {
   }
   grid.innerHTML = state.evidence.map(cardHTML).join("");
   // Crop fade-in, same as before.
-  grid.querySelectorAll("img.crop, img.fullphoto").forEach(img => {
-    const done = () => img.classList.add("loaded");
-    if (img.complete) done();
-    else {
-      img.addEventListener("load", done, { once: true });
-      img.addEventListener("error", done, { once: true });
-    }
-  });
+  wireCropFadeIn(grid);
   wireCardEvents();
 }
 
@@ -868,15 +875,28 @@ async function confirmCluster() {
   if (pausedByRun()) return;
   const c = activeRow();
   if (!c) return;
-  let name = state.assignment?.proposed_name ?? c.proposed_name;
+  // "Confirm proposal" = confirm the current verdict on the selected photos
+  // (their pin if set, else the group's proposed name) and send those to
+  // Final check. With no selection, the whole group is confirmed.
+  const selectedCards = state.evidence.filter(e => state.selected.has(akey(e)));
+  const groupName = state.assignment?.proposed_name ?? c.proposed_name;
+  let name = selectedCards.length
+    ? (selectedCards.find(e => e.pin)?.pin ?? groupName)
+    : groupName;
   if (!name) {
     name = await nameModal("Name this group first", "The name becomes the suggestion; the actual labeling happens in Final check.");
     if (!name) return;
   }
+  const body = { window: c.window, cluster: c.cluster, name, confirmed: true };
+  if (selectedCards.length) {
+    body.items = selectedCards.map(e => ({ asset_id: e.asset_id, appearance: e.appearance }));
+  }
   try {
-    const data = await postJson("/api/confirm-cluster", { window: c.window, cluster: c.cluster, name, confirmed: true });
+    const data = await postJson("/api/confirm-cluster", body);
     if (data.error) { toast(`confirm failed: ${data.error}`); return; }
-    toast(`group confirmed as “${name}” — its photos are in Final check; labeling happens there`);
+    toast(selectedCards.length
+      ? `${selectedCards.length} selected photo(s) confirmed as “${name}” — in Final check now`
+      : `group confirmed as “${name}” — its photos are in Final check; labeling happens there`);
     await loadInitialState();
     const first = visibleClusters()[0];
     if (first) selectCluster(keyOf(first));

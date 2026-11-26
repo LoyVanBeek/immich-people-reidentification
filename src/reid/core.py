@@ -1274,6 +1274,11 @@ class CoreServer:
 
         No write happens here — the cluster's appearances surface in the
         Final check tab, which is the only write path.
+
+        When ``items`` (a list of {asset_id, appearance}) is given, only those
+        appearances are pinned to ``name`` and sent toward Final check; the
+        cluster itself stays open for the rest. Without ``items`` the whole
+        cluster is confirmed and all its proposals are pinned.
         """
         window = str(body.get("window", ""))
         try:
@@ -1283,21 +1288,43 @@ class CoreServer:
         confirmed = bool(body.get("confirmed", True))
         if cluster < 0 or not window:
             return {"error": "window and cluster are required"}
-        self.store.confirm_cluster(window, cluster, confirmed)
-        # Naming an (unnamed) cluster at confirm time is the ask-for-name
-        # answer: pin the cluster's appearances to the name so the next run
-        # proposes it, and the appearances surface under that person in the
-        # Final check tab.
         name = str(body.get("name", "")).strip()
+        raw_items = body.get("items")
+        items: list[tuple[str, int]] | None = None
+        if isinstance(raw_items, list) and raw_items:
+            items = []
+            for it in raw_items:
+                if not isinstance(it, dict):
+                    return {
+                        "error": "items must be objects with asset_id and appearance"
+                    }
+                try:
+                    items.append(
+                        (str(it.get("asset_id", "")), int(it.get("appearance", -1)))
+                    )
+                except (TypeError, ValueError):
+                    return {
+                        "error": "items must be objects with asset_id and appearance"
+                    }
+            if any(a == "" or n < 0 for a, n in items):
+                return {"error": "items must be objects with asset_id and appearance"}
+        if items is None:
+            self.store.confirm_cluster(window, cluster, confirmed)
+        # Naming at confirm time is the ask-for-name answer: pin the
+        # appearances to the name so they surface under that person in the
+        # Final check tab (and are proposed as that person on the next run).
         if confirmed and name:
             for p in self.store.proposals():
-                if p.window == window and p.cluster == cluster:
-                    self.store.set_pin(p.asset_id, p.appearance, name)
+                if p.window != window or p.cluster != cluster:
+                    continue
+                if items is not None and (p.asset_id, p.appearance) not in items:
+                    continue
+                self.store.set_pin(p.asset_id, p.appearance, name)
         return {
             "window": window,
             "cluster": cluster,
-            "confirmed": confirmed,
-            "name": name or None,
+            "confirmed": confirmed if items is None else False,
+            "pinned": len(items) if items is not None and name else 0,
         }
 
     def get_proposals(self) -> list[dict[str, Any]]:
