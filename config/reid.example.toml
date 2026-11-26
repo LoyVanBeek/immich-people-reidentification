@@ -88,8 +88,10 @@ api_key = ""
 
 # [ui] is only read by reid-ui, never by the core. immich_url is optional:
 # when unset it defaults to [immich] base_url, so you only set it when the
-# UI runs on another machine and the core's own base_url (e.g. localhost)
-# doesn't resolve there.
+# UI runs on another machine and the core's own base_url doesn't resolve
+# there. Either way, a localhost/127.0.0.1 URL is automatically rewritten
+# in the browser to the host the UI was opened from, so viewer links work
+# over the LAN without extra config.
 [ui]
 # immich_url = "http://<pi>:2283"
 

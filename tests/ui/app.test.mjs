@@ -59,13 +59,17 @@ const FINAL = {
 
 const DOMS = [];
 
-function makeDom() {
+function makeDom(opts = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>
     <div id="app"></div><div id="modalhost"></div><div id="toasthost"></div>
-  </body></html>`, { url: "http://localhost/", runScripts: "outside-only" });
-  // The UI server injects this into index.html at serve time.
-  dom.window.__REID_UI__ = { immichUrl: "http://immich.test", commit: "ui1234" };
+  </body></html>`, { url: opts.pageUrl || "http://localhost/", runScripts: "outside-only" });
+  // The UI server injects this into index.html at serve time; uiConfig: null
+  // simulates no injection (the core-reported immich_url is then used).
+  if (opts.uiConfig !== null) {
+    dom.window.__REID_UI__ = { immichUrl: opts.uiImmichUrl ?? "http://immich.test", commit: "ui1234" };
+  }
   const posts = [];
+  const stateImmichUrl = opts.immichUrl || "http://immich.test";
   dom.window.fetch = async (path, opts) => {
     if (opts?.method === "POST") {
       posts.push({ path, body: JSON.parse(opts.body) });
@@ -85,7 +89,7 @@ function makeDom() {
         stats: [],
         config_knobs: { window_days: 1 },
         people: ["Alice", "Bob", "Carol"],
-        immich_url: "http://immich.test",
+        immich_url: stateImmichUrl,
         core_commit: "core567",
       };
     } else if (path.startsWith("/api/evidence")) {
@@ -219,12 +223,67 @@ async function testCardIgnoreButtonPosts() {
   assert.equal(post.body.asset_id, "asset-a");
 }
 
+async function testLocalhostUiImmichUrlRewrittenToBrowserHost() {
+  // The UI server injected a localhost URL (e.g. inferred from the core's
+  // base_url). Opened via the LAN name, viewer links must point at that host.
+  const { document } = makeDom({
+    pageUrl: "http://192.168.1.10:8080/",
+    uiImmichUrl: "http://localhost:2283",
+  });
+  await flush();
+  const link = document.querySelector(".evcard .cropwrap a");
+  assert.ok(link, "no viewer link on the card");
+  assert.equal(
+    link.href,
+    "http://192.168.1.10:2283/photos/asset-a",
+    "localhost should be rewritten to the page's host, keeping the port"
+  );
+}
+
+async function testCoreReportedLocalhostRewrittenWhenNoUiOverride() {
+  // No __REID_UI__ injection: the core-reported immich_url (localhost) is
+  // used, and still rewritten to the browser's host.
+  const { document } = makeDom({
+    pageUrl: "http://immich-1.lan:8080/",
+    uiConfig: null,
+    immichUrl: "http://127.0.0.1:2283",
+  });
+  await flush();
+  const link = document.querySelector(".evcard .cropwrap a");
+  assert.ok(link, "no viewer link on the card");
+  assert.equal(
+    link.href,
+    "http://immich-1.lan:2283/photos/asset-a",
+    "127.0.0.1 from the core should be rewritten to the page's host"
+  );
+}
+
+async function testNonLocalhostImmichUrlNotRewritten() {
+  // A real hostname (explicit [ui] immich_url override for a remote UI)
+  // must be kept as-is, even when the page is served from a LAN name.
+  const { document } = makeDom({
+    pageUrl: "http://192.168.1.10:8080/",
+    uiImmichUrl: "http://immich.lan:2283",
+  });
+  await flush();
+  const link = document.querySelector(".evcard .cropwrap a");
+  assert.ok(link, "no viewer link on the card");
+  assert.equal(
+    link.href,
+    "http://immich.lan:2283/photos/asset-a",
+    "non-localhost URL must not be rewritten"
+  );
+}
+
 const tests = [
   testBootRendersTabsAndNewCard,
   testBulkBarCountsSelectionAndPosts,
   testConfirmProposalPostsConfirmCluster,
   testFinalCheckTabPersonGridAndWrite,
   testCardIgnoreButtonPosts,
+  testLocalhostUiImmichUrlRewrittenToBrowserHost,
+  testCoreReportedLocalhostRewrittenWhenNoUiOverride,
+  testNonLocalhostImmichUrlNotRewritten,
 ];
 let failed = 0;
 for (const t of tests) {

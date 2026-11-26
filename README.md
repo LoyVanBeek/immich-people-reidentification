@@ -128,9 +128,15 @@ reprocesses every asset.
 The UI is a thin proxy: it holds no store and no Immich client, so it can run
 anywhere and point at the core on the Pi. The core binds loopback by default,
 so on the Pi set `[core] host = "0.0.0.0"` (and `[core] api_key`) in `reid.toml`,
-then restart `reid-core`. The core reports its own Immich `base_url`, which on
-the Pi is usually `localhost` and useless on a laptop — override it with
-`[ui] immich_url` (or `--immich-url`) so "open in Immich" links resolve there.
+then restart `reid-core`.
+
+"Open in Immich" viewer links need an address that resolves in the browser.
+The UI therefore rewrites any `localhost`/`127.0.0.1` Immich URL (whether
+reported by the core or set via `[ui] immich_url`) to the host the page was
+actually opened from — so with `[immich] base_url = "http://localhost:2283"`
+on the Pi, opening the UI via `http://<pi>:8080` automatically links to
+`http://<pi>:2283/photos/...`. Set `[ui] immich_url` (or `--immich-url`) only
+when Immich lives on a different host than the UI.
 
 On the laptop:
 
@@ -144,6 +150,8 @@ host = "127.0.0.1"
 port = 8090
 
 [ui]
+# Optional — only needed when Immich is on a different host than this UI
+# (localhost URLs are auto-rewritten to the browser's host anyway).
 immich_url = "http://<pi>:2283"
 EOF
 

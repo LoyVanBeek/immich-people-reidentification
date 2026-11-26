@@ -85,13 +85,34 @@ function noteCoreUp() {
   render();
 }
 
+// The core reports its own Immich base_url, which is often a localhost
+// address (correct for the core, useless in a browser on another machine).
+// Rewrite localhost to the host the browser actually used to reach this UI,
+// so "open in Immich" links work when the page is opened via the LAN name.
+// A real hostname (e.g. an explicit [ui] immich_url override) is kept as-is.
+function resolveImmichUrl(raw) {
+  const url = (raw ?? "").replace(/\/$/, "");
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    if (["localhost", "127.0.0.1", "[::1]", "::1"].includes(u.hostname) && window.location.hostname) {
+      u.hostname = window.location.hostname;
+    }
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return url;
+  }
+}
+
 async function loadInitialState() {
   const data = await fetchJson("/api/state");
   state = {
     ...state,
     ...data,
     configKnobs: data.config_knobs ?? null,
-    immichUrl: (window.__REID_UI__?.immichUrl ?? data.immich_url ?? "").replace(/\/$/, ""),
+    // A UI on another machine cannot use the core's own Immich URL (it may
+    // be a localhost address); the UI server can inject a reachable one.
+    immichUrl: resolveImmichUrl(window.__REID_UI__?.immichUrl ?? data.immich_url),
     uiCommit: window.__REID_UI__?.commit ?? null,
     coreCommit: data.core_commit ?? null,
   };
