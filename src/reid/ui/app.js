@@ -343,6 +343,7 @@ function wireTopEvents() {
 
 function setView(view) {
   state.view = view;
+  try { localStorage.setItem("reid-view", view); } catch { /* private mode */ }
   if (view === "final") loadFinal();
   else render();
 }
@@ -1134,8 +1135,13 @@ async function saveConfig() {
 async function boot() {
   try {
     state.showLabeled = localStorage.getItem("reid-show-labeled") === "1";
+    // Restore the tab the user was on, so a refresh doesn't drop them back
+    // to Proposals with an unloaded Final check.
+    const v = localStorage.getItem("reid-view");
+    if (v === "final" || v === "proposals") state.view = v;
   } catch { /* private mode */ }
   await loadInitialState();
+  if (state.view === "final") await loadFinal();
   await loadPeople();
   setInterval(pollJobs, 3000);
   await pollJobs();

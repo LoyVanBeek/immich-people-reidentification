@@ -1170,6 +1170,43 @@ class TestServerAPI:
         assert pin_items[0]["name"] == "Alice"
         assert pin_items[0]["written"] is False
 
+    def test_pins_appear_in_final_check_even_with_no_proposals(
+        self, config_with_store: Path, ui_stub: StubImmich
+    ) -> None:
+        """Pins survive wipes while proposals need a batch run: with zero
+        proposals but pins present, Final check must still list them (the
+        early return must not drop pin-only items)."""
+        cfg = load_config(config_with_store)
+        server = CoreServer(cfg)
+        assert server.store.proposals() == []
+        asset_id = library.PHOTO_1_STANDING_ID
+        server.store.add_appearances(
+            asset_id,
+            [
+                Appearance(
+                    asset_id=asset_id,
+                    appearance=0,
+                    embedding=b"\x00" * 512,
+                    confidence=0.9,
+                    box_left=200.0,
+                    box_top=100.0,
+                    box_right=600.0,
+                    box_bottom=500.0,
+                    pixel_source="preview",
+                    captured_at=datetime.fromisoformat("2026-11-10T10:00:00"),
+                ),
+            ],
+        )
+        server.store.set_pin(asset_id, 0, "Alice")
+        ui_stub.faces[asset_id] = []
+        ui_stub.people = []
+
+        final = server.get_final_check()
+        assert any(
+            p["name"] == "Alice" and any(i["asset_id"] == asset_id for i in p["items"])
+            for p in final["persons"]
+        ), f"pin-only item missing from final check: {final}"
+
     def test_fully_labeled_clusters_are_flagged(
         self, config_with_store: Path, populated_store: Store
     ) -> None:

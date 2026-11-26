@@ -911,11 +911,11 @@ class CoreServer:
         Proposals tab — they need a name first.
         """
         proposals = self.store.proposals()
-        if not proposals:
-            return {"persons": []}
         appearances_by_asset = self.store.appearances_by_asset()
         rejected = set(self.store.appearance_rejections())
         pins = self.store.appearance_pins()
+        if not proposals and not pins:
+            return {"persons": []}
 
         proposal_keys = {(p.asset_id, p.appearance) for p in proposals}
 

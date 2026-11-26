@@ -68,6 +68,10 @@ function makeDom(testOpts = {}) {
   if (testOpts.uiConfig !== null) {
     dom.window.__REID_UI__ = { immichUrl: testOpts.uiImmichUrl ?? "http://immich.test", commit: "ui1234" };
   }
+  // Simulate a restored tab from a previous session (localStorage survives refresh).
+  if (testOpts.view) {
+    dom.window.localStorage.setItem("reid-view", testOpts.view);
+  }
   const posts = [];
   const stateImmichUrl = testOpts.immichUrl || "http://immich.test";
   dom.window.fetch = async (path, init) => {
@@ -532,6 +536,21 @@ async function testFinalCheckCardHasOutlineCropAndFullPhotoToggle() {
   assert.ok(document.querySelector(".finalmain img.crop"), "crop should be back after collapsing");
 }
 
+async function testFinalTabRestoredAfterRefresh() {
+  // Learning: a refresh should land back on the tab the user was on, with
+  // Final check already loaded (not empty until clicked).
+  const { window, document } = makeDom({ view: "final" });
+  await flush();
+  const finalTab = document.querySelector('.tab[data-view="final"]');
+  assert.ok(finalTab.classList.contains("sel"), "final tab should be selected after refresh");
+  const persons = [...document.querySelectorAll(".personrow")].map(el => el.dataset.person);
+  assert.deepEqual(persons, ["Alice", "Bob"], "final-check persons should load on boot");
+  // And switching tabs persists the choice.
+  click(window, document.querySelector('.tab[data-view="proposals"]'));
+  await flush();
+  assert.equal(window.localStorage.getItem("reid-view"), "proposals");
+}
+
 const tests = [
   testBootRendersTabsAndNewCard,
   testBulkBarCountsSelectionAndPosts,
@@ -553,6 +572,7 @@ const tests = [
   testConfirmWithSelectionSendsItemsNoModal,
   testFinalCheckImagesGetLoadedClass,
   testFinalCheckCardHasOutlineCropAndFullPhotoToggle,
+  testFinalTabRestoredAfterRefresh,
 ];
 let failed = 0;
 for (const t of tests) {
