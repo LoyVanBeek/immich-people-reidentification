@@ -37,6 +37,12 @@ SERVICE_USER=""
 IMAGE=""
 UP="false"
 DRY_RUN="false"
+# Services (core/ui) that were running before the install began — they are
+# stopped before the build and started again after it. Compose service names
+# or systemd unit names, depending on MODE.
+PREV_ACTIVE=""
+# Compose services to `up -d` after install (empty = nothing was running).
+COMPOSE_TARGETS=""
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -74,6 +80,9 @@ This script:
   * Systemd mode: renders unit files, installs only changed ones, stops any
     compose containers, then daemon-reload/enable/start only changed units.
   * Second run with no changes is a no-op.
+  * Stops the running reid-core/reid-ui before building/installing and
+    starts them again after (only those that were running, unless --up),
+    so a rebuilt image always replaces the old containers.
 
 Prerequisites:
   - Docker installed and user in the docker group
@@ -180,6 +189,87 @@ detect_image() {
     else
         echo "${GHCR_IMAGE}"
     fi
+}
+
+# Which long-running services (reid-core, reid-ui) are currently active, as
+# a space-separated list of compose service names or systemd unit names.
+# Empty in dry-run (no state probing) and when nothing is running.
+active_services() {
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        echo ""
+        return 0
+    fi
+    if [[ "${MODE}" == "compose" ]]; then
+        have_docker || { echo ""; return 0; }
+        docker compose -f "${INSTALL_DIR}/docker-compose.yml" --profile local \
+            ps --format '{{.Name}}' 2>/dev/null \
+            | grep -E '^(reid-core|reid-ui)$' | sort -u | tr '\n' ' ' | sed 's/ $//'
+    else
+        have_systemd || { echo ""; return 0; }
+        local out=()
+        local u
+        for u in reid-core.service reid-ui.service; do
+            if systemctl is-active "${u}" >/dev/null 2>&1; then
+                out+=("${u}")
+            fi
+        done
+        echo "${out[*]}"
+    fi
+}
+
+# Stop the running services we are about to reinstall, so a rebuilt image can
+# never leave two containers bound to the same ports. They are started again
+# by start_services / install_compose after the install.
+stop_services() {
+    local active="$1"
+    if [[ -z "${active}" ]]; then
+        if [[ "${DRY_RUN}" == "true" ]]; then
+            log_info "Would stop any running reid-core/reid-ui before installing"
+        else
+            log_info "No reid core/ui services currently running"
+        fi
+        return 0
+    fi
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_info "Would stop: ${active}"
+        return 0
+    fi
+    if [[ "${MODE}" == "compose" ]]; then
+        log_info "Stopping compose services: ${active}"
+        docker compose -f "${INSTALL_DIR}/docker-compose.yml" --profile local stop ${active}
+    else
+        log_info "Stopping systemd units: ${active}"
+        sudo systemctl stop ${active}
+    fi
+}
+
+# After installing (systemd mode; compose starts its targets in
+# install_compose): start the services that were running before, or all of
+# them with --up.
+start_services() {
+    local previously="$1"
+    local targets="${previously}"
+    if [[ "${UP}" == "true" ]]; then
+        targets="reid-core.service reid-ui.service"
+    fi
+    if [[ -z "${targets}" ]]; then
+        if [[ "${DRY_RUN}" == "true" ]]; then
+            log_info "Would restart previously running services after install (none detected in dry-run)"
+        else
+            log_info "Nothing was running before install — not starting (use --up to start)"
+        fi
+        return 0
+    fi
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_info "Would start after install: ${targets}"
+        return 0
+    fi
+    log_info "Starting systemd units: ${targets}"
+    local u
+    for u in ${targets}; do
+        sudo systemctl enable "${u}" >/dev/null 2>&1 || true
+        sudo systemctl start "${u}"
+    done
 }
 
 # Rebuild reid-batch:local when the repo's git HEAD changed since the last
@@ -724,13 +814,16 @@ install_compose() {
         log_info "Wrote ${env_file}"
     fi
 
+    local targets="${COMPOSE_TARGETS:-reid-core reid-ui}"
     if [[ "${DRY_RUN}" == "true" ]]; then
-        log_info "Would run: docker compose --profile local up -d reid-core reid-ui"
+        log_info "Would run: docker compose --profile local up -d ${targets}"
         if [[ "${UP}" == "true" ]]; then
             log_info "Would start services"
         fi
+    elif [[ -z "${targets}" ]]; then
+        log_info "No compose services were running before install; not starting (use --up to start)"
     else
-        log_info "Bringing up docker compose (profile: local)..."
+        log_info "Bringing up docker compose (profile: local): ${targets}..."
         # --build rebuilds reid-batch:local when sources changed (cached, so
         # a no-change run is fast); without it compose reuses the old image.
         local build_flag=""
@@ -738,7 +831,7 @@ install_compose() {
             build_flag="--build"
         fi
         docker compose -f "${INSTALL_DIR}/docker-compose.yml" \
-            --profile local up -d ${build_flag} reid-core reid-ui
+            --profile local up -d ${build_flag} ${targets}
 
         if [[ "${UP}" == "true" ]]; then
             log_info "Waiting for core and UI to be ready..."
@@ -819,6 +912,20 @@ main() {
     fi
     log_info "Image: ${IMAGE}"
 
+    # Stop the services we are about to reinstall BEFORE building/installing,
+    # so a rebuilt image can never leave two containers bound to the same
+    # ports. They are started again after the install — only those that were
+    # running before, unless --up.
+    PREV_ACTIVE="$(active_services)"
+    stop_services "${PREV_ACTIVE}"
+    if [[ "${MODE}" == "compose" ]]; then
+        if [[ "${UP}" == "true" ]]; then
+            COMPOSE_TARGETS="reid-core reid-ui"
+        else
+            COMPOSE_TARGETS="${PREV_ACTIVE}"
+        fi
+    fi
+
     # Rebuild the local image when the git HEAD moved since the last build,
     # so a git pull + re-run of this script deploys the new code.
     export GIT_COMMIT="$(git -C "${INSTALL_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -828,11 +935,12 @@ main() {
     ensure_reid_toml
     ensure_data_dir
 
-    # Mode-specific install
+    # Mode-specific install; then restart what was running before.
     if [[ "${MODE}" == "compose" ]]; then
         install_compose
     else
         install_systemd
+        start_services "${PREV_ACTIVE}"
     fi
 
     health_check
