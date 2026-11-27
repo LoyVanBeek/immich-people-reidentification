@@ -232,3 +232,28 @@ def test_load_ui_config_missing_file_raises(tmp_path: Path) -> None:
     missing = tmp_path / "does-not-exist.toml"
     with pytest.raises(ConfigError):
         load_ui_config(missing)
+
+
+# --- Immich API key env overrides --------------------------------------------
+
+
+def test_write_api_key_env_overrides_file(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        MINIMAL.replace(
+            'api_key = "k"', 'api_key = "k"\nwrite_api_key = "file-write-key"'
+        ),
+    )
+    cfg = load_config(path, env={"IMMICH_WRITE_API_KEY": "env-write-key"})
+    assert cfg.immich.write_api_key == "env-write-key"
+    cfg2 = load_config(path, env={})
+    assert cfg2.immich.write_api_key == "file-write-key"
+
+
+def test_api_key_env_still_wins(tmp_path: Path) -> None:
+    cfg = load_config(
+        write_config(tmp_path, MINIMAL), env={"IMMICH_API_KEY": "env-key"}
+    )
+    assert cfg.immich.api_key == "env-key"
+    cfg2 = load_config(write_config(tmp_path, MINIMAL), env={})
+    assert cfg2.immich.api_key == "k"

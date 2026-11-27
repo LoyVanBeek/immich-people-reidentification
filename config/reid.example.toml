@@ -9,11 +9,20 @@
 # Base URL of the Immich server, without a trailing slash.
 base_url = "http://immich-server:2283"
 
-# A READ-SCOPED API key: create one in Immich under Account Settings → API Keys
-# with only asset.read enabled. The pipeline reads asset metadata and pixels;
-# it writes nothing in this slice.
+# READ-SCOPED API key — used for everything except writes (searching assets,
+# downloading thumbnails/originals, reading faces and people).
+# Create it in Immich under Account Settings → API Keys with exactly:
+#   asset.read   asset.view   asset.download   face.read   person.read
 # Override with the IMMICH_API_KEY environment variable (recommended).
 api_key = "REPLACE-WITH-READ-SCOPED-KEY"
+
+# WRITE-SCOPED API key — used ONLY when you press "Write … to Immich" in the
+# Final check tab (creates people and face labels). Development safety: leave
+# this unset and the UI cannot write to Immich at all.
+# Create it with exactly:
+#   person.read   person.create   face.read   face.create
+# Override with the IMMICH_WRITE_API_KEY environment variable.
+write_api_key = "REPLACE-WITH-WRITE-SCOPED-KEY"
 
 # Assets fetched per search page (Immich allows up to 1000).
 page_size = 1000

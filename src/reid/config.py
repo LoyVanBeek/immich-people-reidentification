@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 API_KEY_ENV = "IMMICH_API_KEY"
+WRITE_API_KEY_ENV = "IMMICH_WRITE_API_KEY"
 CORE_URL_ENV = "REID_CORE_URL"
 CORE_KEY_ENV = "REID_CORE_API_KEY"
 
@@ -128,9 +129,9 @@ class Config:
 def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> Config:
     """Load and validate a reid.toml file.
 
-    The Immich API key may be omitted from the file and supplied via the
-    IMMICH_API_KEY environment variable instead; the env var wins when both
-    are set, so secrets need not live in config files.
+    The Immich API keys may be omitted from the file and supplied via the
+    IMMICH_API_KEY / IMMICH_WRITE_API_KEY environment variables instead; the
+    env vars win when both are set, so secrets need not live in config files.
     """
     env = os.environ if env is None else env
     try:
@@ -155,7 +156,9 @@ def load_config(config_path: Path, *, env: Mapping[str, str] | None = None) -> C
     api_key = env.get(API_KEY_ENV, "").strip() or _required_str(
         immich_raw, "api_key", "[immich]"
     )
-    write_api_key = immich_raw.get("write_api_key")
+    write_api_key = env.get(WRITE_API_KEY_ENV, "").strip() or immich_raw.get(
+        "write_api_key"
+    )
     if write_api_key is not None and not isinstance(write_api_key, str):
         raise ConfigError("[immich] write_api_key must be a string")
 

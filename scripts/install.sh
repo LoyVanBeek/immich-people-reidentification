@@ -331,10 +331,17 @@ ensure_reid_toml() {
 # Immich API base URL (include port if not 80/443)
 base_url = "http://localhost:2283"
 
-# Read-scoped API key (assets:read, faces:read, people:read, search:read)
+# Read-scoped API key — used for everything except writes. Create in Immich
+# under Account Settings → API Keys with exactly:
+#   asset.read  asset.view  asset.download  face.read  person.read
+# (or export IMMICH_API_KEY instead of putting it in this file)
 api_key = "CHANGE_ME_READ_KEY"
 
-# Write-scoped API key (faces:write, people:write) — used only on confirm/promote
+# Write-scoped API key — used ONLY by "Write … to Immich" in the Final check
+# tab. Create with exactly:
+#   person.read  person.create  face.read  face.create
+# Leave unset during development and the UI cannot write to Immich at all.
+# (or export IMMICH_WRITE_API_KEY)
 write_api_key = "CHANGE_ME_WRITE_KEY"
 
 page_size = 1000
