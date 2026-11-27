@@ -1161,6 +1161,26 @@ class CoreServer:
         written = sum(
             1 for r in results if r.get("status") == WriteResultStatus.WRITTEN.value
         )
+        # Journal every outcome, so a skipped/failed write is visible in
+        # journalctl — the UI toast only carries the count.
+        for r in results:
+            status = r.get("status", "?")
+            if status == WriteResultStatus.WRITTEN.value:
+                _log.info(
+                    "write-faces: WROTE %s#%s as %s",
+                    r.get("asset_id"),
+                    r.get("appearance"),
+                    r.get("name"),
+                )
+            else:
+                _log.warning(
+                    "write-faces: %s %s#%s as %s: %s",
+                    status,
+                    r.get("asset_id"),
+                    r.get("appearance"),
+                    r.get("name"),
+                    r.get("message", ""),
+                )
         return {"results": results, "written": written}
 
     def retarget(self, body: dict[str, Any]) -> dict[str, Any]:

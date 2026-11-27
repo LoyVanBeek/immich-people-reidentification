@@ -865,6 +865,20 @@ function keyItem(key) {
   return { asset_id, appearance: parseInt(appearance, 10) };
 }
 
+// Format the per-item results of a write into a short toast suffix:
+// "— 2 skipped: no head found, already labeled in Immich"
+function writeResultSuffix(results, written) {
+  const skipped = (results || []).filter(r => r.status && r.status !== "written");
+  if (!skipped.length) return "";
+  const reasons = [];
+  for (const r of skipped) {
+    const msg = r.message || r.status;
+    if (!reasons.includes(msg)) reasons.push(msg);
+  }
+  const shown = reasons.slice(0, 3).join("; ") + (reasons.length > 3 ? "; …" : "");
+  return ` — ${skipped.length} skipped: ${shown}`;
+}
+
 async function writeSelected(personName) {
   if (pausedByRun()) return;
   const person = state.final?.persons.find(p => p.name === personName) ?? state.final?.persons[0] ?? null;
@@ -880,8 +894,7 @@ async function writeSelected(personName) {
   try {
     const data = await postJson("/api/write-faces", { writes });
     if (data.error) { toast(`write failed: ${data.error}`); return; }
-    const failed = data.results.filter(r => r.status && r.status !== "written").length;
-    toast(`labeled ${data.written} photos in Immich as “${personName}”` + (failed ? ` — ${failed} skipped (details in the server log)` : ""));
+    toast(`labeled ${data.written} photos in Immich as “${personName}”` + writeResultSuffix(data.results, data.written));
     await loadInitialState();
     await loadFinal();
   } catch (err) {
@@ -900,8 +913,7 @@ async function writeAllSelected() {
   try {
     const data = await postJson("/api/write-faces", { writes });
     if (data.error) { toast(`write failed: ${data.error}`); return; }
-    const failed = data.results.filter(r => r.status && r.status !== "written").length;
-    toast(`labeled ${data.written} photos in Immich across all selected people` + (failed ? ` — ${failed} skipped` : ""));
+    toast(`labeled ${data.written} photos in Immich across all selected people` + writeResultSuffix(data.results, data.written));
     await loadInitialState();
     await loadFinal();
   } catch (err) {

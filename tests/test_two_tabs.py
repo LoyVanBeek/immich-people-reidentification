@@ -278,6 +278,38 @@ class TestWriteFaces:
         assert all(r["status"] == "skipped" for r in result["results"])
         assert not [r for r in ui_stub.faces_requests() if r.method == "POST"]
 
+    def test_write_outcomes_are_logged(
+        self,
+        env: tuple[CoreServer, Store],
+        ui_stub: StubImmich,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Every write result is journaled (written AND skipped/error with the
+        reason), so journalctl shows why an item did not land — not just GETs."""
+        import logging
+
+        server, store = env
+        self._faces_for(ui_stub)
+        store.ignore_appearance(A1, 1)
+        with caplog.at_level(logging.INFO, logger="reid.core"):
+            result = server.write_faces(
+                {
+                    "writes": [
+                        {"asset_id": A1, "appearance": 0, "name": "Alice"},  # written
+                        {"asset_id": A1, "appearance": 1, "name": "Alice"},  # ignored
+                    ]
+                }
+            )
+        assert result["written"] == 1
+        text = caplog.text
+        assert "WROTE" in text and "ignored by operator" in text
+        assert A1 in text
+        # The skip message from the API response is what got logged.
+        skip_msg = next(
+            r["message"] for r in result["results"] if r["status"] == "skipped"
+        )
+        assert skip_msg in text
+
     def test_unknown_appearance_is_an_error_result(
         self, env: tuple[CoreServer, Store]
     ) -> None:

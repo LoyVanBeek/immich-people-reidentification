@@ -79,6 +79,7 @@ function makeDom(testOpts = {}) {
       posts.push({ path, body: JSON.parse(init.body) });
       if (path === "/api/write-faces") {
         const writes = JSON.parse(init.body).writes;
+        if (testOpts.writeFacesOverride) return { ok: true, json: async () => testOpts.writeFacesOverride(writes) };
         return { ok: true, json: async () => ({ results: writes.map(w => ({ ...w, status: "written" })), written: writes.length }) };
       }
       return { ok: true, json: async () => ({ count: 1, results: [], confirmed: true, pin: "x" }) };
@@ -587,6 +588,33 @@ async function testProposalsHidesAlreadyLabeledCardsByDefault() {
   assert.ok(document.querySelector('[data-asset="asset-b"]'), "asset-b should render with toggle on");
 }
 
+async function testWriteToastShowsSkipReasons() {
+  // A skipped write must name the reason in the toast, not just point at the
+  // server log (which previously contained nothing but GETs).
+  const { window, document } = makeDom({
+    writeFacesOverride: writes => ({
+      results: [
+        { ...writes[0], status: "skipped", message: "no head found" },
+        ...writes.slice(1).map(w => ({ ...w, status: "written" })),
+      ],
+      written: writes.length - 1,
+    }),
+  });
+  await flush();
+  click(window, document.querySelector('.tab[data-view="final"]'));
+  await flush();
+  // Tick both Alice cards and write.
+  for (const cb of document.querySelectorAll('[data-fsel]')) {
+    cb.checked = true; change(window, cb);
+  }
+  await flush();
+  click(window, document.getElementById("writePerson"));
+  await flush();
+  const toastText = [...document.querySelectorAll(".toast")].map(t => t.textContent).join(" | ");
+  assert.match(toastText, /labeled 1 photos/, "expected one written");
+  assert.match(toastText, /1 skipped: no head found/, "skip reason missing from toast: " + toastText);
+}
+
 const tests = [
   testBootRendersTabsAndNewCard,
   testBulkBarCountsSelectionAndPosts,
@@ -610,6 +638,7 @@ const tests = [
   testFinalCheckCardHasOutlineCropAndFullPhotoToggle,
   testFinalTabRestoredAfterRefresh,
   testProposalsHidesAlreadyLabeledCardsByDefault,
+  testWriteToastShowsSkipReasons,
 ];
 let failed = 0;
 for (const t of tests) {
