@@ -88,7 +88,7 @@ function makeDom(testOpts = {}) {
       json = {
         clusters: testOpts.clusters ?? CLUSTERS,
         active_cluster: 1,
-        evidence: EVIDENCE_W1,
+        evidence: testOpts.evidence ?? EVIDENCE_W1,
         assignment: { cluster: 1, window: W1, proposed_name: "Alice", anchor: "Immich label: Alice", total_appearances: 2, writable: 2, conflicted: 0, labeled: 0, existing_people: ["Alice", "Bob", "Carol"] },
         stats: [],
         config_knobs: { window_days: 1 },
@@ -97,7 +97,7 @@ function makeDom(testOpts = {}) {
         core_commit: "core567",
       };
     } else if (path.startsWith("/api/evidence")) {
-      json = EVIDENCE_W1;
+      json = testOpts.evidence ?? EVIDENCE_W1;
     } else if (path === "/api/people") {
       json = { people: ["Alice", "Bob", "Carol"] };
     } else if (path === "/api/jobs") {
@@ -334,8 +334,9 @@ async function testNonLocalhostImmichUrlNotRewritten() {
 }
 
 async function testWrittenItemCheckboxDisabled() {
-  // Already-written appearances show "written" chip and their write-to-Immich
-  // checkbox is disabled, so they can't be selected for writing again.
+  // Already-written appearances are hidden by default (no action needed);
+  // with "show already labeled" on they appear in the anchors section with a
+  // disabled checkbox.
   const FINAL_WITH_WRITTEN = {
     persons: [
       {
@@ -354,16 +355,27 @@ async function testWrittenItemCheckboxDisabled() {
   await flush();
   click(window, document.querySelector('.personrow[data-person="Alice"]'));
   await flush();
-  const cbWritten = document.querySelector('[data-fsel="asset-a:0"]');
-  assert.ok(cbWritten, "written card missing");
-  assert.ok(cbWritten.disabled, "written item checkbox not disabled");
+  // Written card hidden by default; unwritten card visible in the main grid.
+  assert.ok(!document.querySelector('.finalmain > .main [data-fsel="asset-a:0"]'), "written card should be hidden by default");
   const cbUnwritten = document.querySelector('[data-fsel="asset-b:0"]');
   assert.ok(cbUnwritten, "unwritten card missing");
   assert.ok(!cbUnwritten.disabled, "unwritten item checkbox should be enabled");
+  // Enable "show already labeled": written card appears in the anchors section, disabled.
+  const toggle = document.getElementById("showLabeledToggle");
+  assert.ok(toggle, "show already labeled toggle should be present on the Final tab too");
+  toggle.checked = true; change(window, toggle);
+  await flush();
+  const anchors = document.querySelector(".anchors");
+  assert.ok(anchors, "anchors section should appear when toggle is on");
+  assert.match(anchors.textContent, /Already in Immich \(1\)/);
+  const cbWritten = anchors.querySelector('[data-fsel="asset-a:0"]');
+  assert.ok(cbWritten, "written card missing from anchors section");
+  assert.ok(cbWritten.disabled, "written item checkbox not disabled");
 }
 
 async function testWriteButtonDisabledWhenAllSelectedAreWritten() {
-  // Selecting only written items must not enable the write button.
+  // A person whose items are all written is an anchors-only person: hidden by
+  // default, and the write button stays disabled.
   const FINAL_WITH_WRITTEN = {
     persons: [
       {
@@ -380,15 +392,18 @@ async function testWriteButtonDisabledWhenAllSelectedAreWritten() {
   await flush();
   click(window, document.querySelector('.tab[data-view="final"]'));
   await flush();
-  click(window, document.querySelector('.personrow[data-person="Alice"]'));
+  // Anchors-only person hidden from the person list by default.
+  assert.ok(!document.querySelector('.personrow[data-person="Alice"]'), "anchors-only person should be hidden by default");
+  assert.match(document.querySelector(".persons")?.textContent ?? "", /nothing to review/);
+  // With the toggle on, the person appears marked as anchors-only.
+  const toggle = document.getElementById("showLabeledToggle");
+  toggle.checked = true; change(window, toggle);
   await flush();
-  const cb1 = document.querySelector('[data-fsel="asset-a:0"]');
-  const cb2 = document.querySelector('[data-fsel="asset-b:0"]');
-  cb1.checked = true; click(window, cb1);
-  cb2.checked = true; click(window, cb2);
-  await flush();
+  const row = document.querySelector('.personrow[data-person="Alice"]');
+  assert.ok(row, "anchors-only person should appear with toggle on");
+  assert.match(row.textContent, /anchors only/);
   const btn = document.getElementById("writePerson");
-  assert.ok(btn.disabled, "write button should be disabled when all selected are written");
+  assert.ok(btn.disabled, "write button should be disabled when all items are written");
 }
 
 async function testMixedSelectionWritesOnlyUnwritten() {
@@ -551,6 +566,27 @@ async function testFinalTabRestoredAfterRefresh() {
   assert.equal(window.localStorage.getItem("reid-view"), "proposals");
 }
 
+async function testProposalsHidesAlreadyLabeledCardsByDefault() {
+  // Already-labeled photos need no action: hidden in the Proposals grid by
+  // default, shown when "show already labeled" is on.
+  const evidence = [
+    card("asset-a", 0),
+    card("asset-b", 0, { status: "already_labeled", immich_label: "Carol" }),
+  ];
+  const { window, document } = makeDom({ evidence });
+  await flush();
+  let cards = [...document.querySelectorAll(".evcard")];
+  assert.equal(cards.length, 1, "already-labeled card should be hidden by default");
+  assert.ok(!document.querySelector('[data-asset="asset-b"]'), "asset-b should not render");
+  const toggle = document.getElementById("showLabeledToggle");
+  assert.ok(toggle, "toggle missing");
+  toggle.checked = true; change(window, toggle);
+  await flush();
+  cards = [...document.querySelectorAll(".evcard")];
+  assert.equal(cards.length, 2, "both cards should render with toggle on");
+  assert.ok(document.querySelector('[data-asset="asset-b"]'), "asset-b should render with toggle on");
+}
+
 const tests = [
   testBootRendersTabsAndNewCard,
   testBulkBarCountsSelectionAndPosts,
@@ -573,6 +609,7 @@ const tests = [
   testFinalCheckImagesGetLoadedClass,
   testFinalCheckCardHasOutlineCropAndFullPhotoToggle,
   testFinalTabRestoredAfterRefresh,
+  testProposalsHidesAlreadyLabeledCardsByDefault,
 ];
 let failed = 0;
 for (const t of tests) {

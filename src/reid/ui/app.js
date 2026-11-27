@@ -240,14 +240,14 @@ function topbarHTML() {
   return `
   <div class="top">
     ${tabsHTML()}
-    ${isP ? `<span class="chip acc">${visibleClusters().filter(c => c.status === "open").length} open</span>` : `<span class="chip acc">${(state.final?.persons ?? []).reduce((n, p) => n + p.count, 0)} photos</span>`}
+    ${isP ? `<span class="chip acc">${visibleClusters().filter(c => c.status === "open").length} open</span>` : `<span class="chip acc">${(state.final?.persons ?? []).reduce((n, p) => n + p.items.filter(i => !i.written).length, 0)} to review</span>`}
     ${lastRunChipHTML()}
     <span class="spacer"></span>
     <span class="ver mono muted" title="running version — ui ${esc(state.uiCommit ?? "?")} · core ${esc(state.coreCommit ?? "?")}">ui ${esc(state.uiCommit ?? "?")} · core ${esc(state.coreCommit ?? "?")}</span>
     ${isP ? `
-      <label title="Groups already fully labeled or decided have nothing to do — show them here too">
-        <input type="checkbox" id="showLabeledToggle" ${state.showLabeled ? "checked" : ""}> show already labeled</label>
       <button id="gearBtn" title="Settings">⚙</button>` : ""}
+    <label title="Photos already labeled in Immich need no action — show them here too">
+      <input type="checkbox" id="showLabeledToggle" ${state.showLabeled ? "checked" : ""}> show already labeled</label>
     <button id="runNow" ${state.jobActive ? "disabled" : ""} title="Look for new photos and regroup everything now">${state.jobActive ? "Scanning…" : "Run now"}</button>
     <div class="cfgpop" id="cfgPop">${configPopoverHTML()}</div>
   </div>`;
@@ -486,7 +486,13 @@ function renderEvidence() {
     grid.innerHTML = `<div class="evloading">loading photos…</div>`;
     return;
   }
-  grid.innerHTML = state.evidence.map(cardHTML).join("");
+  grid.innerHTML = state.evidence
+    .filter(e => state.showLabeled || e.status !== "already_labeled")
+    .map(cardHTML)
+    .join("");
+  if (!grid.innerHTML && state.evidence.length) {
+    grid.innerHTML = `<div class="evloading">all photos in this group are already labeled — tick “show already labeled” to view them</div>`;
+  }
   // Crop fade-in, same as before.
   wireCropFadeIn(grid);
   wireCardEvents();
@@ -721,20 +727,33 @@ function finalHTML() {
 }
 
 function personsHTML(persons) {
-  if (!persons.length) return `<div class="empty muted">nothing to check yet — confirm groups in the Proposals tab or run a scan</div>`;
-  return persons.map(p => `
+  // Persons whose photos are all already in Immich need no action: hidden
+  // unless "show already labeled" is on.
+  const visible = persons.filter(p => state.showLabeled || p.items.some(i => !i.written));
+  if (!visible.length) {
+    return persons.length
+      ? `<div class="empty muted">nothing to review — all already labeled. Tick “show already labeled” to view them.</div>`
+      : `<div class="empty muted">nothing to check yet — confirm groups in the Proposals tab or run a scan</div>`;
+  }
+  return visible.map(p => {
+    const actionable = p.items.filter(i => !i.written).length;
+    const anchorsOnly = actionable === 0;
+    return `
     <div class="personrow ${p.name === state.finalPerson ? "sel" : ""}" data-person="${esc(p.name)}">
       <b>${esc(p.name)}</b>
-      <span class="chip acc">${p.count}</span>
-    </div>`).join("");
+      <span class="chip ${anchorsOnly ? "" : "acc"}">${actionable}${anchorsOnly ? " · anchors only" : ""}</span>
+    </div>`;
+  }).join("");
 }
 
 function finalMainHTML(person) {
   if (state.final?.error) return `<div class="panerr">final check failed to load: ${esc(state.final.error)}</div>`;
   if (!person) return `<div class="empty muted">select a person</div>`;
-  const selected = person.items.filter(i => state.finalSelected.has(akey(i)) && !i.written);
+  const actionable = person.items.filter(i => !i.written);
+  const anchors = person.items.filter(i => i.written);
+  const selected = actionable.filter(i => state.finalSelected.has(akey(i)));
   const totalSelected = (state.final?.persons ?? []).reduce(
-    (n, p) => n + p.items.filter(i => state.finalSelected.has(akey(i)) && !i.written).length, 0);
+    (n, p) => n + p.items.filter(i => !i.written && state.finalSelected.has(akey(i))).length, 0);
   const srcChip = { proposal: ["acc", "ReID suggestion"], pin: ["acc", "you set this"], conflict: ["bad", "labels disagree"], written: ["ok", "in Immich"] };
   return `
     <div class="writebar">
@@ -749,8 +768,15 @@ function finalMainHTML(person) {
     </div>
     <div class="main" style="grid-row:auto;height:auto;overflow:visible;padding:12px">
       <h2 style="margin:4px 0">${esc(person.name)}</h2>
-      <div class="hint" style="margin-bottom:10px">All photos assigned to ${esc(person.name)} — suggestions, your pins, conflicts. Tick the ones to label; nothing is written until you press Write. Ticks are off by default.</div>
-      <div class="evgrid">${person.items.map(finalCardHTML).join("")}</div>
+      <div class="hint" style="margin-bottom:10px">Photos to label for ${esc(person.name)} — suggestions, your pins, conflicts. Tick the ones to label; nothing is written until you press Write. Ticks are off by default.</div>
+      ${state.showLabeled && anchors.length ? `
+      <details class="anchors" open>
+        <summary>Already in Immich (${anchors.length}) — no action needed</summary>
+        <div class="evgrid">${anchors.map(finalCardHTML).join("")}</div>
+      </details>` : ""}
+      ${actionable.length
+        ? `<div class="evgrid">${actionable.map(finalCardHTML).join("")}</div>`
+        : `<div class="empty muted">${anchors.length ? "everything here is already labeled in Immich" : "no photos for this person yet"}</div>`}
     </div>`;
 }
 
@@ -811,7 +837,7 @@ function wireFinalEvents() {
     }));
   document.getElementById("selAll")?.addEventListener("click", () => {
     const person = state.final.persons.find(p => p.name === state.finalPerson);
-    person?.items.forEach(i => state.finalSelected.add(akey(i)));
+    person?.items.forEach(i => { if (!i.written) state.finalSelected.add(akey(i)); });
     render();
   });
   document.getElementById("selNone")?.addEventListener("click", () => {
@@ -823,7 +849,7 @@ function wireFinalEvents() {
   document.getElementById("writeAll")?.addEventListener("click", writeAllSelected);
   document.getElementById("retargetSel")?.addEventListener("click", async () => {
     const person = state.final.persons.find(p => p.name === state.finalPerson);
-    const items = person?.items.filter(i => state.finalSelected.has(akey(i))).map(i => ({ asset_id: i.asset_id, appearance: i.appearance })) ?? [];
+    const items = person?.items.filter(i => !i.written && state.finalSelected.has(akey(i))).map(i => ({ asset_id: i.asset_id, appearance: i.appearance })) ?? [];
     const name = await nameModal("Write all selected as which person?", "These photos will be labeled as that person in Immich right away (and stay set for the next scan).");
     if (!name) return;
     const data = await postJson("/api/retarget", { items, name });
