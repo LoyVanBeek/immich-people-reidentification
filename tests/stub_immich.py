@@ -44,6 +44,9 @@ class StubImmich:
         self.faces: dict[str, list[dict[str, Any]]] = {}
         # people for /api/people endpoint
         self.people: list[dict[str, Any]] = []
+        # tags (PUT /api/tags upsert) and asset->tag assignments (PUT /api/tags/assets)
+        self.tags: list[dict[str, Any]] = []
+        self.tagged_assets: dict[str, list[str]] = {}
         self.requests: list[RecordedRequest] = []
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
@@ -79,6 +82,14 @@ class StubImmich:
     def people_requests(self) -> list[RecordedRequest]:
         with self._lock:
             return [r for r in self.requests if r.path.split("?")[0] == PEOPLE_PATH]
+
+    def tags_requests(self) -> list[RecordedRequest]:
+        with self._lock:
+            return [
+                r
+                for r in self.requests
+                if r.path.split("?")[0] in ("/api/tags", "/api/tags/assets")
+            ]
 
     # -- request handling ---------------------------------------------------
 
@@ -117,6 +128,21 @@ class StubImmich:
                         return
                     body = json.loads(body_bytes)
                     self._create_person(body)
+                    return
+                self._json(404, {"message": "not found"})
+
+            def do_PUT(self) -> None:
+                body_bytes = self._read_body()
+                stub._record(self, body_bytes)
+                path = self.path.split("?")[0]
+                if not self._authorized():
+                    self._json(401, {"message": "Invalid or missing API key"})
+                    return
+                if path == "/api/tags":
+                    self._upsert_tags(json.loads(body_bytes))
+                    return
+                if path == "/api/tags/assets":
+                    self._tag_assets(json.loads(body_bytes))
                     return
                 self._json(404, {"message": "not found"})
 
@@ -276,6 +302,37 @@ class StubImmich:
                 person = {"id": person_id, "name": name}
                 stub.people.append(person)
                 self._json(200, person)
+
+            def _upsert_tags(self, body: dict[str, Any]) -> None:
+                names = body.get("tags", [])
+                if not isinstance(names, list) or not all(
+                    isinstance(n, str) for n in names
+                ):
+                    self._json(400, {"message": "tags must be a list of strings"})
+                    return
+                result = []
+                for name in names:
+                    existing = next((t for t in stub.tags if t["name"] == name), None)
+                    if existing:
+                        result.append(existing)
+                        continue
+                    tag = {"id": f"tag-{len(stub.tags) + 1}", "name": name}
+                    stub.tags.append(tag)
+                    result.append(tag)
+                self._json(200, result)
+
+            def _tag_assets(self, body: dict[str, Any]) -> None:
+                asset_ids = body.get("assetIds", [])
+                tag_ids = body.get("tagIds", [])
+                if not isinstance(asset_ids, list) or not isinstance(tag_ids, list):
+                    self._json(400, {"message": "assetIds and tagIds required"})
+                    return
+                for asset_id in asset_ids:
+                    stub.tagged_assets.setdefault(asset_id, [])
+                    for tag_id in tag_ids:
+                        if tag_id not in stub.tagged_assets[asset_id]:
+                            stub.tagged_assets[asset_id].append(tag_id)
+                self._json(200, {"count": len(asset_ids)})
 
             def _authorized(self) -> bool:
                 return self.headers.get("x-api-key") == API_KEY

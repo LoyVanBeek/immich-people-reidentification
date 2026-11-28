@@ -879,6 +879,19 @@ function writeResultSuffix(results, written) {
   return ` — ${skipped.length} skipped: ${shown}`;
 }
 
+// "labeled 2 photos as “X” + tagged 1 (no face found) — 1 skipped: …"
+// With no label: "labeled 2 photos in Immich across all selected people …"
+function writeSummaryToast(data, label) {
+  const results = data.results || [];
+  const tagged = results.filter(r => r.status === "written" && r.via === "tag").length;
+  const faced = (data.written || 0) - tagged;
+  let msg = label
+    ? `labeled ${faced} photos in Immich as “${label}”`
+    : `labeled ${faced} photos in Immich across all selected people`;
+  if (tagged) msg += `, tagged ${tagged} (no face found)`;
+  return msg + writeResultSuffix(results, data.written);
+}
+
 async function writeSelected(personName) {
   if (pausedByRun()) return;
   const person = state.final?.persons.find(p => p.name === personName) ?? state.final?.persons[0] ?? null;
@@ -894,7 +907,7 @@ async function writeSelected(personName) {
   try {
     const data = await postJson("/api/write-faces", { writes });
     if (data.error) { toast(`write failed: ${data.error}`); return; }
-    toast(`labeled ${data.written} photos in Immich as “${personName}”` + writeResultSuffix(data.results, data.written));
+    toast(writeSummaryToast(data, personName));
     await loadInitialState();
     await loadFinal();
   } catch (err) {
@@ -913,7 +926,7 @@ async function writeAllSelected() {
   try {
     const data = await postJson("/api/write-faces", { writes });
     if (data.error) { toast(`write failed: ${data.error}`); return; }
-    toast(`labeled ${data.written} photos in Immich across all selected people` + writeResultSuffix(data.results, data.written));
+    toast(writeSummaryToast(data, null));
     await loadInitialState();
     await loadFinal();
   } catch (err) {

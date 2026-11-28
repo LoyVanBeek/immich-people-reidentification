@@ -100,6 +100,19 @@ class CreatedFace:
     person_id: str
 
 
+@dataclass(frozen=True)
+class Tag:
+    """One Immich tag."""
+
+    id: str
+    name: str
+
+
+# Prefix for tags this tool writes, so they never clash with the user's own
+# tags: a person named "Jones" is tagged "person:Jones".
+PERSON_TAG_PREFIX = "person:"
+
+
 class ImmichClient:
     def __init__(
         self,
@@ -307,6 +320,47 @@ class ImmichClient:
         if not isinstance(face_id, str) or not face_id:
             raise ImmichError(response.status_code, "invalid face creation response")
         return CreatedFace(id=face_id, asset_id=asset_id, person_id=person_id)
+
+    def upsert_tag(self, name: str) -> Tag:
+        """Create a tag by name if missing (PUT /tags upsert) and return it."""
+        response = httpx.put(
+            f"{self._base_url}/api/tags",
+            json={"tags": [name.strip()]},
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if response.status_code >= 400:
+            raise ImmichError(response.status_code, _error_message(response))
+        body = response.json()
+        tags = body if isinstance(body, list) else body.get("tags", [])
+        for t in tags:
+            if isinstance(t, dict) and t.get("name") == name.strip():
+                tag_id = t.get("id")
+                if isinstance(tag_id, str) and tag_id:
+                    return Tag(id=tag_id, name=name.strip())
+        raise ImmichError(response.status_code, "tag upsert returned no matching tag")
+
+    def tag_assets(self, asset_ids: list[str], tag_ids: list[str]) -> int:
+        """Assign tags to assets (PUT /tags/assets). Returns the tagged count."""
+        if not asset_ids or not tag_ids:
+            return 0
+        response = httpx.put(
+            f"{self._base_url}/api/tags/assets",
+            json={"assetIds": asset_ids, "tagIds": tag_ids},
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if response.status_code >= 400:
+            raise ImmichError(response.status_code, _error_message(response))
+        body: dict[str, Any] = response.json()
+        count = body.get("count")
+        return int(count) if isinstance(count, (int, float)) else len(asset_ids)
+
+    def tag_asset_with_person(self, asset_id: str, person_name: str) -> Tag:
+        """Fallback write when no head box exists: tag the asset person:<name>."""
+        tag = self.upsert_tag(f"{PERSON_TAG_PREFIX}{person_name.strip()}")
+        self.tag_assets([asset_id], [tag.id])
+        return tag
 
     def resolve_head_box(
         self,

@@ -310,6 +310,69 @@ class TestWriteFaces:
         )
         assert skip_msg in text
 
+    def test_no_head_falls_back_to_person_tag(
+        self,
+        env: tuple[CoreServer, Store],
+        ui_stub: StubImmich,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No head box anywhere → the asset is tagged person:<name> instead of
+        being skipped; the write is journaled (idempotent) like a face write."""
+        from reid.immich import ImmichClient
+
+        server, store = env
+        ui_stub.faces[A1] = []  # no unassigned Immich faces
+        monkeypatch.setattr(ImmichClient, "resolve_head_box", lambda *a, **k: None)
+
+        result = server.write_faces(
+            {"writes": [{"asset_id": A1, "appearance": 0, "name": "Jones"}]}
+        )
+        assert result["written"] == 1
+        r0 = result["results"][0]
+        assert r0["status"] == "written"
+        assert r0["via"] == "tag"
+        assert r0["tag"] == "person:Jones"
+        assert "no head found" in r0["message"]
+        # No face was created, but the tag was upserted and assigned.
+        assert not [r for r in ui_stub.faces_requests() if r.method == "POST"]
+        tag = next(t for t in ui_stub.tags if t["name"] == "person:Jones")
+        assert ui_stub.tagged_assets.get(A1) == [tag["id"]]
+        # Ledger journaled with the person id → re-write is a no-op.
+        person_id = next(p["id"] for p in ui_stub.people if p["name"] == "Jones")
+        assert store.has_write_ledger_entry(A1, person_id)
+        again = server.write_faces(
+            {"writes": [{"asset_id": A1, "appearance": 0, "name": "Jones"}]}
+        )
+        assert again["written"] == 0
+        assert again["results"][0]["status"] == "skipped"
+
+    def test_tag_fallback_failure_is_an_error_result(
+        self,
+        env: tuple[CoreServer, Store],
+        ui_stub: StubImmich,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If the tag API itself fails (e.g. missing tag.create permission), the
+        item is an error result with the reason — not a crash, not a skip."""
+        from reid.immich import ImmichClient, ImmichError
+
+        server, _ = env
+        ui_stub.faces[A1] = []
+        monkeypatch.setattr(ImmichClient, "resolve_head_box", lambda *a, **k: None)
+
+        def boom(*a: object, **k: object) -> None:
+            raise ImmichError(403, "tag.create permission missing")
+
+        monkeypatch.setattr(ImmichClient, "tag_asset_with_person", boom)
+        result = server.write_faces(
+            {"writes": [{"asset_id": A1, "appearance": 0, "name": "Jones"}]}
+        )
+        assert result["written"] == 0
+        r0 = result["results"][0]
+        assert r0["status"] == "error"
+        assert "tag fallback failed" in r0["message"]
+        assert "tag.create" in r0["message"]
+
     def test_unknown_appearance_is_an_error_result(
         self, env: tuple[CoreServer, Store]
     ) -> None:

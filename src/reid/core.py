@@ -1156,6 +1156,7 @@ class CoreServer:
                     window,
                     timestamp,
                     head_box=head_box,
+                    person_name=name,
                 )
             )
         written = sum(
@@ -1386,6 +1387,7 @@ class CoreServer:
         window: str,
         timestamp: datetime,
         head_box: tuple[float, float, float, float] | None = None,
+        person_name: str = "",
     ) -> dict[str, Any]:
         """Shared write logic for one appearance (used by /api/write-faces)."""
         try:
@@ -1398,6 +1400,7 @@ class CoreServer:
                 window,
                 timestamp,
                 head_box,
+                person_name,
             )
         except ImmichError as exc:
             # Immich hiccups (missing pixels, transient errors) are per-item
@@ -1419,6 +1422,7 @@ class CoreServer:
         window: str,
         timestamp: datetime,
         head_box: tuple[float, float, float, float] | None = None,
+        person_name: str = "",
     ) -> dict[str, Any]:
         # Check if already written (via write ledger) - idempotency
         if self.store.has_write_ledger_entry(asset_id, person_id):
@@ -1471,13 +1475,42 @@ class CoreServer:
                 "message": "conflict: different person's overlapping face",
             }
 
-        # The caller resolves the head box (lazy, at write time).
+        # The caller resolves the head box (lazy, at write time). When no head
+        # is found at all, fall back to tagging the asset person:<name> — a
+        # face label needs a box, a tag does not.
         if head_box is None:
+            if not person_name:
+                return {
+                    "asset_id": asset_id,
+                    "appearance": appearance.appearance,
+                    "status": WriteResultStatus.SKIPPED.value,
+                    "message": "no head found",
+                }
+            try:
+                tag = write_client.tag_asset_with_person(asset_id, person_name)
+            except ImmichError as exc:
+                return {
+                    "asset_id": asset_id,
+                    "appearance": appearance.appearance,
+                    "status": WriteResultStatus.ERROR.value,
+                    "message": f"tag fallback failed: {exc.message}",
+                }
+            self.store.add_write_ledger_entry(
+                WriteLedgerEntry(
+                    asset_id=asset_id,
+                    person_id=person_id,
+                    cluster=cluster,
+                    window=window,
+                    timestamp=timestamp,
+                )
+            )
             return {
                 "asset_id": asset_id,
                 "appearance": appearance.appearance,
-                "status": WriteResultStatus.SKIPPED.value,
-                "message": "no head found",
+                "status": WriteResultStatus.WRITTEN.value,
+                "via": "tag",
+                "tag": tag.name,
+                "message": f"no head found — tagged asset as {tag.name}",
             }
 
         # Real write

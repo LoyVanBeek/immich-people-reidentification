@@ -615,6 +615,28 @@ async function testWriteToastShowsSkipReasons() {
   assert.match(toastText, /1 skipped: no head found/, "skip reason missing from toast: " + toastText);
 }
 
+async function testWriteToastDistinguishesTaggedFallback() {
+  // A write that landed via the person:<name> tag fallback (no face found)
+  // is reported as "tagged", not as a face label.
+  const { window, document } = makeDom({
+    writeFacesOverride: writes => ({
+      results: writes.map(w => ({ ...w, status: "written", via: "tag", tag: `person:${w.name}`, message: "no head found — tagged" })),
+      written: writes.length,
+    }),
+  });
+  await flush();
+  click(window, document.querySelector('.tab[data-view="final"]'));
+  await flush();
+  const cb = document.querySelector('[data-fsel]');
+  cb.checked = true; change(window, cb);
+  await flush();
+  click(window, document.getElementById("writePerson"));
+  await flush();
+  const toastText = [...document.querySelectorAll(".toast")].map(t => t.textContent).join(" | ");
+  assert.match(toastText, /labeled 0 photos/, "no face-labeled photos expected");
+  assert.match(toastText, /tagged 1 \(no face found\)/, "tagged fallback missing from toast: " + toastText);
+}
+
 const tests = [
   testBootRendersTabsAndNewCard,
   testBulkBarCountsSelectionAndPosts,
@@ -639,6 +661,7 @@ const tests = [
   testFinalTabRestoredAfterRefresh,
   testProposalsHidesAlreadyLabeledCardsByDefault,
   testWriteToastShowsSkipReasons,
+  testWriteToastDistinguishesTaggedFallback,
 ];
 let failed = 0;
 for (const t of tests) {

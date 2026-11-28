@@ -58,10 +58,12 @@ reprocesses every asset.
    - **read-scoped** (used for everything except writes): `asset.read`,
      `asset.view`, `asset.download`, `face.read`, `person.read` — export it as
      `IMMICH_API_KEY` (recommended) or put it in `reid.toml` as `api_key`.
-   - **write-scoped** (used only by "Write … to Immich" in the Final check tab):
-     `person.read`, `person.create`, `face.read`, `face.create` — export as
-     `IMMICH_WRITE_API_KEY` or set `write_api_key`. Leave it unset during
-     development and the UI physically cannot write to Immich.
+   - **write-scoped** (used only by "Write … to Immich" in the Final check tab;
+     when no face can be found on a photo it tags the asset `person:<name>`):
+     `person.read`, `person.create`, `face.read`, `face.create`, `tag.create`,
+     `tag.asset` — export as `IMMICH_WRITE_API_KEY` or set `write_api_key`.
+     Leave it unset during development and the UI physically cannot write to
+     Immich.
 2. Copy `config/reid.example.toml`, edit the Immich base URL and the
    `[detection]` settings.
 3. Run the core and the UI (the image is ARM64; build on the Pi 5 itself or

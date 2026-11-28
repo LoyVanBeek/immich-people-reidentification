@@ -338,8 +338,9 @@ base_url = "http://localhost:2283"
 api_key = "CHANGE_ME_READ_KEY"
 
 # Write-scoped API key — used ONLY by "Write … to Immich" in the Final check
-# tab. Create with exactly:
-#   person.read  person.create  face.read  face.create
+# tab (creates people/faces; falls back to tagging the asset "person:<name>"
+# when no face is found). Create with exactly:
+#   person.read  person.create  face.read  face.create  tag.create  tag.asset
 # Leave unset during development and the UI cannot write to Immich at all.
 # (or export IMMICH_WRITE_API_KEY)
 write_api_key = "CHANGE_ME_WRITE_KEY"

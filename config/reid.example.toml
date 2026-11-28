@@ -17,10 +17,11 @@ base_url = "http://immich-server:2283"
 api_key = "REPLACE-WITH-READ-SCOPED-KEY"
 
 # WRITE-SCOPED API key — used ONLY when you press "Write … to Immich" in the
-# Final check tab (creates people and face labels). Development safety: leave
-# this unset and the UI cannot write to Immich at all.
+# Final check tab (creates people and face labels; when no face can be found
+# on a photo, falls back to tagging the asset "person:<name>").
+# Development safety: leave this unset and the UI cannot write to Immich at all.
 # Create it with exactly:
-#   person.read   person.create   face.read   face.create
+#   person.read   person.create   face.read   face.create   tag.create   tag.asset
 # Override with the IMMICH_WRITE_API_KEY environment variable.
 write_api_key = "REPLACE-WITH-WRITE-SCOPED-KEY"
 
